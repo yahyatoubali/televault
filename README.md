@@ -181,18 +181,18 @@ televault ls --sort=size
 televault search "*.sql"
 ```
 
-## TUI
+## CLI Controls
 
-Launch the interactive terminal interface:
+Launch the CLI:
 
 ```bash
 televault
 ```
 
 Controls:
-- `r` = Refresh
 - `u` = Upload
 - `d` = Download selected
+- `l` = List files
 - `q` = Quit
 - Arrow keys to navigate
 
