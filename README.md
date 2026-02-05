@@ -51,6 +51,19 @@ televault  # interactive terminal UI
 
 ---
 
+## Project Vision
+
+TeleVault is not a SaaS. The goal is to give hackers and power users a **simple, encrypted off‑site backup tool** built on top of infrastructure they already use every day.
+
+- **Turn Telegram into your personal encrypted blob store** instead of spinning up S3 buckets, servers, or dashboards.
+- **Stay client‑side by design** – TeleVault handles chunking, indexing, and crypto; Telegram just stores opaque data.
+- **Be as easy to adopt as `pip install` + `televault login`**, with no extra services to maintain.
+- **Stay portable** – future tooling should make it easy to export / migrate data so you’re never locked into Telegram.
+
+This should feel closer to `restic`/`borg` than a cloud app: a sharp, scriptable tool that respects your threat model.
+
+---
+
 ## Features
 
 - **MTProto direct** – Uses Telethon + MTProto (no bot API limits)
