@@ -1,6 +1,6 @@
 [project]
 name = "televault"
-version = "0.1.0"
+version = "2.0.0"
 description = "Unlimited cloud storage using Telegram MTProto. No local DB - everything on Telegram."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -40,6 +40,7 @@ dev = [
 [project.scripts]
 televault = "televault.cli:main"
 tv = "televault.cli:main"
+televault-tui = "televault.tui:run_tui"
 
 [project.urls]
 Homepage = "https://github.com/YahyaToubali/televault"

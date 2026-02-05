@@ -17,18 +17,20 @@ Python 3.11+ is recommended.
 ## Quick Start
 
 ```bash
-# 1) Login with your Telegram account (MTProto, not bot API)
+# 1) Set up your Telegram API credentials (one-time setup)
+export TELEGRAM_API_ID=your_api_id
+export TELEGRAM_API_HASH=your_api_hash
+
+# 2) Login with your Telegram account (MTProto, not bot API)
 televault login
 
-# 2) Create or attach to a storage channel
-televault setup                # creates a new private channel
-# or
-televault setup -c <channel_id>  # reuse an existing channel
+# 3) Set up storage channel (interactive)
+televault setup
 
-# 3) Upload
+# 4) Upload
 TELEVAULT_PASSWORD="strong-password" televault push /path/to/file
 
-# 4) List & download
+# 5) List & download
 televault ls
 TELEVAULT_PASSWORD="strong-password" televault pull <file_id_or_name>
 ```
@@ -36,18 +38,84 @@ TELEVAULT_PASSWORD="strong-password" televault pull <file_id_or_name>
 Basic commands:
 
 - `televault login`   – authenticate with Telegram
-- `televault setup`   – create/use storage channel
+- `televault setup`   – set up storage channel (interactive or CLI flags)
 - `televault push`    – upload files / folders (`-r` for recursive)
 - `televault pull`    – download by id or name
 - `televault ls`      – list files with size/chunks/encryption
 - `televault search`  – fuzzy search by name
 - `televault status`  – overall vault stats
+- `televault whoami`  – show current Telegram account
+- `televault logout`  – clear session
 
-There is also a TUI entrypoint:
+All commands check authentication first and will prompt you to run `televault login` if needed.
+
+---
+
+## Interactive TUI
+
+TeleVault includes a rich Terminal User Interface (TUI) for visual file management:
 
 ```bash
-televault  # interactive terminal UI
+# Launch the TUI
+televault tui
+# or
+televault-tui
 ```
+
+### TUI Features:
+
+- **📁 File Browser** – Browse all files with details (size, chunks, encryption status)
+- **🔍 Search** – Real-time search through your files
+- **📤 Upload** – Interactive file upload with password protection
+- **📥 Download** – One-click file download
+- **📊 Statistics** – View vault stats (total files, storage used)
+- **⌨️ Keyboard Shortcuts**:
+  - `q` - Quit
+  - `r` - Refresh file list
+  - `u` - Upload file
+  - `d` - Download selected file
+  - `s` - Search files
+  - `l` - Login
+  - `Delete` - Delete selected file
+  - `Enter` - Download selected file
+
+The TUI provides a more visual and interactive way to manage your vault compared to the CLI commands.
+
+---
+
+## Storage Channel Setup
+
+The `televault setup` command provides three ways to configure your storage:
+
+### Interactive Mode (Recommended)
+```bash
+televault setup
+```
+
+You'll be prompted to choose:
+```
+TeleVault Storage Channel Setup
+
+How would you like to set up your storage?
+  1. Create a new private channel (recommended)
+  2. Use an existing channel by ID
+
+Enter your choice (1 or 2):
+```
+
+### Non-Interactive Options
+
+**Auto-create a new channel:**
+```bash
+televault setup --auto-create
+```
+
+**Use an existing channel:**
+```bash
+televault setup --channel-id -1001234567890
+```
+
+> **Note:** Channel IDs should start with `-100` (e.g., `-1001234567890`). Make sure the bot is a member of the channel if using an existing one.
 
 ---
 
@@ -69,10 +137,12 @@ This should feel closer to `restic`/`borg` than a cloud app: a sharp, scriptable
 - **MTProto direct** – Uses Telethon + MTProto (no bot API limits)
 - **Encrypted-by-default** – Client-side AES‑256‑GCM, password-derived keys
 - **Zero local DB** – Metadata index is stored on Telegram itself
-- **Chunked uploads** – Large files split into chunks (up to Telegram’s per-file limit)
+- **Chunked uploads** – Large files split into chunks (up to Telegram's per-file limit)
 - **Resumable transfers** – Can continue interrupted uploads/downloads
 - **Folder support** – Upload directories while preserving structure
-- **CLI + TUI** – Rich-based progress bars and optional Textual UI
+- **Rich CLI** – Progress bars, colored output, and helpful error messages
+- **Interactive TUI** – Full terminal UI with file browser, search, and management
+- **Interactive setup** – Choose between creating new channel or using existing one
 
 ---
 
@@ -188,7 +258,15 @@ If you’re reading this on GitHub and want to use TeleVault seriously, open an 
 ## Requirements
 
 - Telegram account + API credentials from [my.telegram.org](https://my.telegram.org)
+  - Create an app to get your `api_id` and `api_hash`
+  - Set them as environment variables:
+    ```bash
+    export TELEGRAM_API_ID=your_api_id
+    export TELEGRAM_API_HASH=your_api_hash
+    ```
 - Python 3.11 or newer
+
+> **Tip:** Add the export lines to your `~/.bashrc`, `~/.zshrc`, or `~/.profile` to make them persistent.
 
 ---
 
