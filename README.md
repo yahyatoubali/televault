@@ -165,6 +165,26 @@ pytest
 
 ---
 
+## Roadmap (early ideas)
+
+This is intentionally small for now; priorities will change as you use it.
+
+- **Snapshots & versioning**
+  - `televault snapshot ~/Projects` with named snapshots and retention rules.
+  - Simple policies like "keep daily snapshots for 7 days, weekly for 4 weeks".
+- **Smarter TUI**
+  - Better file browser, filters (by size/date/encrypted), and batch actions.
+- **Scheduling helpers**
+  - Tiny helper commands or docs for cron/systemd timers ("backup this folder nightly").
+- **Export / migrate tooling**
+  - One‑shot export from Telegram → local disk or other storage (S3, filesystem, etc.).
+- **Multi‑vault support**
+  - Multiple channels as separate vaults (e.g. `personal`, `work`, `archives`).
+
+If you’re reading this on GitHub and want to use TeleVault seriously, open an issue with your use case so priorities can be adjusted.
+
+---
+
 ## Requirements
 
 - Telegram account + API credentials from [my.telegram.org](https://my.telegram.org)
