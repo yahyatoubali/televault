@@ -24,6 +24,55 @@ def format_size(size: int) -> str:
     return f"{size:.1f} PB"
 
 
+def check_api_credentials_cli() -> bool:
+    """Check if Telegram API credentials are configured."""
+    import json
+    import os
+
+    # Check environment variables
+    if os.environ.get("TELEGRAM_API_ID") and os.environ.get("TELEGRAM_API_HASH"):
+        return True
+
+    # Check config file
+    config_path = get_config_dir() / "telegram.json"
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                data = json.load(f)
+                if data.get("api_id") and data.get("api_hash"):
+                    return True
+        except Exception:
+            pass
+
+    return False
+
+
+def show_api_credentials_error():
+    """Show error message for missing API credentials."""
+    console.print("[bold red]✗ Telegram API credentials not configured![/bold red]\n")
+    console.print("You need to set up your Telegram API credentials before logging in.")
+    console.print("\n[bold]How to get your API credentials:[/bold]")
+    console.print("1. Visit: https://my.telegram.org")
+    console.print("2. Log in with your phone number")
+    console.print("3. Go to 'API development tools'")
+    console.print("4. Create a new application")
+    console.print("5. Note your 'api_id' and 'api_hash'")
+    console.print("\n[bold]Then set them up using one of these methods:[/bold]\n")
+
+    console.print("[bold]Method 1 - Environment variables (recommended):[/bold]")
+    console.print("  export TELEGRAM_API_ID=your_api_id")
+    console.print("  export TELEGRAM_API_HASH=your_api_hash")
+    console.print("\n[bold]Method 2 - Config file:[/bold]")
+    config_path = get_config_dir() / "telegram.json"
+    console.print(f"  Edit: {config_path}")
+    console.print('  Add: {"api_id": 12345, "api_hash": "your_hash_here"}')
+    console.print("\n[bold]Method 3 - Use the TUI:[/bold]")
+    console.print("  Run: televault tui")
+    console.print("  The TUI will prompt you for credentials\n")
+
+    console.print("[dim]For more information, see: https://my.telegram.org[/dim]")
+
+
 def run_async(coro):
     """Run async function."""
     return asyncio.get_event_loop().run_until_complete(coro)
@@ -58,6 +107,11 @@ def main(ctx, help):
 @click.option("--phone", "-p", help="Phone number for login")
 def login(phone: str | None):
     """Login to Telegram."""
+
+    # Check API credentials first
+    if not check_api_credentials_cli():
+        show_api_credentials_error()
+        sys.exit(1)
 
     async def _login():
         vault = TeleVault()

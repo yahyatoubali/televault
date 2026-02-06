@@ -1,6 +1,7 @@
 """Textual TUI for TeleVault."""
 
 import asyncio
+import os
 from pathlib import Path
 
 from rich.console import Console
@@ -21,9 +22,39 @@ from textual.widgets import (
 
 from .cli import format_size
 from .config import Config
+from .config import get_config_dir as televault_config_dir
 from .core import TeleVault
 
 console = Console()
+
+
+def check_api_credentials() -> tuple[bool, str | None]:
+    """Check if Telegram API credentials are set.
+
+    Returns:
+        (is_configured, config_path_or_error)
+    """
+    # Check environment variables
+    api_id = os.environ.get("TELEGRAM_API_ID")
+    api_hash = os.environ.get("TELEGRAM_API_HASH")
+
+    if api_id and api_hash:
+        return True, None
+
+    # Check config file
+    config_path = televault_config_dir() / "telegram.json"
+    if config_path.exists():
+        try:
+            import json
+
+            with open(config_path) as f:
+                data = json.load(f)
+                if data.get("api_id") and data.get("api_hash"):
+                    return True, None
+        except Exception:
+            pass
+
+    return False, str(config_path)
 
 
 class VaultApp(App):
@@ -127,6 +158,7 @@ class VaultApp(App):
     files = reactive([])
     status_message = reactive("Ready")
     is_authenticated = reactive(False)
+    api_configured = reactive(False)
 
     def __init__(self):
         super().__init__()
@@ -138,12 +170,40 @@ class VaultApp(App):
         """Compose the main UI."""
         yield Header(show_clock=True)
 
-        if not self.is_authenticated:
+        if not self.api_configured:
+            yield from self._compose_api_setup_screen()
+        elif not self.is_authenticated:
             yield from self._compose_login_screen()
         else:
             yield from self._compose_main_screen()
 
         yield Footer()
+
+    def _compose_api_setup_screen(self) -> ComposeResult:
+        """Compose the API credentials setup screen."""
+        with Container(id="login-screen"), Container(classes="login-container"):
+            yield Label("⚙️ API Configuration Required", classes="title")
+            yield Label("")
+            yield Label("Telegram API credentials not found!", classes="info-text")
+            yield Label("")
+            yield Label("You need to provide your Telegram API credentials.", classes="info-text")
+            yield Label("Get them at: https://my.telegram.org", classes="info-text")
+            yield Label("")
+            yield Label("API ID:", classes="info-text")
+            yield Input(placeholder="12345", id="api-id-input")
+            yield Label("")
+            yield Label("API Hash:", classes="info-text")
+            yield Input(placeholder="your_api_hash_here", id="api-hash-input")
+            yield Label("")
+            yield Label("These will be saved to your config file.", classes="info-text")
+            yield Label("")
+
+            with Horizontal():
+                yield Button("💾 Save", id="btn-save-api", variant="primary")
+                yield Button("❌ Exit", id="btn-exit-setup", variant="error")
+
+            yield Label("")
+            yield Label("Press Ctrl+C to exit anytime", classes="info-text")
 
     def _compose_login_screen(self) -> ComposeResult:
         """Compose the login screen."""
@@ -208,8 +268,13 @@ class VaultApp(App):
         """Handle app mount."""
         self.title = "TeleVault - Encrypted Cloud Storage"
 
-        # Check authentication on mount
-        await self._check_auth()
+        # Check API credentials first
+        is_configured, _ = check_api_credentials()
+        self.api_configured = is_configured
+
+        if self.api_configured:
+            # Check authentication on mount
+            await self._check_auth()
 
     async def _check_auth(self) -> None:
         """Check if user is authenticated."""
@@ -272,7 +337,11 @@ class VaultApp(App):
         """Handle button presses."""
         button_id = event.button.id
 
-        if button_id == "btn-login":
+        if button_id == "btn-save-api":
+            await self._save_api_credentials()
+        elif button_id == "btn-exit-setup":
+            self.exit()
+        elif button_id == "btn-login":
             await self._do_login()
         elif button_id == "btn-exit":
             self.exit()
@@ -288,6 +357,40 @@ class VaultApp(App):
             await self._show_whoami()
         elif button_id == "btn-logout":
             await self._do_logout()
+
+    async def _save_api_credentials(self) -> None:
+        """Save API credentials to config file."""
+        api_id = self.query_one("#api-id-input", Input).value.strip()
+        api_hash = self.query_one("#api-hash-input", Input).value.strip()
+
+        if not api_id or not api_hash:
+            self.notify("Please enter both API ID and API Hash", severity="error")
+            return
+
+        try:
+            # Validate API ID is a number
+            api_id_int = int(api_id)
+
+            # Save to config file
+            config_path = televault_config_dir() / "telegram.json"
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+
+            import json
+
+            config_data = {"api_id": api_id_int, "api_hash": api_hash, "session_string": None}
+
+            with open(config_path, "w") as f:
+                json.dump(config_data, f, indent=2)
+
+            self.notify("✓ API credentials saved successfully!")
+            self.api_configured = True
+            self.refresh(layout=True)
+            await self._check_auth()
+
+        except ValueError:
+            self.notify("API ID must be a number", severity="error")
+        except Exception as e:
+            self.notify(f"Error saving credentials: {str(e)}", severity="error")
 
     async def _do_login(self) -> None:
         """Show login dialog."""
