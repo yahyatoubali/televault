@@ -75,7 +75,19 @@ def show_api_credentials_error():
 
 def run_async(coro):
     """Run async function."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(asyncio.run, coro)
+            return future.result()
+    else:
+        return asyncio.run(coro)
 
 
 async def check_auth(vault: TeleVault) -> bool:
@@ -222,8 +234,14 @@ def setup(channel_id: int | None, auto_create: bool):
 @click.option("--no-compress", is_flag=True, help="Disable compression")
 @click.option("--no-encrypt", is_flag=True, help="Disable encryption")
 @click.option("--recursive", "-r", is_flag=True, help="Upload directory recursively")
+@click.option("--resume", is_flag=True, help="Resume interrupted upload")
 def push(
-    file_path: str, password: str | None, no_compress: bool, no_encrypt: bool, recursive: bool
+    file_path: str,
+    password: str | None,
+    no_compress: bool,
+    no_encrypt: bool,
+    recursive: bool,
+    resume: bool,
 ):
     """Upload a file or directory to TeleVault."""
 
@@ -303,7 +321,15 @@ def push(
                 def on_progress(p: UploadProgress):
                     progress.update(task, completed=p.percent)
 
-                metadata = await vault.upload(file_path, progress_callback=on_progress)
+                if resume:
+                    metadata = await vault.upload_resume(file_path, progress_callback=on_progress)
+                    if len(metadata.chunks) < metadata.chunk_count:
+                        console.print(
+                            f"[dim]Resumed upload: {len(metadata.chunks)}"
+                            f"/{metadata.chunk_count} chunks completed[/dim]"
+                        )
+                else:
+                    metadata = await vault.upload(file_path, progress_callback=on_progress)
                 progress.update(task, completed=100)  # Ensure 100% at end
 
             console.print("\n[bold green]✓ Uploaded successfully![/bold green]")
@@ -322,7 +348,8 @@ def push(
 @click.argument("file_id_or_name")
 @click.option("--output", "-o", type=click.Path(), help="Output path")
 @click.option("--password", "-p", help="Decryption password", envvar="TELEVAULT_PASSWORD")
-def pull(file_id_or_name: str, output: str | None, password: str | None):
+@click.option("--resume", is_flag=True, help="Resume interrupted download")
+def pull(file_id_or_name: str, output: str | None, password: str | None, resume: bool):
     """Download a file from TeleVault."""
 
     async def _pull():
@@ -352,11 +379,18 @@ def pull(file_id_or_name: str, output: str | None, password: str | None):
                 progress.update(task, completed=p.percent)
 
             try:
-                output_path = await vault.download(
-                    file_id_or_name,
-                    output_path=output,
-                    progress_callback=on_progress,
-                )
+                if resume:
+                    output_path = await vault.download_resume(
+                        file_id_or_name,
+                        output_path=output,
+                        progress_callback=on_progress,
+                    )
+                else:
+                    output_path = await vault.download(
+                        file_id_or_name,
+                        output_path=output,
+                        progress_callback=on_progress,
+                    )
                 progress.update(task, completed=100)  # Ensure 100% at end
             except FileNotFoundError:
                 console.print(f"[red]✗ File not found: {file_id_or_name}[/red]")

@@ -27,6 +27,43 @@ from .core import TeleVault
 
 console = Console()
 
+FILE_ICONS = {
+    "image": "🖼️",
+    "video": "🎬",
+    "audio": "🎵",
+    "archive": "📦",
+    "document": "📄",
+    "code": "💻",
+    "unknown": "📁",
+}
+
+
+def get_file_icon(filename: str) -> str:
+    """Get an icon based on file extension."""
+    ext = filename.lower().split(".")[-1] if "." in filename else ""
+
+    image_exts = {"jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic", "heif"}
+    video_exts = {"mp4", "mkv", "avi", "mov", "webm", "m4v", "wmv", "flv"}
+    audio_exts = {"mp3", "wav", "ogg", "flac", "aac", "m4a", "opus"}
+    archive_exts = {"zip", "tar", "gz", "bz2", "xz", "7z", "rar", "zst"}
+    code_exts = {"py", "js", "ts", "go", "rs", "c", "cpp", "h", "java", "rb", "php"}
+    doc_exts = {"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md"}
+
+    if ext in image_exts:
+        return FILE_ICONS["image"]
+    elif ext in video_exts:
+        return FILE_ICONS["video"]
+    elif ext in audio_exts:
+        return FILE_ICONS["audio"]
+    elif ext in archive_exts:
+        return FILE_ICONS["archive"]
+    elif ext in code_exts:
+        return FILE_ICONS["code"]
+    elif ext in doc_exts:
+        return FILE_ICONS["document"]
+    else:
+        return FILE_ICONS["unknown"]
+
 
 def check_api_credentials() -> tuple[bool, str | None]:
     """Check if Telegram API credentials are set.
@@ -492,7 +529,45 @@ ID: {me.id}
 
     def action_delete(self) -> None:
         """Delete action."""
-        self.notify("Select a file and press Delete to remove", severity="information")
+        if not self.files:
+            self.notify("No files to delete", severity="warning")
+            return
+
+        # Get selected file from table
+        try:
+            table = self.query_one("#file-table", DataTable)
+            row_index = table.cursor_row
+            if 0 <= row_index < len(self.files):
+                file_to_delete = self.files[row_index]
+
+                async def do_delete():
+                    try:
+                        vault = TeleVault()
+                        await vault.connect()
+                        deleted = await vault.delete(file_to_delete.id)
+                        await vault.disconnect()
+
+                        if deleted:
+                            self.notify(f"✓ Deleted: {file_to_delete.name}")
+                            await self._load_files()
+                        else:
+                            self.notify(
+                                f"✗ Failed to delete: {file_to_delete.name}", severity="error"
+                            )
+                    except Exception as e:
+                        self.notify(f"Error: {str(e)}", severity="error")
+
+                self.push_screen(
+                    ConfirmScreen(
+                        "🗑️ Confirm Delete",
+                        f"Delete '{file_to_delete.name}'? Cannot be undone.",
+                        do_delete,
+                    )
+                )
+            else:
+                self.notify("Select a file to delete", severity="information")
+        except Exception:
+            self.notify("Select a file to delete", severity="information")
 
     def action_search(self) -> None:
         """Search action."""
@@ -562,20 +637,25 @@ class LoginScreen(Screen):
                 self.app.pop_screen()
                 return
 
-            # Show code input screen
-            self.app.push_screen(CodeScreen(vault, phone))
+            self.app.notify("Sending verification code...")
+            sent_code = await vault.telegram._client.send_code_request(phone)
+
+            self.app.notify(f"Code sent to {phone}")
+            self.app.push_screen(CodeScreen(vault, phone, sent_code.phone_code_hash))
 
         except Exception as e:
-            self.app.notify(f"Login error: {str(e)}", severity="error")
+            error_msg = str(e)
+            self.app.notify(f"Login error: {error_msg}", severity="error")
 
 
 class CodeScreen(Screen):
     """Screen for entering verification code."""
 
-    def __init__(self, vault: TeleVault, phone: str):
+    def __init__(self, vault: TeleVault, phone: str, sent_code_hash: str | None = None):
         super().__init__()
         self.vault = vault
         self.phone = phone
+        self.sent_code_hash = sent_code_hash
 
     def compose(self) -> ComposeResult:
         with Container(classes="login-container"):
@@ -584,24 +664,38 @@ class CodeScreen(Screen):
             yield Label(f"Enter the code sent to {self.phone}:", classes="info-text")
             yield Input(placeholder="12345", id="code-input")
             yield Label("")
+            yield Label("2FA Password (if enabled):", classes="info-text")
+            yield Input(placeholder="Leave empty if no 2FA", id="password-input", password=True)
+            yield Label("")
             yield Button("Verify", id="btn-verify", variant="primary")
             yield Button("Back", id="btn-back")
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-verify":
             code = self.query_one("#code-input", Input).value
+            password = self.query_one("#password-input", Input).value
             if code:
-                await self._verify_code(code)
+                await self._verify_code(code, password or None)
         elif event.button.id == "btn-back":
             await self.vault.disconnect()
             self.app.pop_screen()
 
-    async def _verify_code(self, code: str) -> None:
+    async def _verify_code(self, code: str, password: str | None) -> None:
         """Verify the code."""
         try:
-            await self.vault.telegram._client.sign_in(self.phone, code)
+            from telethon.errors import SessionPasswordNeededError
 
-            # Save session
+            try:
+                await self.vault.telegram._client.sign_in(self.phone, code)
+            except SessionPasswordNeededError:
+                if password:
+                    await self.vault.telegram._client.sign_in(password=password)
+                else:
+                    self.app.notify(
+                        "2FA password required. Please enter your password.", severity="error"
+                    )
+                    return
+
             session_string = self.vault.telegram._client.session.save()
             from .telegram import TelegramConfig
 
@@ -614,10 +708,16 @@ class CodeScreen(Screen):
             self.app.refresh(layout=True)
             await self.vault.disconnect()
             self.app.pop_screen()
-            self.app.pop_screen()  # Pop login screen too
+            self.app.pop_screen()
 
         except Exception as e:
-            self.app.notify(f"Verification failed: {str(e)}", severity="error")
+            error_msg = str(e)
+            if "2FA" in error_msg or "password" in error_msg.lower():
+                self.app.notify(
+                    "2FA password required. Please enter your password.", severity="error"
+                )
+            else:
+                self.app.notify(f"Verification failed: {error_msg}", severity="error")
 
 
 class UploadScreen(Screen):
@@ -635,6 +735,8 @@ class UploadScreen(Screen):
                 placeholder="Leave empty to use env var", id="password-input", password=True
             )
             yield Label("")
+            yield Static("", id="upload-progress")
+            yield Label("")
             with Horizontal():
                 yield Button("Upload", id="btn-do-upload", variant="primary")
                 yield Button("Cancel", id="btn-cancel")
@@ -650,22 +752,42 @@ class UploadScreen(Screen):
 
     async def _upload_file(self, path: str, password: str | None) -> None:
         """Upload the file."""
+        progress_label = self.query_one("#upload-progress", Static)
         try:
-            self.app.notify(f"Uploading {Path(path).name}...")
+            from pathlib import Path
+
+            file_path = Path(path)
+            if not file_path.exists():
+                self.app.notify(f"File not found: {path}", severity="error")
+                return
+
+            progress_label.update(f"Uploading {file_path.name}...")
 
             vault = TeleVault(password=password)
             await vault.connect()
 
-            metadata = await vault.upload(path)
+            def on_progress(p):
+                try:
+                    asyncio.get_running_loop()
+                    progress_label.update(
+                        f"Upload: {p.percent:.1f}% ({p.uploaded_chunks}/{p.total_chunks})"
+                    )
+                except RuntimeError:
+                    pass
+
+            metadata = await vault.upload(path, progress_callback=on_progress)
             await vault.disconnect()
 
+            progress_label.update(f"✓ Uploaded: {metadata.name}")
             self.app.notify(f"✓ Uploaded: {metadata.name}")
+
+            await asyncio.sleep(1)
             self.app.pop_screen()
 
-            # Refresh file list
             await self.app._load_files()
 
         except Exception as e:
+            progress_label.update(f"Error: {str(e)}")
             self.app.notify(f"Upload failed: {str(e)}", severity="error")
 
 
@@ -692,6 +814,8 @@ class DownloadScreen(Screen):
                     placeholder="Enter decryption password", id="password-input", password=True
                 )
                 yield Label("")
+            yield Static("", id="download-progress")
+            yield Label("")
             with Horizontal():
                 yield Button("Download", id="btn-do-download", variant="primary")
                 yield Button("Cancel", id="btn-cancel")
@@ -709,20 +833,66 @@ class DownloadScreen(Screen):
 
     async def _download_file(self, output: str | None, password: str | None) -> None:
         """Download the file."""
+        progress_label = self.query_one("#download-progress", Static)
         try:
-            self.app.notify(f"Downloading {self.file_metadata.name}...")
+            progress_label.update(f"Downloading {self.file_metadata.name}...")
 
             vault = TeleVault(password=password)
             await vault.connect()
 
-            output_path = await vault.download(self.file_metadata.id, output_path=output)
+            def on_progress(p):
+                try:
+                    asyncio.get_running_loop()
+                    progress_label.update(
+                        f"Download: {p.percent:.1f}% ({p.downloaded_chunks}/{p.total_chunks})"
+                    )
+                except RuntimeError:
+                    pass
+
+            output_path = await vault.download(
+                self.file_metadata.id, output_path=output, progress_callback=on_progress
+            )
             await vault.disconnect()
 
+            progress_label.update(f"✓ Downloaded to: {output_path}")
             self.app.notify(f"✓ Downloaded to: {output_path}")
+
+            await asyncio.sleep(1)
             self.app.pop_screen()
 
         except Exception as e:
+            progress_label.update(f"Error: {str(e)}")
             self.app.notify(f"Download failed: {str(e)}", severity="error")
+
+
+class ConfirmScreen(Screen):
+    """Screen for confirming destructive actions."""
+
+    def __init__(self, title: str, message: str, on_confirm=None):
+        super().__init__()
+        self.title_text = title
+        self.message = message
+        self._on_confirm = on_confirm
+
+    def compose(self) -> ComposeResult:
+        with Container(classes="login-container"):
+            yield Label(self.title_text, classes="title")
+            yield Label("")
+            yield Label(self.message, classes="info-text")
+            yield Label("")
+            with Horizontal():
+                yield Button("Confirm", id="btn-confirm", variant="error")
+                yield Button("Cancel", id="btn-cancel")
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-confirm":
+            self.app.pop_screen()
+            if self._on_confirm:
+                result = self._on_confirm()
+                if asyncio.iscoroutine(result):
+                    asyncio.create_task(result)
+        elif event.button.id == "btn-cancel":
+            self.app.pop_screen()
 
 
 def run_tui():

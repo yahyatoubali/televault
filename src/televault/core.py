@@ -11,7 +11,7 @@ from .chunker import ChunkWriter, hash_data, hash_file, iter_chunks
 from .compress import compress_data, decompress_data, should_compress
 from .config import Config
 from .crypto import decrypt_chunk, encrypt_chunk
-from .models import ChunkInfo, FileMetadata
+from .models import ChunkInfo, FileMetadata, TransferProgress
 from .telegram import TelegramConfig, TelegramVault
 
 
@@ -298,6 +298,9 @@ class TeleVault:
         # Determine output path
         output_path = Path(output_path) if output_path else Path.cwd() / metadata.name
 
+        # Create parent directories if needed
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
         # Create chunk writer
         writer = ChunkWriter(output_path, metadata.size, self.config.chunk_size)
 
@@ -353,12 +356,16 @@ class TeleVault:
                 )
 
         # Verify final hash
-        if hash_file(output_path) != metadata.hash:
-            output_path.unlink(missing_ok=True)  # Delete corrupted file if it exists
-            raise ValueError(
-                "Downloaded file hash mismatch - downloaded data is corrupted; "
-                "try re-downloading or checking your network/Telegram storage."
-            )
+        try:
+            if hash_file(output_path) != metadata.hash:
+                raise ValueError(
+                    "Downloaded file hash mismatch - downloaded data is corrupted; "
+                    "try re-downloading or checking your network/Telegram storage."
+                )
+        except ValueError:
+            if output_path.exists():
+                output_path.unlink()
+            raise
 
         return output_path
 
@@ -414,3 +421,257 @@ class TeleVault:
             "stored_size": stored_size,
             "compression_ratio": stored_size / total_size if total_size > 0 else 1.0,
         }
+
+    async def upload_resume(
+        self,
+        file_path: str | Path,
+        password: str | None = None,
+        progress_callback: ProgressCallback | None = None,
+        preserve_path: bool = False,
+    ) -> FileMetadata:
+        """
+        Upload a file with ability to resume if interrupted.
+
+        This method saves progress after each chunk, allowing resumption.
+        If an incomplete upload exists for the same file, it will resume.
+        """
+        if not self._connected:
+            raise RuntimeError("Not connected. Call connect() first.")
+
+        file_path = Path(file_path)
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        password = password or self.password
+        file_name = file_path.name
+        if preserve_path:
+            file_name = str(file_path).replace("/", "_")
+
+        file_size = file_path.stat().st_size
+        file_hash = hash_file(file_path)
+        file_id = generate_file_id(file_name, file_size)
+
+        chunk_size = self.config.chunk_size
+        total_chunks = (file_size + chunk_size - 1) // chunk_size
+        if total_chunks == 0:
+            total_chunks = 1
+
+        existing_metadata = None
+        existing_msg_id = None
+        completed_chunks: set[int] = set()
+
+        for metadata in await self.telegram.list_files():
+            if metadata.name == file_name and metadata.size == file_size and metadata.message_id:
+                existing_metadata = metadata
+                existing_msg_id = metadata.message_id
+                completed_chunks = {c.index for c in metadata.chunks}
+                break
+
+        if existing_metadata and existing_metadata.is_complete():
+            return existing_metadata
+
+        metadata = existing_metadata or FileMetadata(
+            id=file_id,
+            name=file_name,
+            size=file_size,
+            hash=file_hash,
+            encrypted=self.config.encryption and password is not None,
+            compressed=self.config.compression and should_compress(file_name),
+        )
+
+        if not existing_msg_id:
+            existing_msg_id = await self.telegram.upload_metadata(metadata)
+            metadata.message_id = existing_msg_id
+        else:
+            metadata.message_id = existing_msg_id
+
+        chunk_results: dict[int, ChunkInfo] = {c.index: c for c in metadata.chunks}
+        uploaded_count = len(completed_chunks)
+        lock = asyncio.Lock()
+
+        async def upload_single_chunk(chunk):
+            nonlocal uploaded_count
+
+            if chunk.index in completed_chunks:
+                return
+
+            data = chunk.data
+
+            if metadata.compressed:
+                data = compress_data(data)
+
+            if metadata.encrypted and password:
+                data = encrypt_chunk(data, password)
+
+            chunk_msg_id = await self.telegram.upload_chunk(
+                data=data,
+                filename=f"{file_id}_{chunk.index:04d}.chunk",
+                reply_to=existing_msg_id,
+            )
+
+            chunk_info = ChunkInfo(
+                index=chunk.index,
+                message_id=chunk_msg_id,
+                size=len(data),
+                hash=hash_data(data),
+            )
+
+            async with lock:
+                chunk_results[chunk.index] = chunk_info
+                completed_chunks.add(chunk.index)
+                uploaded_count += 1
+
+                if progress_callback:
+                    progress_callback(
+                        UploadProgress(
+                            file_name=file_name,
+                            total_size=file_size,
+                            uploaded_size=int(file_size * uploaded_count / total_chunks),
+                            total_chunks=total_chunks,
+                            uploaded_chunks=uploaded_count,
+                            current_chunk=chunk.index,
+                        )
+                    )
+
+        semaphore = asyncio.Semaphore(self.config.parallel_uploads)
+
+        async def upload_with_limit(chunk):
+            async with semaphore:
+                await upload_single_chunk(chunk)
+
+        chunks = list(iter_chunks(file_path, chunk_size))
+
+        if chunks:
+            pending = [c for c in chunks if c.index not in completed_chunks]
+            if pending:
+                await asyncio.gather(*[upload_with_limit(c) for c in pending])
+
+        metadata.chunks = [chunk_results[i] for i in sorted(chunk_results.keys())]
+        await self.telegram.update_metadata(existing_msg_id, metadata)
+
+        index = await self.telegram.get_index()
+        index.add_file(file_id, existing_msg_id)
+        await self.telegram.save_index(index)
+
+        return metadata
+
+    async def download_resume(
+        self,
+        file_id_or_name: str,
+        output_path: str | Path | None = None,
+        password: str | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ) -> Path:
+        """
+        Download a file with ability to resume if interrupted.
+
+        This method tracks which chunks have been downloaded, allowing resumption.
+        """
+        if not self._connected:
+            raise RuntimeError("Not connected. Call connect() first.")
+
+        password = password or self.password
+
+        index = await self.telegram.get_index()
+
+        if file_id_or_name in index.files:
+            metadata_msg_id = index.files[file_id_or_name]
+        else:
+            files = await self.telegram.list_files()
+            matches = [f for f in files if f.name == file_id_or_name or file_id_or_name in f.name]
+
+            if not matches:
+                raise FileNotFoundError(f"File not found: {file_id_or_name}")
+            if len(matches) > 1:
+                raise ValueError(
+                    f"Multiple files match '{file_id_or_name}': {[f.name for f in matches]}"
+                )
+
+            metadata_msg_id = matches[0].message_id
+
+        metadata = await self.telegram.get_metadata(metadata_msg_id)
+        output_path = Path(output_path) if output_path else Path.cwd() / metadata.name
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        temp_path = output_path.with_suffix(output_path.suffix + ".partial")
+        progress_file = output_path.with_suffix(output_path.suffix + ".progress")
+
+        completed_chunks: set[int] = set()
+        if temp_path.exists() and progress_file.exists():
+            try:
+                saved_progress = TransferProgress.from_json(progress_file.read_text())
+                completed_chunks = set(saved_progress.completed_chunks)
+            except Exception:
+                completed_chunks = set()
+
+        writer = ChunkWriter(temp_path, metadata.size, self.config.chunk_size)
+
+        for chunk_info in sorted(metadata.chunks, key=lambda c: c.index):
+            if chunk_info.index in completed_chunks:
+                continue
+
+            data = await self.telegram.download_chunk(chunk_info.message_id)
+
+            if hash_data(data) != chunk_info.hash:
+                temp_path.unlink(missing_ok=True)
+                progress_file.unlink(missing_ok=True)
+                raise ValueError(f"Chunk {chunk_info.index} hash mismatch - data corrupted")
+
+            if metadata.encrypted:
+                if not password:
+                    raise ValueError("File is encrypted but no password provided")
+                data = decrypt_chunk(data, password)
+
+            if metadata.compressed:
+                data = decompress_data(data)
+
+            from .chunker import Chunk
+
+            writer.write_chunk(
+                Chunk(
+                    index=chunk_info.index,
+                    data=data,
+                    hash="",
+                    size=len(data),
+                )
+            )
+
+            completed_chunks.add(chunk_info.index)
+
+            progress = TransferProgress(
+                operation="download",
+                file_id=metadata.id,
+                file_name=metadata.name,
+                total_chunks=len(metadata.chunks),
+                completed_chunks=list(completed_chunks),
+            )
+            progress_file.write_text(progress.to_json())
+
+            if progress_callback:
+                progress_callback(
+                    DownloadProgress(
+                        file_name=metadata.name,
+                        total_size=metadata.size,
+                        downloaded_size=sum(
+                            c.size for c in metadata.chunks if c.index in completed_chunks
+                        ),
+                        total_chunks=len(metadata.chunks),
+                        downloaded_chunks=len(completed_chunks),
+                        current_chunk=chunk_info.index,
+                    )
+                )
+
+        try:
+            if hash_file(temp_path) != metadata.hash:
+                temp_path.unlink(missing_ok=True)
+                progress_file.unlink(missing_ok=True)
+                raise ValueError("Downloaded file hash mismatch - downloaded data is corrupted")
+        except ValueError:
+            temp_path.unlink(missing_ok=True)
+            progress_file.unlink(missing_ok=True)
+            raise
+
+        temp_path.rename(output_path)
+        progress_file.unlink(missing_ok=True)
+
+        return output_path
