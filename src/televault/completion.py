@@ -33,7 +33,7 @@ _{prog_name}_completions() {{
     cur="${{COMP_WORDS[COMP_CWORD]}}"
     prev="${{COMP_WORDS[COMP_CWORD-1]}}"
 
-    commands="push pull ls rm cat preview info stat find verify gc login setup logout whoami mount serve watch tui backup schedule completion"
+    commands="push pull ls rm cat preview info stat find verify gc login setup logout whoami mount serve watch tui backup schedule channel completion"
 
     # Subcommands for 'backup'
     local backup_cmds="create restore list delete prune verify"
@@ -182,7 +182,7 @@ _{prog_name}
 def _fish_completion(prog_name: str) -> str:
     return f"""# Fish completion for {prog_name}
 
-set -l commands push pull ls rm cat preview info stat find verify gc login setup logout whoami mount serve watch tui backup schedule completion
+set -l commands push pull ls rm cat preview info stat find verify gc login setup logout whoami mount serve watch tui backup schedule channel completion
 
 complete -c {prog_name} -f -n "not __fish_seen_subcommand_from $commands" -a "$commands"
 

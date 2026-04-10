@@ -159,6 +159,67 @@ class TelegramVault:
         self._channel_id = channel_id
         self._channel = await self._client.get_entity(channel_id)
 
+    async def test_channel(self, channel_id: int) -> dict:
+        """Test if a channel is accessible and writable.
+
+        Returns dict with: accessible, writable, title, channel_id
+        """
+        from telethon.tl.functions.channels import GetFullChannelRequest
+        from telethon.tl.functions.messages import SendMessageRequest
+
+        result = {
+            "accessible": False,
+            "writable": False,
+            "title": None,
+            "channel_id": channel_id,
+            "username": None,
+        }
+
+        try:
+            entity = await self._client.get_entity(channel_id)
+            result["accessible"] = True
+            result["title"] = getattr(entity, "title", None)
+            result["username"] = getattr(entity, "username", None)
+
+            try:
+                full = await self._client(GetFullChannelRequest(entity))
+                result["member_count"] = getattr(full.full_chat, "participants_count", None)
+            except Exception:
+                pass
+
+            try:
+                msg = await self._client.send_message(entity, "__televault_test__")
+                await self._client.delete_messages(entity, msg)
+                result["writable"] = True
+            except Exception:
+                pass
+
+        except Exception:
+            pass
+
+        return result
+
+    async def list_channels(self) -> list[dict]:
+        """List all channels the user is a member of (admin or owner)."""
+        channels = []
+        async for dialog in self._client.iter_dialogs():
+            if dialog.is_channel and not dialog.is_group:
+                entity = dialog.entity
+                is_admin = False
+                if hasattr(entity, "admin_rights") and entity.admin_rights:
+                    is_admin = True
+                if hasattr(entity, "creator") and entity.creator:
+                    is_admin = True
+                channels.append(
+                    {
+                        "id": int(f"-100{entity.id}"),
+                        "title": dialog.title or dialog.name,
+                        "username": getattr(entity, "username", None),
+                        "is_admin": is_admin,
+                    }
+                )
+        return channels
+
     async def create_channel(self, name: str = "TeleVault Storage") -> int:
         """Create a new private channel for storage."""
         from telethon.tl.functions.channels import CreateChannelRequest

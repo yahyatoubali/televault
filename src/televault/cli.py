@@ -169,6 +169,10 @@ def main(ctx, verbose, debug):
 
       tvt stat              Show vault statistics
 
+      tvt setup              Configure storage channel
+
+      tvt channel            Show channel info
+
     Pipe examples:
 
       cat secret.txt | tvt push - --name secret.txt
@@ -239,71 +243,262 @@ def logout():
 
 
 @main.command()
-@click.option("--channel-id", "-c", type=int, help="Existing channel ID to use")
-@click.option("--auto-create", is_flag=True, help="Auto-create a new channel without prompting")
-def setup(channel_id: int | None, auto_create: bool):
-    """Set up storage channel."""
+@click.option("--channel-id", "-c", type=int, help="Use an existing channel by ID")
+@click.option("--auto", "-a", is_flag=True, help="Auto-create a new channel")
+def setup(channel_id: int | None, auto: bool):
+    """Set up or change storage channel.
+
+    \b
+    Examples:
+      tvt setup              Interactive setup (recommended)
+      tvt setup --auto       Auto-create a new channel
+      tvt setup -c -100xxx  Use an existing channel ID
+    """
 
     async def _setup():
         vault = TeleVault()
-        await vault.connect()
+        await vault.connect(skip_channel=True)
 
-        # Check authentication first
         if not await check_auth(vault):
             await vault.disconnect()
             return
 
-        # If channel_id is provided via CLI, use it
-        if channel_id:
-            cid = await vault.setup_channel(channel_id)
-            console.print(f"[green]✓ Using existing channel: {cid}[/green]")
-            console.print("[dim]Note: Make sure the bot is a member of this channel.[/dim]")
-        elif auto_create:
-            # Auto-create without prompting
-            console.print("[bold]Creating new storage channel...[/bold]")
-            cid = await vault.setup_channel()
-            console.print(f"[green]✓ Created new channel: {cid}[/green]")
-        else:
-            # Interactive mode - ask user what they want to do
-            console.print("[bold blue]TeleVault Storage Channel Setup[/bold blue]\n")
-            console.print("How would you like to set up your storage?")
-            console.print("  1. Create a new private channel (recommended)")
-            console.print("  2. Use an existing channel by ID")
-            console.print("")
+        me = await vault.get_account_info()
+        name = f"{me.get('first_name', '')} {me.get('last_name', '')}".strip()
+        console.print(
+            f"[bold]Account:[/bold] {name}"
+            + (f" (@{me['username']})" if me.get("username") else "")
+        )
+        console.print()
 
-            choice = click.prompt("Enter your choice (1 or 2)", type=str, default="1").strip()
+        if vault.config.channel_id:
+            console.print(f"[dim]Current channel: {vault.config.channel_id}[/dim]")
+            try:
+                info = await vault.test_channel(vault.config.channel_id)
+                if info["accessible"]:
+                    status = "[green]connected[/green]"
+                    if info.get("title"):
+                        console.print(f"[dim]  Name: {info['title']}[/dim]")
+                    if not info["writable"]:
+                        status = "[yellow]read-only[/yellow]"
+                    console.print(f"[dim]  Status: {status}[/dim]")
+                else:
+                    console.print("[dim]  Status: [red]not accessible[/red][/dim]")
+            except Exception:
+                console.print("[dim]  Status: [yellow]could not verify[/yellow][/dim]")
+            console.print()
+
+        if channel_id:
+            console.print(f"[bold]Validating channel {channel_id}...[/bold]")
+            try:
+                info = await vault.test_channel(channel_id)
+            except Exception as e:
+                console.print(f"[red]Could not access channel: {e}[/red]")
+                await vault.disconnect()
+                return
+
+            if not info["accessible"]:
+                console.print(
+                    "[red]Channel not accessible. Check the ID and your permissions.[/red]"
+                )
+                await vault.disconnect()
+                return
+
+            console.print(f"  Title: {info.get('title', 'Unknown')}")
+            if info.get("username"):
+                console.print(f"  Username: @{info['username']}")
+            console.print(
+                f"  Writable: {'Yes' if info['writable'] else '[red]No - you need admin rights[/red]'}"
+            )
+
+            if not info["writable"]:
+                console.print("[red]Channel is not writable. You need admin rights.[/red]")
+                await vault.disconnect()
+                return
+
+            cid = await vault.setup_channel(channel_id)
+            console.print(f"\n[green]Channel {cid} configured successfully![/green]")
+            console.print(f"[dim]You can change it anytime with: tvt channel switch[/dim]")
+        elif auto:
+            console.print("[bold]Creating new private channel...[/bold]")
+            cid = await vault.setup_channel()
+            console.print(f"[green]Created channel: {cid}[/green]")
+
+            info = await vault.test_channel(cid)
+            if info["writable"]:
+                console.print("[green]Test message sent and verified.[/green]")
+            console.print(f"[dim]You can change it anytime with: tvt channel switch[/dim]")
+        else:
+            console.print("[bold blue]TeleVault Channel Setup[/bold blue]\n")
+            console.print("How would you like to set up storage?\n")
+            console.print("  [bold]1.[/bold] Create a new private channel (recommended)")
+            console.print("  [bold]2.[/bold] Use an existing channel by ID")
+            console.print("  [bold]3.[/bold] Pick from your channels\n")
+
+            choice = click.prompt("Enter choice", type=str, default="1").strip()
 
             if choice == "1":
                 console.print("\n[bold]Creating new storage channel...[/bold]")
                 cid = await vault.setup_channel()
-                console.print(f"[green]✓ Created new channel: {cid}[/green]")
+
+                info = await vault.test_channel(cid)
+                if info["writable"]:
+                    console.print(f"[green]Created and verified channel: {cid}[/green]")
+                    if info.get("title"):
+                        console.print(f"[dim]  Name: {info['title']}[/dim]")
+                    console.print("[green]Test message sent and verified.[/green]")
+                else:
+                    console.print(
+                        f"[yellow]Created channel: {cid}, but could not verify write access.[/yellow]"
+                    )
+                console.print(f"[dim]You can change it anytime with: tvt channel switch[/dim]")
+
             elif choice == "2":
-                console.print("\n[bold]Using existing channel[/bold]")
-                console.print(
-                    "[dim]Note: The channel ID should start with -100 (e.g., -1001234567890)[/dim]"
-                )
+                console.print("\n[bold]Use existing channel[/bold]")
+                console.print("[dim]The channel ID starts with -100 (e.g., -1001234567890)[/dim]")
+                console.print("[dim]You can find it in the channel info or use option 3.[/dim]\n")
 
                 try:
                     existing_id = click.prompt("Enter channel ID", type=str).strip()
                     existing_id_int = int(existing_id)
-                    cid = await vault.setup_channel(existing_id_int)
-                    console.print(f"[green]✓ Using existing channel: {cid}[/green]")
-                except ValueError:
-                    console.print("[red]✗ Invalid channel ID. Please provide a valid number.[/red]")
+                except (ValueError, EOFError):
+                    console.print("[red]Invalid channel ID.[/red]")
                     await vault.disconnect()
                     return
+
+                console.print(f"\n[bold]Validating channel {existing_id_int}...[/bold]")
+                try:
+                    info = await vault.test_channel(existing_id_int)
                 except Exception as e:
-                    console.print(f"[red]✗ Error setting up channel: {e}[/red]")
+                    console.print(f"[red]Could not access channel: {e}[/red]")
                     await vault.disconnect()
                     return
+
+                if not info["accessible"]:
+                    console.print("[red]Channel not found or you don't have access.[/red]")
+                    await vault.disconnect()
+                    return
+
+                console.print(f"  Title: {info.get('title', 'Unknown')}")
+                console.print(f"  Writable: {'Yes' if info['writable'] else 'No'}")
+
+                if not info["writable"]:
+                    console.print("[red]Channel is not writable. You need admin rights.[/red]")
+                    await vault.disconnect()
+                    return
+
+                cid = await vault.setup_channel(existing_id_int)
+                console.print(f"\n[green]Channel {cid} configured successfully![/green]")
+
+            elif choice == "3":
+                console.print("\n[bold]Loading your channels...[/bold]\n")
+                try:
+                    channels = await vault.list_channels()
+                except Exception as e:
+                    console.print(f"[red]Could not list channels: {e}[/red]")
+                    await vault.disconnect()
+                    return
+
+                if not channels:
+                    console.print("[yellow]No channels found. Create one instead.[/yellow]")
+                    await vault.disconnect()
+                    return
+
+                current_id = vault.config.channel_id
+                for i, ch in enumerate(channels, 1):
+                    marker = " [dim](current)[/dim]" if ch["id"] == current_id else ""
+                    admin = " [green]admin[/green]" if ch.get("is_admin") else ""
+                    console.print(f"  [bold]{i}.[/bold] {ch['title']}{admin}{marker}")
+                    console.print(f"     ID: {ch['id']}")
+
+                console.print()
+                selection = click.prompt("Select channel number", type=int)
+                if 1 <= selection <= len(channels):
+                    selected = channels[selection - 1]
+
+                    console.print(f"\n[bold]Validating {selected['title']}...[/bold]")
+                    info = await vault.test_channel(selected["id"])
+                    console.print(f"  Writable: {'Yes' if info['writable'] else 'No'}")
+
+                    if not info["writable"]:
+                        console.print("[red]Not writable. You need admin rights.[/red]")
+                        await vault.disconnect()
+                        return
+
+                    cid = await vault.setup_channel(selected["id"])
+                    console.print(
+                        f"\n[green]Switched to channel {cid} ({selected['title']})[/green]"
+                    )
+                else:
+                    console.print("[red]Invalid selection.[/red]")
             else:
-                console.print("[red]✗ Invalid choice. Please enter 1 or 2.[/red]")
-                await vault.disconnect()
-                return
+                console.print("[red]Invalid choice.[/red]")
 
         await vault.disconnect()
 
     run_async(_setup())
+
+
+@main.command()
+def channel():
+    """Show current storage channel info.
+
+    \b
+    Examples:
+      tvt channel          Show current channel info
+      tvt channel switch   Switch to a different channel
+    """
+
+    async def _channel():
+        vault = TeleVault()
+
+        try:
+            await vault.connect(skip_channel=True)
+        except Exception as e:
+            console.print(f"[red]Connection error: {e}[/red]")
+            console.print("[dim]Check your internet connection.[/dim]")
+            return
+
+        try:
+            if not await check_auth(vault):
+                await vault.disconnect()
+                return
+
+            config = vault.config
+            if not config.channel_id:
+                console.print("[yellow]No storage channel configured.[/yellow]")
+                console.print("[dim]Run 'tvt setup' to configure one.[/dim]")
+                await vault.disconnect()
+                return
+
+            console.print(f"[bold]Current Channel[/bold]\n")
+            console.print(f"  ID: [cyan]{config.channel_id}[/cyan]")
+
+            console.print("\n[bold]Validating channel...[/bold]")
+            try:
+                info = await vault.test_channel(config.channel_id)
+                if info["accessible"]:
+                    console.print(f"  Name: {info.get('title', 'Unknown')}")
+                    if info.get("username"):
+                        console.print(f"  Username: @{info['username']}")
+                    console.print(f"  Writable: {'Yes' if info['writable'] else '[red]No[/red]'}")
+                    if info.get("member_count") is not None:
+                        console.print(f"  Members: {info['member_count']}")
+                    console.print(f"  Status: [green]connected[/green]")
+                else:
+                    console.print("  Status: [red]not accessible[/red]")
+                    console.print(
+                        "[dim]The channel may have been deleted or you lost access.[/dim]"
+                    )
+                    console.print("[dim]Run 'tvt setup' to configure a new channel.[/dim]")
+            except Exception as e:
+                console.print(f"  Status: [yellow]could not verify: {e}[/yellow]")
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+        finally:
+            await vault.disconnect()
+
+    run_async(_channel())
 
 
 @main.command()
