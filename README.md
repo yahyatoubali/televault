@@ -4,6 +4,13 @@ Unlimited cloud storage using your **own** Telegram account. No local database �
 
 ## What's New
 
+### v2.3.0 — Virtual Drive (FUSE & WebDAV)
+
+- **FUSE Mount** — Mount your vault as a local filesystem on Linux/macOS
+- **WebDAV Server** — Access files over HTTP/WebDAV from any device
+- **Local Cache** — Files are cached locally for fast reads
+- **Read-Only Mode** — Mount vaults safely without write access
+
 ### v2.2.0 — Data Safety & Backups
 
 - **Backup Snapshots** — Create, restore, list, prune, and verify directory backups
@@ -81,6 +88,8 @@ TELEVAULT_PASSWORD="strong-password" televault pull <file_id_or_name>
 | `televault backup list` | List all snapshots |
 | `televault backup prune` | Prune old snapshots |
 | `televault backup verify <id>` | Verify a snapshot |
+| `televault mount <dir>` | Mount vault as local filesystem (FUSE) |
+| `televault serve` | Start WebDAV server |
 | `televault tui` | Launch interactive TUI |
 | `televault logout` | Clear session |
 
@@ -158,6 +167,59 @@ televault backup delete <snapshot_id>
 - Snapshots reference files already in the vault (deduplication)
 - Restore downloads files from the vault using their file IDs
 - Pruning respects retention policies (daily/weekly/monthly)
+
+---
+
+## Virtual Drive
+
+### FUSE Mount (Linux/macOS)
+
+Mount your TeleVault as a local directory:
+
+```bash
+# Install FUSE support
+pip install televault[fuse]
+
+# Create mount point
+mkdir -p ~/televault-drive
+
+# Mount the vault
+televault mount -m ~/televault-drive
+
+# Read-only mount
+televault mount -m ~/televault-drive --read-only
+
+# Unmount (Ctrl+C or)
+fusermount -u ~/televault-drive
+```
+
+Requirements:
+- **Linux**: `sudo apt install fuse libfuse2`
+- **macOS**: Install [macFUSE](https://macfuse.io/)
+
+### WebDAV Server (All Platforms)
+
+Access your vault over HTTP/WebDAV from any device:
+
+```bash
+# Install WebDAV support
+pip install televault[webdav]
+
+# Start server on default port 8080
+televault serve
+
+# Custom host and port
+televault serve --host 0.0.0.0 --port 9090
+
+# Read-only server
+televault serve --read-only
+```
+
+Connect from any WebDAV client:
+- **macOS Finder**: Go → Connect to Server → `http://localhost:8080/`
+- **Windows**: Map Network Drive → `http://localhost:8080/`
+- **Linux**: `davfs2` or file manager WebDAV support
+- **Mobile**: Documents by Readdle, Solid Explorer, etc.
 
 ---
 
@@ -271,7 +333,10 @@ git clone https://github.com/YahyaToubali/televault.git
 cd televault
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install televault[fuse]     # FUSE support (mount as filesystem)
+pip install televault[webdav]    # WebDAV server support
+pip install televault[dev]       # Development tools
+pip install -e ".[dev,fuse,webdav]"  # Everything
 
 # Run tests
 pytest

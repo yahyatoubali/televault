@@ -1111,5 +1111,101 @@ def backup_verify(snapshot_id: str, password: str | None):
     run_async(_verify())
 
 
+@main.command()
+@click.option("--mount-point", "-m", required=True, type=click.Path(), help="Mount point directory")
+@click.option("--password", "-p", help="Encryption password", envvar="TELEVAULT_PASSWORD")
+@click.option("--read-only", is_flag=True, help="Mount as read-only")
+@click.option("--cache-dir", type=click.Path(), help="Local cache directory")
+@click.option("--allow-other", is_flag=True, help="Allow other users to access the mount")
+@click.option(
+    "--foreground/--background", default=True, help="Run in foreground (default) or background"
+)
+def mount(
+    mount_point: str,
+    password: str | None,
+    read_only: bool,
+    cache_dir: str | None,
+    allow_other: bool,
+    foreground: bool,
+):
+    """Mount TeleVault as a local filesystem (requires FUSE)."""
+
+    try:
+        from .fuse import mount_vault
+    except ImportError:
+        console.print("[red]Error: fusepy is required for FUSE mount.[/red]")
+        console.print("Install with: pip install televault[fuse]")
+        console.print("\nOn Linux, you may also need: sudo apt install fuse libfuse2")
+        console.print("On macOS, install macFUSE from: https://macfuse.io/")
+        sys.exit(1)
+
+    mount_path = Path(mount_point)
+    if not mount_path.exists():
+        console.print(f"[red]Mount point does not exist: {mount_point}[/red]")
+        console.print("[dim]Create it with: mkdir -p " + str(mount_path) + "[/dim]")
+        sys.exit(1)
+
+    if not mount_path.is_dir():
+        console.print(f"[red]Mount point is not a directory: {mount_point}[/red]")
+        sys.exit(1)
+
+    console.print(f"[bold blue]Mounting TeleVault at {mount_point}[/bold blue]")
+    if read_only:
+        console.print("[dim]Mode: read-only[/dim]")
+
+    try:
+        mount_vault(
+            mount_point=mount_point,
+            password=password,
+            read_only=read_only,
+            cache_dir=cache_dir,
+            foreground=foreground,
+            allow_other=allow_other,
+        )
+    except Exception as e:
+        console.print(f"[red]Mount error: {e}[/red]")
+        sys.exit(1)
+
+
+@main.command()
+@click.option("--host", "-h", default="0.0.0.0", help="Host to bind to")
+@click.option("--port", "-p", default=8080, type=int, help="Port to listen on")
+@click.option("--password", "-P", help="Encryption password", envvar="TELEVAULT_PASSWORD")
+@click.option("--read-only", is_flag=True, help="Serve as read-only")
+@click.option("--cache-dir", type=click.Path(), help="Local cache directory")
+def serve(host: str, port: int, password: str | None, read_only: bool, cache_dir: str | None):
+    """Start a WebDAV server to access the vault over HTTP."""
+
+    try:
+        import aiohttp
+    except ImportError:
+        console.print("[red]Error: aiohttp is required for the WebDAV server.[/red]")
+        console.print("Install with: pip install televault[webdav]")
+        sys.exit(1)
+
+    async def _serve():
+        from .webdav import run_webdav_server
+
+        console.print(f"[bold blue]Starting WebDAV server on http://{host}:{port}/[/bold blue]")
+        if read_only:
+            console.print("[dim]Mode: read-only[/dim]")
+
+        try:
+            await run_webdav_server(
+                host=host,
+                port=port,
+                password=password,
+                read_only=read_only,
+                cache_dir=cache_dir,
+            )
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Server stopped[/yellow]")
+        except RuntimeError as e:
+            console.print(f"[red]Error: {e}[/red]")
+            sys.exit(1)
+
+    run_async(_serve())
+
+
 if __name__ == "__main__":
     main()
