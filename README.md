@@ -4,6 +4,14 @@ Unlimited cloud storage using your **own** Telegram account. No local database �
 
 ## What's New
 
+### v2.4.0 — Auto Backup
+
+- **Scheduled Backups** — Create, list, run, and delete backup schedules
+- **systemd Timer Integration** — Install schedules as systemd timers on Linux
+- **Cron Support** — Generate crontab entries for any Unix system
+- **File Watcher** — Watch directories for changes and auto-upload
+- **Exclude Patterns** — Skip .git, __pycache__, .DS_Store, etc.
+
 ### v2.3.0 — Virtual Drive (FUSE & WebDAV)
 
 - **FUSE Mount** — Mount your vault as a local filesystem on Linux/macOS
@@ -90,6 +98,11 @@ TELEVAULT_PASSWORD="strong-password" televault pull <file_id_or_name>
 | `televault backup verify <id>` | Verify a snapshot |
 | `televault mount <dir>` | Mount vault as local filesystem (FUSE) |
 | `televault serve` | Start WebDAV server |
+| `televault schedule create <dir>` | Create a backup schedule |
+| `televault schedule list` | List backup schedules |
+| `televault schedule run <name>` | Run a schedule immediately |
+| `televault schedule install <name>` | Install schedule as systemd timer |
+| `televault watch --path <dir>` | Watch directory and auto-upload |
 | `televault tui` | Launch interactive TUI |
 | `televault logout` | Clear session |
 
@@ -220,6 +233,60 @@ Connect from any WebDAV client:
 - **Windows**: Map Network Drive → `http://localhost:8080/`
 - **Linux**: `davfs2` or file manager WebDAV support
 - **Mobile**: Documents by Readdle, Solid Explorer, etc.
+
+---
+
+## Auto Backup
+
+### Scheduled Backups
+
+Create schedules that run automatically via systemd timers or cron:
+
+```bash
+# Create a daily backup schedule
+televault schedule create /important/data --name "daily-docs" --interval daily
+
+# Create an hourly incremental schedule
+televault schedule create /important/data --name "hourly-sync" --interval hourly --incremental
+
+# List all schedules
+televault schedule list
+
+# Run a schedule manually
+televault schedule run daily-docs
+
+# Install as systemd timer (Linux)
+televault schedule install daily-docs
+
+# Show systemd unit files without installing
+televault schedule show-systemd daily-docs
+
+# Uninstall systemd timer
+televault schedule uninstall daily-docs
+
+# Delete a schedule
+televault schedule delete daily-docs
+```
+
+### File Watcher
+
+Watch directories for changes and automatically upload new/modified files:
+
+```bash
+# Watch a directory
+televault watch --path /important/docs
+
+# Watch multiple directories
+televault watch --path /docs --path /photos --path /projects
+
+# Custom poll interval (default: 5 seconds)
+televault watch --path /docs --interval 10
+
+# Exclude custom patterns
+televault watch --path /docs --exclude "*.tmp" --exclude "build/"
+```
+
+The watcher detects new files and file modifications, automatically uploading changes to your vault.
 
 ---
 

@@ -1207,5 +1207,228 @@ def serve(host: str, port: int, password: str | None, read_only: bool, cache_dir
     run_async(_serve())
 
 
+# === Auto-Backup Schedule Commands ===
+
+
+@main.group(name="schedule")
+def schedule_group():
+    """Manage automatic backup schedules."""
+    pass
+
+
+@schedule_group.command(name="create")
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--name", "-n", help="Schedule name (defaults to directory name)")
+@click.option(
+    "--interval",
+    "-i",
+    type=click.Choice(["hourly", "daily", "weekly", "monthly"]),
+    default="daily",
+    help="Backup interval",
+)
+@click.option("--password", "-p", help="Encryption password", envvar="TELEVAULT_PASSWORD")
+@click.option("--incremental", is_flag=True, help="Create incremental backups")
+def schedule_create(
+    path: str, name: str | None, interval: str, password: str | None, incremental: bool
+):
+    """Create a backup schedule for a directory."""
+
+    from .schedule import create_schedule, generate_systemd_unit, generate_cron_entry
+
+    if name is None:
+        name = Path(path).name
+
+    entry = create_schedule(
+        name=name,
+        path=path,
+        interval=interval,
+        password=password,
+        incremental=incremental,
+    )
+
+    console.print(f"[bold green]Schedule created: {name}[/bold green]")
+    console.print(f"  Path: {path}")
+    console.print(f"  Interval: {interval}")
+    console.print(f"  Incremental: {incremental}")
+    console.print()
+    console.print("[bold]To set up automatic execution, choose one:[/bold]")
+    console.print()
+    console.print("[bold]Option 1 - systemd timer (Linux):[/bold]")
+    console.print(f"  televault schedule install {name}")
+    console.print()
+    console.print("[bold]Option 2 - cron (any Unix):[/bold]")
+    cron = generate_cron_entry(name, entry)
+    console.print(f"  Add to crontab: {cron}")
+    console.println()
+    console.print("[bold]Option 3 - Run manually:[/bold]")
+    console.print(f"  televault schedule run {name}")
+
+
+@schedule_group.command(name="list")
+def schedule_list():
+    """List all backup schedules."""
+    from .schedule import list_schedules
+
+    schedules = list_schedules()
+    if not schedules:
+        console.print("[yellow]No schedules configured[/yellow]")
+        return
+
+    table = Table(title="TeleVault Schedules")
+    table.add_column("Name", style="bold")
+    table.add_column("Path")
+    table.add_column("Interval")
+    table.add_column("Enabled")
+    table.add_column("Incremental")
+    table.add_column("Last Run")
+
+    import datetime
+
+    for s in schedules:
+        last_run = "Never"
+        if s.last_run:
+            last_run = datetime.datetime.fromtimestamp(s.last_run).strftime("%Y-%m-%d %H:%M")
+        table.add_row(
+            s.name,
+            s.path,
+            s.interval,
+            "[green]Yes[/green]" if s.enabled else "[red]No[/red]",
+            "Yes" if s.incremental else "No",
+            last_run,
+        )
+
+    console.print(table)
+
+
+@schedule_group.command(name="run")
+@click.argument("name")
+def schedule_run(name: str):
+    """Run a scheduled backup immediately."""
+    from .schedule import run_schedule
+
+    console.print(f"[bold]Running schedule: {name}[/bold]")
+    result = run_schedule(name)
+
+    if result.success:
+        console.print(f"[bold green]Backup successful![/bold green]")
+        console.print(f"  Snapshot ID: {result.snapshot_id}")
+        console.print(f"  Files: {result.file_count}")
+        console.print(f"  Size: {format_size(result.total_size)}")
+    else:
+        console.print(f"[bold red]Backup failed: {result.error}[/bold red]")
+
+
+@schedule_group.command(name="delete")
+@click.argument("name")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+def schedule_delete(name: str, yes: bool):
+    """Delete a backup schedule."""
+    from .schedule import delete_schedule
+
+    if not yes and not click.confirm(f"Delete schedule '{name}'?"):
+        return
+
+    if delete_schedule(name):
+        console.print(f"[green]Schedule deleted: {name}[/green]")
+    else:
+        console.print(f"[yellow]Schedule not found: {name}[/yellow]")
+
+
+@schedule_group.command(name="install")
+@click.argument("name")
+def schedule_install(name: str):
+    """Install a schedule as a systemd timer (Linux only)."""
+    from .schedule import install_systemd_timer, list_schedules
+
+    schedules = {s.name: s for s in list_schedules()}
+    if name not in schedules:
+        console.print(f"[red]Schedule not found: {name}[/red]")
+        return
+
+    entry = schedules[name]
+    success = install_systemd_timer(name, entry)
+
+    if success:
+        console.print(f"[bold green]systemd timer installed: televault-{name}.timer[/bold green]")
+        console.print(f"\nManage with:")
+        console.print(f"  systemctl --user status televault-{name}.timer")
+        console.print(f"  systemctl --user stop televault-{name}.timer")
+        console.print(f"  journalctl --user -u televault-{name}.service")
+    else:
+        console.print("[red]Failed to install systemd timer[/red]")
+        console.print("[dim]Make sure you're on Linux with systemd available[/dim]")
+
+
+@schedule_group.command(name="uninstall")
+@click.argument("name")
+def schedule_uninstall(name: str):
+    """Uninstall a systemd timer."""
+    from .schedule import uninstall_systemd_timer
+
+    success = uninstall_systemd_timer(name)
+    if success:
+        console.print(f"[green]Timer uninstalled: televault-{name}.timer[/green]")
+    else:
+        console.print(f"[yellow]Timer not found or already removed[/yellow]")
+
+
+@schedule_group.command(name="show-systemd")
+@click.argument("name")
+def schedule_show_systemd(name: str):
+    """Show the systemd unit files for a schedule (without installing)."""
+    from .schedule import generate_systemd_unit, list_schedules
+
+    schedules = {s.name: s for s in list_schedules()}
+    if name not in schedules:
+        console.print(f"[red]Schedule not found: {name}[/red]")
+        return
+
+    entry = schedules[name]
+    unit_content = generate_systemd_unit(name, entry)
+    console.print(unit_content)
+
+
+@main.command()
+@click.option("--path", "-p", multiple=True, help="Directory to watch (can specify multiple)")
+@click.option("--password", "-P", help="Encryption password", envvar="TELEVAULT_PASSWORD")
+@click.option("--interval", default=5.0, type=float, help="Poll interval in seconds")
+@click.option("--exclude", "-e", multiple=True, help="Patterns to exclude")
+def watch(path: tuple[str, ...], password: str | None, interval: float, exclude: tuple[str, ...]):
+    """Watch directories for changes and auto-upload."""
+
+    from .watcher import FileWatcher
+
+    async def _watch():
+        watcher = FileWatcher(
+            password=password,
+            exclude_patterns=list(exclude) if exclude else None,
+        )
+
+        for p in path:
+            try:
+                watcher.add_watch(p)
+            except ValueError as e:
+                console.print(f"[red]Error: {e}[/red]")
+                return
+
+        if not path:
+            console.print("[red]Error: Specify at least one directory with --path[/red]")
+            console.print("[dim]Example: televault watch --path /data/documents[/dim]")
+            return
+
+        console.print(f"[bold blue]Watching {len(path)} director(ies) for changes[/bold blue]")
+        console.print(f"  Poll interval: {interval}s")
+        console.print("  Press Ctrl+C to stop\n")
+
+        try:
+            await watcher.watch(poll_interval=interval)
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Watch stopped[/yellow]")
+        finally:
+            watcher.save_state()
+
+    run_async(_watch())
+
+
 if __name__ == "__main__":
     main()
