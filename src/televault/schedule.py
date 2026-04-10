@@ -1,16 +1,15 @@
 """Automatic backup scheduler for TeleVault - systemd timers and cron integration."""
 
+import contextlib
 import json
 import logging
-import os
 import platform
 import subprocess
-import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .config import get_config_dir, get_data_dir
+from .config import get_config_dir
 
 logger = logging.getLogger("televault.schedule")
 
@@ -35,7 +34,7 @@ class ScheduleConfig:
             return cls()
         with open(path) as f:
             data = json.load(f)
-        known = {k for k in cls.__dataclass_fields__}
+        known = set(cls.__dataclass_fields__)
         return cls(**{k: v for k, v in data.items() if k in known})
 
     def to_file(self, path: Path) -> None:
@@ -155,7 +154,6 @@ def run_schedule(name: str) -> ScheduleResult:
     import asyncio
 
     from .backup import BackupEngine
-    from .snapshot import RetentionPolicy
 
     config_path = get_schedule_config(name)
     if not config_path.exists():
@@ -202,12 +200,6 @@ def run_schedule(name: str) -> ScheduleResult:
 
 def generate_systemd_unit(name: str, schedule: ScheduleEntry) -> str:
     """Generate a systemd timer + service unit for a schedule."""
-    interval_map = {
-        "hourly": "1h",
-        "daily": "1d",
-        "weekly": "1w",
-        "monthly": "1m",
-    }
     on_calendar = {
         "hourly": "Hourly",
         "daily": "Daily",
@@ -348,10 +340,8 @@ def uninstall_systemd_timer(name: str) -> bool:
         removed = True
 
     if removed:
-        try:
+        with contextlib.suppress(FileNotFoundError):
             subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
-        except FileNotFoundError:
-            pass
 
     return removed
 

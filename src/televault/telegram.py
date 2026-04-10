@@ -7,6 +7,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from datetime import datetime
 
 from telethon import TelegramClient
 from telethon.errors import FloodWaitError
@@ -209,7 +210,7 @@ class TelegramVault:
         if not self._channel_id:
             raise ValueError("No channel set")
 
-        index.updated_at = __import__("datetime").datetime.now().timestamp()
+        index.updated_at = datetime.now().timestamp()
 
         max_attempts = 5
         for attempt in range(max_attempts):

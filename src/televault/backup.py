@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+from datetime import datetime
 from pathlib import Path
 
 from .chunker import hash_file
@@ -85,17 +86,20 @@ class BackupEngine:
                 existing_files[sf.path] = sf
 
         # Walk directory
+        skipped = 0
         for dirpath, _, filenames in os.walk(path):
             for filename in filenames:
                 file_path = Path(dirpath) / filename
                 rel_path = str(file_path.relative_to(path))
-                file_size = file_path.stat().st_size
+                stat_result = file_path.stat()
+                file_size = stat_result.st_size
                 file_hash = hash_file(file_path)
-                file_mtime = file_path.stat().st_mtime
+                file_mtime = stat_result.st_mtime
 
                 if incremental and parent_snapshot:
                     existing = existing_files.get(rel_path)
                     if existing and existing.hash == file_hash and existing.size == file_size:
+                        skipped += 1
                         continue
 
                 files_to_upload.append(
@@ -112,10 +116,10 @@ class BackupEngine:
             return {
                 "name": name,
                 "path": str(path),
-                "total_files": len(files_to_upload),
+                "total_files": len(files_to_upload) + skipped,
                 "total_size": sum(f["size"] for f in files_to_upload),
-                "skipped": len(existing_files) if incremental else 0,
-                "upload_files": len(files_to_upload) - (len(existing_files) if incremental else 0),
+                "skipped": skipped,
+                "upload_files": len(files_to_upload),
             }
 
         # Upload files
@@ -248,19 +252,35 @@ class BackupEngine:
         return snapshots
 
     async def delete_snapshot(self, snapshot_id: str) -> bool:
-        """Delete a snapshot and all its files."""
+        """Delete a snapshot and remove its files from the index.
+
+        Only deletes files that are not referenced by other snapshots.
+        """
         snapshot = await self._get_snapshot(snapshot_id)
         if not snapshot:
             return False
 
-        # Delete all referenced files
-        for sf in snapshot.files:
-            try:
-                await self._vault.delete(sf.file_id)
-            except Exception as e:
-                logger.warning(f"Could not delete file {sf.file_id}: {e}")
+        index = await self._get_snapshot_index()
 
-        # Delete snapshot metadata message
+        other_file_ids = set()
+        for sid in index.snapshot_ids:
+            if sid == snapshot_id:
+                continue
+            try:
+                other_snap = await self._get_snapshot(sid)
+                if other_snap:
+                    for sf in other_snap.files:
+                        other_file_ids.add(sf.file_id)
+            except Exception:
+                pass
+
+        for sf in snapshot.files:
+            if sf.file_id not in other_file_ids:
+                try:
+                    await self._vault.delete(sf.file_id)
+                except Exception as e:
+                    logger.warning(f"Could not delete file {sf.file_id}: {e}")
+
         if snapshot.message_id:
             try:
                 await self._vault.telegram._client.delete_messages(
@@ -269,8 +289,6 @@ class BackupEngine:
             except Exception as e:
                 logger.warning(f"Could not delete snapshot message: {e}")
 
-        # Update index
-        index = await self._get_snapshot_index()
         index.remove_snapshot(snapshot_id)
         await self._save_snapshot_index(index)
 
@@ -411,7 +429,7 @@ class BackupEngine:
         if not channel_id:
             raise ValueError("No channel set")
 
-        index.updated_at = __import__("datetime").datetime.now().timestamp()
+        index.updated_at = datetime.now().timestamp()
 
         existing_msg_id = None
         async for msg in self._vault.telegram._client.iter_messages(

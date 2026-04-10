@@ -1,7 +1,6 @@
 """Shell completion support for TeleVault CLI."""
 
 import json
-import os
 from pathlib import Path
 
 from .config import get_config_dir
@@ -243,12 +242,17 @@ def load_file_cache() -> dict:
 
 
 def save_file_cache(files: list[dict]) -> None:
-    """Save file IDs and names to cache for completion."""
+    """Save file IDs and names to cache for completion.
+
+    Merges with existing cache rather than replacing it.
+    """
     cache_file = get_cache_file()
-    cache = {}
+    existing = load_file_cache()
     for f in files:
-        cache[f["id"]] = f["name"]
-    cache_file.write_text(json.dumps(cache, indent=2))
+        existing[f.get("id", "")] = f.get("name", "")
+    tmp_path = cache_file.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(existing, indent=2))
+    tmp_path.replace(cache_file)
 
 
 def get_cached_file_ids() -> list[str]:
@@ -277,7 +281,7 @@ def install_completion(shell: str, prog_name: str = "tvt") -> str:
             f"--- Completion Script ---\n\n{script}"
         )
     elif shell == SHELL_ZSH:
-        fpath_dir = f"~/.zfunc"
+        fpath_dir = "~/.zfunc"
         return (
             f"# Add this to your ~/.zshrc:\n"
             f"fpath+=({fpath_dir})\n"

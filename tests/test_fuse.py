@@ -65,6 +65,20 @@ class TestLRUCache:
         assert cache.get("a") is not None
         assert cache.get("b") is None  # evicted
 
+    def test_remove(self):
+        cache = LRUCache(max_size_mb=1)
+        cache.put("key1", b"x" * 1024)
+        assert cache.size_mb > 0
+        result = cache.remove("key1")
+        assert result is True
+        assert cache.get("key1") is None
+        assert cache.size_mb == 0
+
+    def test_remove_missing(self):
+        cache = LRUCache(max_size_mb=1)
+        result = cache.remove("nonexistent")
+        assert result is False
+
 
 class TestFuseAvailability:
     def test_fuse_module_imports(self):

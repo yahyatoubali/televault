@@ -10,6 +10,7 @@ import logging
 import os
 import stat
 import sys
+import threading
 import time
 from collections import OrderedDict
 from pathlib import Path
@@ -22,7 +23,8 @@ logger = logging.getLogger("televault.fuse")
 
 FUSE_AVAILABLE = False
 try:
-    from fuse import FUSE, FuseOSError, Operations as FuseOperations
+    from fuse import FUSE, FuseOSError
+    from fuse import Operations as FuseOperations
 
     FUSE_AVAILABLE = True
 except ImportError:
@@ -60,6 +62,13 @@ class LRUCache:
     def has(self, key: str) -> bool:
         return key in self._cache
 
+    def remove(self, key: str) -> bool:
+        if key in self._cache:
+            self._current_size -= len(self._cache[key])
+            del self._cache[key]
+            return True
+        return False
+
     def clear(self) -> None:
         self._cache.clear()
         self._current_size = 0
@@ -67,6 +76,14 @@ class LRUCache:
     @property
     def size_mb(self) -> float:
         return self._current_size / (1024 * 1024)
+
+
+class ChunkCacheError(Exception):
+    """Error raised by ChunkCache for missing or corrupted chunks."""
+
+    def __init__(self, errno: int, msg: str = ""):
+        self.errno = errno
+        super().__init__(msg)
 
 
 class ChunkCache:
@@ -108,7 +125,7 @@ class ChunkCache:
                     break
 
             if chunk_info is None:
-                raise FuseOSError(2)
+                raise ChunkCacheError(2, f"Chunk {chunk_index} not found")
 
             from .chunker import hash_data
             from .compress import decompress_data
@@ -117,7 +134,7 @@ class ChunkCache:
             data = await self._vault.telegram.download_chunk(chunk_info.message_id)
 
             if hash_data(data) != chunk_info.hash:
-                raise FuseOSError(5)
+                raise ChunkCacheError(5, f"Hash mismatch for chunk {chunk_index}")
 
             if self.metadata.encrypted and self._password:
                 data = decrypt_chunk(data, self._password)
@@ -130,9 +147,6 @@ class ChunkCache:
 
     async def fetch_range(self, offset: int, size: int) -> bytes:
         """Fetch a byte range from the file, downloading only needed chunks."""
-        from .compress import decompress_data
-        from .crypto import decrypt_chunk
-
         chunk_size = self._vault.config.chunk_size
         result = bytearray()
 
@@ -143,7 +157,6 @@ class ChunkCache:
             chunk_data = await self.fetch_chunk(chunk_idx)
 
             chunk_start = chunk_idx * chunk_size
-            chunk_end = chunk_start + len(chunk_data)
 
             read_start = max(0, offset - chunk_start)
             read_end = min(len(chunk_data), offset + size - chunk_start)
@@ -160,14 +173,10 @@ class ChunkCache:
         """Remove all chunks for this file from the LRU cache."""
         for chunk_info in self.metadata.chunks:
             key = self._cache_key(chunk_info.index)
-            if self._lru.has(key):
-                self._lru._cache.pop(key, None)
+            self._lru.remove(key)
 
     async def prefetch(self, chunk_indices: list[int] | None = None) -> None:
         """Prefetch chunks in parallel. If None, prefetch first 3 chunks."""
-        from .compress import decompress_data
-        from .crypto import decrypt_chunk
-
         if chunk_indices is None:
             chunk_indices = list(range(min(3, len(self.metadata.chunks))))
 
@@ -205,6 +214,7 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
         self.read_only = read_only
         self._vault = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_lock = threading.Lock()
         self._telegram_config = telegram_config
 
         cache_path = Path(cache_dir) if cache_dir else get_data_dir() / "fuse_cache"
@@ -219,27 +229,21 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
         self._fd = 0
         self._open_files: dict[int, str] = {}
         self._write_buffer: dict[int, bytes] = {}
-        self._cache_lock = asyncio.Lock()
         self._last_refresh = 0.0
 
     def _run_async(self, coro):
-        if self._loop is None:
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
+        with self._loop_lock:
+            if self._loop is None or self._loop.is_closed():
+                self._loop = asyncio.new_event_loop()
+            loop = self._loop
 
         try:
-            running_loop = asyncio.get_running_loop()
+            return loop.run_until_complete(coro)
         except RuntimeError:
-            running_loop = None
-
-        if running_loop and running_loop.is_running():
-            import concurrent.futures
-
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(self._loop.run_until_complete, coro)
-                return future.result()
-        else:
-            return self._loop.run_until_complete(coro)
+            new_loop = asyncio.new_event_loop()
+            with self._loop_lock:
+                self._loop = new_loop
+            return new_loop.run_until_complete(coro)
 
     async def _ensure_connected(self):
         from .core import TeleVault
@@ -367,6 +371,8 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
             chunk_cache = self._run_async(self._get_chunk_cache(file_id))
             data = self._run_async(chunk_cache.fetch_range(offset, read_size))
             return data
+        except ChunkCacheError as e:
+            raise FuseOSError(e.errno) from None
         except Exception as e:
             logger.error(f"Read failed for {path} at offset {offset}: {e}")
 
@@ -376,7 +382,7 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
                     f.seek(offset)
                     return f.read(size)
 
-            raise FuseOSError(5)
+            raise FuseOSError(5) from None
 
     def write(self, path, data, offset, fh):
         if self.read_only:
@@ -385,6 +391,8 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
         buf = self._write_buffer.get(fh, b"")
         if offset == 0:
             buf = data
+        elif offset > len(buf):
+            buf = buf + b"\x00" * (offset - len(buf)) + data
         else:
             buf = buf[:offset] + data + buf[offset + len(data) :]
         self._write_buffer[fh] = buf
@@ -418,11 +426,9 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
             self._run_async(self._upload_local_file(local_path, filename))
         except Exception as e:
             logger.error(f"Upload failed for {path}: {e}")
-            raise FuseOSError(5)
+            raise FuseOSError(5) from None
 
     async def _upload_local_file(self, local_path: Path, filename: str):
-        from .core import TeleVault
-
         await self._ensure_connected()
         metadata = await self._vault.upload(local_path)
         self._file_cache[metadata.id] = metadata
@@ -444,6 +450,7 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
             raise FuseOSError(2)
 
         try:
+            self._run_async(self._ensure_connected())
             self._run_async(self._vault.delete(file_id))
             self._file_cache.pop(file_id, None)
             self._path_to_id.pop(path, None)
@@ -456,7 +463,7 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
                 local_path.unlink()
         except Exception as e:
             logger.error(f"Delete failed for {path}: {e}")
-            raise FuseOSError(5)
+            raise FuseOSError(5) from None
 
     def statfs(self, path):
         return {

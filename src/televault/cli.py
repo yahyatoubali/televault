@@ -1,6 +1,8 @@
 """TeleVault CLI - Command line interface."""
 
 import asyncio
+import contextlib
+import signal
 import sys
 from pathlib import Path
 
@@ -108,12 +110,11 @@ async def check_channel(vault: TeleVault) -> bool:
 
 
 @click.group(invoke_without_command=True)
-@click.option("-h", "--help", is_flag=True, help="Show this message and exit.")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging.")
 @click.option("--debug", is_flag=True, help="Enable debug logging.")
-@click.option("--json", "as_json", is_flag=True, help="Output as JSON (for supported commands).")
+@click.version_option(version=__import__("televault").__version__, prog_name="tvt")
 @click.pass_context
-def main(ctx, help, verbose, debug, as_json):
+def main(ctx, verbose, debug):
     """TeleVault - Unlimited cloud storage using Telegram.
 
     Short name: tvt (alias for televault)
@@ -147,10 +148,12 @@ def main(ctx, help, verbose, debug, as_json):
     else:
         setup_logging("WARNING")
 
-    ctx.ensure_object(dict)
-    ctx.obj["json"] = as_json
+    with contextlib.suppress(AttributeError, OSError):
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
-    if help or ctx.invoked_subcommand is None:
+    ctx.ensure_object(dict)
+
+    if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
 
 
@@ -232,7 +235,7 @@ def setup(channel_id: int | None, auto_create: bool):
             console.print("  2. Use an existing channel by ID")
             console.print("")
 
-            choice = input("Enter your choice (1 or 2): ").strip()
+            choice = click.prompt("Enter your choice (1 or 2)", type=str, default="1").strip()
 
             if choice == "1":
                 console.print("\n[bold]Creating new storage channel...[/bold]")
@@ -245,7 +248,7 @@ def setup(channel_id: int | None, auto_create: bool):
                 )
 
                 try:
-                    existing_id = input("Enter channel ID: ").strip()
+                    existing_id = click.prompt("Enter channel ID", type=str).strip()
                     existing_id_int = int(existing_id)
                     cid = await vault.setup_channel(existing_id_int)
                     console.print(f"[green]✓ Using existing channel: {cid}[/green]")
@@ -303,7 +306,8 @@ def push(
         if config.encryption and not password:
             console.print("[yellow]Warning: Encryption enabled but no password provided.[/yellow]")
             console.print("Set password with --password or TELEVAULT_PASSWORD env var.")
-            console.print("Use --no-encrypt to disable encryption.\n")
+            console.print("Use --no-encrypt to disable encryption.")
+            console.print("[dim]File will be uploaded WITHOUT encryption.[/dim]\n")
 
         vault = TeleVault(config=config, password=password)
         await vault.connect()
@@ -476,11 +480,17 @@ def pull(file_id_or_name: str, output: str | None, password: str | None, resume:
                 print(f"\n[{format_size(total)} downloaded]", file=sys.stderr)
             except FileNotFoundError:
                 print(f"Error: File not found: {file_id_or_name}", file=sys.stderr)
+                await vault.disconnect()
                 sys.exit(1)
-            except ValueError as e:
+            except (ValueError, RuntimeError) as e:
                 print(f"Error: {e}", file=sys.stderr)
+                await vault.disconnect()
                 sys.exit(1)
-            await vault.disconnect()
+            except BrokenPipeError:
+                await vault.disconnect()
+                sys.exit(0)
+            finally:
+                await vault.disconnect()
             return
 
         with Progress(
@@ -558,7 +568,10 @@ def list_files(as_json: bool, sort: str):
         if as_json:
             import json
 
-            output = [{"id": f.id, "name": f.name, "size": f.size} for f in files]
+            output = [
+                {"id": f.id, "name": f.name, "size": f.size, "encrypted": f.encrypted}
+                for f in files
+            ]
             click.echo(json.dumps(output, indent=2))
         else:
             if not files:
@@ -673,7 +686,6 @@ def info(file_id_or_name: str, as_json: bool):
 
             if as_json:
                 import json
-
                 from datetime import datetime
 
                 output = {
@@ -708,8 +720,9 @@ def info(file_id_or_name: str, as_json: bool):
 
                 from datetime import datetime
 
-                created = datetime.fromtimestamp(f.created_at)
-                console.print(f"  Created:     {created.strftime('%Y-%m-%d %H:%M')}")
+                if f.created_at:
+                    created = datetime.fromtimestamp(f.created_at)
+                    console.print(f"  Created:     {created.strftime('%Y-%m-%d %H:%M')}")
 
                 if f.chunks:
                     stored = sum(c.size for c in f.chunks)
@@ -764,30 +777,30 @@ def whoami():
 
     async def _whoami():
         vault = TeleVault()
-        await vault.connect()
+        try:
+            await vault.connect()
 
-        if not await vault.telegram._client.is_user_authorized():
-            console.print("[red]Not logged in. Run 'televault login' first.[/red]")
+            if not await check_auth(vault):
+                return
+
+            me = await vault.telegram._client.get_me()
+
+            if me is None:
+                console.print("[red]Not logged in. Run 'televault login' first.[/red]")
+                return
+
+            console.print(f"[bold]{me.first_name}[/bold]", end="")
+            if me.last_name:
+                console.print(f" {me.last_name}", end="")
+            console.print()
+
+            if me.username:
+                console.print(f"  @{me.username}")
+            console.print(f"  ID: {me.id}")
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+        finally:
             await vault.disconnect()
-            return
-
-        me = await vault.telegram._client.get_me()
-
-        if me is None:
-            console.print("[red]Not logged in. Run 'televault login' first.[/red]")
-            await vault.disconnect()
-            return
-
-        console.print(f"[bold]{me.first_name}[/bold]", end="")
-        if me.last_name:
-            console.print(f" {me.last_name}", end="")
-        console.print()
-
-        if me.username:
-            console.print(f"  @{me.username}")
-        console.print(f"  ID: {me.id}")
-
-        await vault.disconnect()
 
     run_async(_whoami())
 
@@ -831,8 +844,6 @@ def garbage_collect(dry_run: bool, clean_partials: bool):
         if not result["orphaned_messages"]:
             console.print("[green]No orphaned messages found. Vault is clean![/green]")
         else:
-            from .cli import format_size
-
             count = len(result["orphaned_messages"])
             size = result["orphaned_size"]
             console.print(f"  Found {count} orphaned messages ({format_size(size)})")
@@ -973,10 +984,14 @@ def cat(file_id_or_name: str, password: str | None):
             print(f"\n[{format_size(total)} streamed]", file=sys.stderr)
         except FileNotFoundError:
             print(f"Error: File not found: {file_id_or_name}", file=sys.stderr)
+            await vault.disconnect()
             sys.exit(1)
-        except ValueError as e:
+        except (ValueError, RuntimeError) as e:
             print(f"Error: {e}", file=sys.stderr)
+            await vault.disconnect()
             sys.exit(1)
+        except BrokenPipeError:
+            pass
         finally:
             await vault.disconnect()
 
@@ -1088,49 +1103,9 @@ def stat(as_json: bool):
     run_async(_stat())
 
 
-@main.command()
-@click.argument("query")
-@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
-def find(query: str, as_json: bool):
-    """Search files by name."""
-
-    async def _find():
-        vault = TeleVault()
-        await vault.connect()
-
-        if not await check_auth(vault):
-            await vault.disconnect()
-            return
-
-        if not await check_channel(vault):
-            await vault.disconnect()
-            return
-
-        files = await vault.search(query)
-
-        if as_json:
-            import json
-
-            output = [
-                {"id": f.id, "name": f.name, "size": f.size, "encrypted": f.encrypted}
-                for f in files
-            ]
-            click.echo(json.dumps(output, indent=2))
-        else:
-            if not files:
-                console.print(f"[dim]No files matching '{query}'[/dim]")
-            else:
-                for f in files:
-                    console.print(f"[cyan]{f.id[:8]}[/cyan] {f.name} ({format_size(f.size)})")
-
-        # Update file cache for completion
-        from .completion import save_file_cache
-
-        save_file_cache([{"id": f.id, "name": f.name, "size": f.size} for f in files])
-
-        await vault.disconnect()
-
-    run_async(_find())
+# find is an alias for search - Click doesn't support @main.command(alias='find'),
+# so we reference the same command function
+find = search
 
 
 @main.command()
@@ -1571,7 +1546,7 @@ def schedule_create(
 ):
     """Create a backup schedule for a directory."""
 
-    from .schedule import create_schedule, generate_systemd_unit, generate_cron_entry
+    from .schedule import create_schedule, generate_cron_entry
 
     if name is None:
         name = Path(path).name
@@ -1648,7 +1623,7 @@ def schedule_run(name: str):
     result = run_schedule(name)
 
     if result.success:
-        console.print(f"[bold green]Backup successful![/bold green]")
+        console.print("[bold green]Backup successful![/bold green]")
         console.print(f"  Snapshot ID: {result.snapshot_id}")
         console.print(f"  Files: {result.file_count}")
         console.print(f"  Size: {format_size(result.total_size)}")
@@ -1688,7 +1663,7 @@ def schedule_install(name: str):
 
     if success:
         console.print(f"[bold green]systemd timer installed: televault-{name}.timer[/bold green]")
-        console.print(f"\nManage with:")
+        console.print("\nManage with:")
         console.print(f"  systemctl --user status televault-{name}.timer")
         console.print(f"  systemctl --user stop televault-{name}.timer")
         console.print(f"  journalctl --user -u televault-{name}.service")
@@ -1707,7 +1682,7 @@ def schedule_uninstall(name: str):
     if success:
         console.print(f"[green]Timer uninstalled: televault-{name}.timer[/green]")
     else:
-        console.print(f"[yellow]Timer not found or already removed[/yellow]")
+        console.print("[yellow]Timer not found or already removed[/yellow]")
 
 
 @schedule_group.command(name="show-systemd")

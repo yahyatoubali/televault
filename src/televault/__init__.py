@@ -10,7 +10,7 @@ Features:
 - TUI + CLI
 """
 
-__version__ = "2.6.0"
+__version__ = "2.6.1"
 __author__ = "Yahya Toubali"
 __email__ = "yahya@yahyatoubali.me"
 __license__ = "MIT"

@@ -1,12 +1,10 @@
 """Preview engine for TeleVault - generate terminal previews without full download."""
 
-import io
 import logging
 import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .chunker import hash_data
 from .compress import decompress_data
 from .config import Config
 from .core import TeleVault
@@ -246,12 +244,10 @@ def extract_video_metadata(data: bytes) -> dict:
 
     if data[:4] == b"\x1a\x45\xdf\xa5":
         meta["format"] = "MKV/WebM"
-
-    if data[4:8] == b"ftyp":
+    elif data[4:8] == b"ftyp":
         brand = data[8:12].decode("ascii", errors="replace").strip()
         meta["format"] = f"MP4 ({brand})"
-
-    if data[:3] == b"RIFF":
+    elif data[:4] == b"RIFF" and len(data) > 10 and data[8:12] == b"AVI ":
         meta["format"] = "AVI"
 
     return meta

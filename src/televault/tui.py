@@ -1,9 +1,9 @@
 """Textual TUI for TeleVault."""
 
 import asyncio
+import contextlib
 import logging
 import os
-from pathlib import Path
 
 from rich.console import Console
 from textual.app import App, ComposeResult
@@ -145,6 +145,7 @@ class VaultApp(App):
 
     /* Content area */
     #content {
+        width: 1fr;
         height: 100%;
         padding: 1 2;
     }
@@ -250,19 +251,19 @@ class VaultApp(App):
             self._vault = None
             self._connected = False
 
+    status_message = reactive("Ready")
+
     def on_unmount(self) -> None:
         """Clean up connection when app exits."""
-        import contextlib
-
         if self._vault and self._connected:
-            with contextlib.suppress(Exception):
-                import asyncio
-
-                asyncio.create_task(self._vault.disconnect())
-
-    status_message = reactive("Ready")
-    is_authenticated = reactive(False)
-    api_configured = reactive(False)
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(self._vault.disconnect())
+                else:
+                    loop.run_until_complete(self._vault.disconnect())
+            except Exception:
+                pass
 
     def compose(self) -> ComposeResult:
         """Compose the main UI."""
@@ -284,7 +285,9 @@ class VaultApp(App):
             yield Label("")
             yield Label("Telegram API credentials not found!", classes="info-text")
             yield Label("")
-            yield Label("You need to provide your Telegram API credentials.", classes="info-text")
+            yield Label(
+                "You need to provide your Telegram API credentials.", classes="info-text"
+            )
             yield Label("Get them at: https://my.telegram.org", classes="info-text")
             yield Label("")
             yield Label("API ID:", classes="info-text")
@@ -428,6 +431,13 @@ class VaultApp(App):
             self.query_one("#stat-files", Label).update(f"Files: {len(files)}")
             self.query_one("#stat-size", Label).update(f"Total Size: {format_size(total_size)}")
 
+            try:
+                status = await vault.get_status()
+                stored = status.get("stored_size", 0)
+                self.query_one("#stat-storage", Label).update(f"Stored: {format_size(stored)}")
+            except Exception:
+                pass
+
             self.status_message = f"Loaded {len(files)} files"
 
         except Exception as e:
@@ -520,14 +530,21 @@ class VaultApp(App):
             vault = await self._get_vault()
             status = await vault.get_status()
 
+            channel_id = status.get("channel_id", "N/A")
+            file_count = status.get("file_count", 0)
+            total_size = status.get("total_size", 0)
+            stored_size = status.get("stored_size", 0)
+            ratio = status.get("compression_ratio", 0)
+            ratio_str = f"{ratio:.1%}" if isinstance(ratio, (int, float)) else "N/A"
+
             message = f"""
 📊 Vault Status
 
-Channel ID: {status["channel_id"]}
-Files: {status["file_count"]}
-Total Size: {format_size(status["total_size"])}
-Stored Size: {format_size(status["stored_size"])}
-Compression: {status["compression_ratio"]:.1%}
+Channel ID: {channel_id}
+Files: {file_count}
+Total Size: {format_size(total_size)}
+Stored Size: {format_size(stored_size)}
+Compression: {ratio_str}
             """.strip()
 
             self.notify(message, title="Status", timeout=10)
@@ -542,6 +559,9 @@ Compression: {status["compression_ratio"]:.1%}
 
         try:
             vault = await self._get_vault()
+            if not await vault.is_authenticated():
+                self.notify("Not logged in", severity="error")
+                return
             me = await vault.telegram._client.get_me()
 
             if me:
@@ -562,7 +582,9 @@ ID: {me.id}
 
     async def _do_logout(self) -> None:
         """Logout user."""
-        config_dir = Path.home() / ".config" / "televault"
+        await self._release_vault()
+
+        config_dir = televault_config_dir()
         telegram_config = config_dir / "telegram.json"
 
         if telegram_config.exists():
@@ -572,6 +594,8 @@ ID: {me.id}
             self.refresh(layout=True)
             self.notify("Logged out successfully", severity="information")
         else:
+            self.is_authenticated = False
+            self.refresh(layout=True)
             self.notify("Not logged in", severity="warning")
 
     def action_refresh(self) -> None:
@@ -612,20 +636,29 @@ ID: {me.id}
             icon = get_file_icon(file_meta.name)
             from datetime import datetime
 
-            created = datetime.fromtimestamp(file_meta.created_at).strftime("%Y-%m-%d %H:%M")
+            created_str = (
+                datetime.fromtimestamp(file_meta.created_at).strftime("%Y-%m-%d %H:%M")
+                if file_meta.created_at
+                else "Unknown"
+            )
+            hash_str = (
+                file_meta.hash[:16] + "..."
+                if file_meta.hash and len(file_meta.hash) > 16
+                else (file_meta.hash or "N/A")
+            )
 
             lines = []
             lines.append(f"{icon} {file_meta.name}")
             lines.append("")
             lines.append(f"[bold]ID:[/bold] {file_meta.id}")
             lines.append(f"[bold]Size:[/bold] {format_size(file_meta.size)}")
-            lines.append(f"[bold]Hash:[/bold] {file_meta.hash[:16]}...")
+            lines.append(f"[bold]Hash:[/bold] {hash_str}")
             lines.append(f"[bold]Chunks:[/bold] {file_meta.chunk_count}")
             lines.append(f"[bold]Encrypted:[/bold] {'Yes' if file_meta.encrypted else 'No'}")
             lines.append(f"[bold]Compressed:[/bold] {'Yes' if file_meta.compressed else 'No'}")
             if file_meta.compressed and file_meta.compression_ratio:
                 lines.append(f"[bold]Comp. ratio:[/bold] {file_meta.compression_ratio:.1%}")
-            lines.append(f"[bold]Created:[/bold] {created}")
+            lines.append(f"[bold]Created:[/bold] {created_str}")
             if file_meta.mime_type:
                 lines.append(f"[bold]MIME:[/bold] {file_meta.mime_type}")
             if file_meta.chunks:
@@ -691,7 +724,7 @@ ID: {me.id}
         if not self.files:
             return
 
-        row_index = event.cursor_row
+        row_index = event.row_index
         if 0 <= row_index < len(self.files):
             self.selected_file = self.files[row_index]
             self._update_detail_panel(self.selected_file)
@@ -862,6 +895,7 @@ class UploadScreen(Screen):
     async def _upload_file(self, path: str, password: str | None) -> None:
         """Upload the file."""
         progress_label = self.query_one("#upload-progress", Static)
+        vault = None
         try:
             from pathlib import Path
 
@@ -885,7 +919,6 @@ class UploadScreen(Screen):
                     pass
 
             metadata = await vault.upload(path, progress_callback=on_progress)
-            await vault.disconnect()
 
             progress_label.update(f"✓ Uploaded: {metadata.name}")
             self.app.notify(f"✓ Uploaded: {metadata.name}")
@@ -898,6 +931,10 @@ class UploadScreen(Screen):
         except Exception as e:
             progress_label.update(f"Error: {str(e)}")
             self.app.notify(f"Upload failed: {str(e)}", severity="error")
+        finally:
+            if vault:
+                with contextlib.suppress(Exception):
+                    await vault.disconnect()
 
 
 class DownloadScreen(Screen):
@@ -943,6 +980,7 @@ class DownloadScreen(Screen):
     async def _download_file(self, output: str | None, password: str | None) -> None:
         """Download the file."""
         progress_label = self.query_one("#download-progress", Static)
+        vault = None
         try:
             progress_label.update(f"Downloading {self.file_metadata.name}...")
 
@@ -961,7 +999,6 @@ class DownloadScreen(Screen):
             output_path = await vault.download(
                 self.file_metadata.id, output_path=output, progress_callback=on_progress
             )
-            await vault.disconnect()
 
             progress_label.update(f"✓ Downloaded to: {output_path}")
             self.app.notify(f"✓ Downloaded to: {output_path}")
@@ -972,6 +1009,10 @@ class DownloadScreen(Screen):
         except Exception as e:
             progress_label.update(f"Error: {str(e)}")
             self.app.notify(f"Download failed: {str(e)}", severity="error")
+        finally:
+            if vault:
+                with contextlib.suppress(Exception):
+                    await vault.disconnect()
 
 
 class ConfirmScreen(Screen):
