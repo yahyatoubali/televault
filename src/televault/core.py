@@ -1,7 +1,9 @@
 """Core TeleVault operations - upload, download, list."""
 
 import asyncio
+import contextlib
 import hashlib
+import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -11,8 +13,16 @@ from .chunker import ChunkWriter, hash_data, hash_file, iter_chunks
 from .compress import compress_data, decompress_data, should_compress
 from .config import Config
 from .crypto import decrypt_chunk, encrypt_chunk
-from .models import ChunkInfo, FileMetadata, TransferProgress
+from .models import (
+    ChunkInfo,
+    FileMetadata,
+    TransferProgress,
+    load_progress_with_crc,
+    save_progress_with_crc,
+)
 from .telegram import TelegramConfig, TelegramVault
+
+logger = logging.getLogger("televault.core")
 
 
 def generate_file_id(name: str, size: int) -> str:
@@ -176,11 +186,13 @@ class TeleVault:
         chunk_results: dict[int, ChunkInfo] = {}
         uploaded_count = 0
         lock = asyncio.Lock()
+        uploaded_msg_ids: list[int] = []  # Track for cleanup on failure
 
         async def upload_single_chunk(chunk):
             nonlocal uploaded_count
 
             data = chunk.data
+            original_hash = hash_data(data)
 
             # Compress if enabled
             if metadata.compressed:
@@ -203,10 +215,12 @@ class TeleVault:
                 message_id=chunk_msg_id,
                 size=len(data),
                 hash=hash_data(data),
+                original_hash=original_hash,
             )
 
             async with lock:
                 chunk_results[chunk.index] = chunk_info
+                uploaded_msg_ids.append(chunk_msg_id)
                 uploaded_count += 1
 
                 # Progress callback
@@ -233,7 +247,15 @@ class TeleVault:
         chunks = list(iter_chunks(file_path, chunk_size))
 
         if chunks:
-            await asyncio.gather(*[upload_with_limit(c) for c in chunks])
+            try:
+                await asyncio.gather(*[upload_with_limit(c) for c in chunks])
+            except Exception:
+                # Cleanup on failure: delete uploaded chunks and metadata
+                logger.error(f"Upload failed for {file_name}, cleaning up...")
+                all_ids = uploaded_msg_ids + [metadata_msg_id]
+                with contextlib.suppress(Exception):
+                    await self.telegram._client.delete_messages(self.telegram._channel_id, all_ids)
+                raise
 
         # Sort chunks by index
         metadata.chunks = [chunk_results[i] for i in sorted(chunk_results.keys())]
@@ -307,53 +329,78 @@ class TeleVault:
         downloaded_size = 0
         total_chunks = len(metadata.chunks)
 
-        # Download chunks in order
-        for downloaded_chunks, chunk_info in enumerate(
-            sorted(metadata.chunks, key=lambda c: c.index), start=1
-        ):
-            # Download chunk
-            data = await self.telegram.download_chunk(chunk_info.message_id)
+        # Parallel download with configurable concurrency
+        semaphore = asyncio.Semaphore(self.config.parallel_downloads)
+        chunk_data: dict[int, bytes] = {}
+        download_lock = asyncio.Lock()
 
-            # Verify hash
-            if hash_data(data) != chunk_info.hash:
-                raise ValueError(f"Chunk {chunk_info.index} hash mismatch - data corrupted")
+        async def download_single_chunk(chunk_info):
+            nonlocal downloaded_size
 
-            # Decrypt if needed
-            if metadata.encrypted:
-                if not password:
-                    raise ValueError("File is encrypted but no password provided")
-                data = decrypt_chunk(data, password)
+            async with semaphore:
+                data = await self.telegram.download_chunk(chunk_info.message_id)
 
-            # Decompress if needed
-            if metadata.compressed:
-                data = decompress_data(data)
-
-            # Write chunk
-            from .chunker import Chunk
-
-            writer.write_chunk(
-                Chunk(
-                    index=chunk_info.index,
-                    data=data,
-                    hash="",  # Already verified
-                    size=len(data),
-                )
-            )
-
-            downloaded_size += len(data)
-
-            # Progress callback
-            if progress_callback:
-                progress_callback(
-                    DownloadProgress(
-                        file_name=metadata.name,
-                        total_size=metadata.size,
-                        downloaded_size=downloaded_size,
-                        total_chunks=total_chunks,
-                        downloaded_chunks=downloaded_chunks,
-                        current_chunk=chunk_info.index,
+                # Verify post-processing hash (encrypted/compressed)
+                if hash_data(data) != chunk_info.hash:
+                    raise ValueError(
+                        f"Chunk {chunk_info.index} hash mismatch - data may be corrupted in transit"
                     )
-                )
+
+                # Decrypt if needed
+                if metadata.encrypted:
+                    if not password:
+                        raise ValueError("File is encrypted but no password provided")
+                    data = decrypt_chunk(data, password)
+
+                # Decompress if needed
+                if metadata.compressed:
+                    data = decompress_data(data)
+
+                # Verify original hash if available
+                if chunk_info.original_hash and hash_data(data) != chunk_info.original_hash:
+                    logger.warning(
+                        f"Chunk {chunk_info.index} original hash mismatch - "
+                        f"decryption may have produced incorrect data"
+                    )
+
+                from .chunker import Chunk
+
+                async with download_lock:
+                    writer.write_chunk(
+                        Chunk(
+                            index=chunk_info.index,
+                            data=data,
+                            hash="",
+                            size=len(data),
+                        )
+                    )
+                    downloaded_size += len(data)
+                    chunk_data[chunk_info.index] = data
+
+                    # Progress callback
+                    if progress_callback:
+                        progress_callback(
+                            DownloadProgress(
+                                file_name=metadata.name,
+                                total_size=metadata.size,
+                                downloaded_size=downloaded_size,
+                                total_chunks=total_chunks,
+                                downloaded_chunks=len(chunk_data),
+                                current_chunk=chunk_info.index,
+                            )
+                        )
+
+        # Download all chunks in parallel
+        sorted_chunks = sorted(metadata.chunks, key=lambda c: c.index)
+        results = await asyncio.gather(
+            *[download_single_chunk(c) for c in sorted_chunks],
+            return_exceptions=True,
+        )
+
+        # Check for download errors
+        for r in results:
+            if isinstance(r, Exception):
+                raise r
 
         # Verify final hash
         try:
@@ -598,10 +645,15 @@ class TeleVault:
 
         completed_chunks: set[int] = set()
         if temp_path.exists() and progress_file.exists():
-            try:
-                saved_progress = TransferProgress.from_json(progress_file.read_text())
+            saved_progress = load_progress_with_crc(progress_file)
+            if saved_progress is not None:
                 completed_chunks = set(saved_progress.completed_chunks)
-            except Exception:
+                logger.info(
+                    f"Resuming download: {len(completed_chunks)}/{len(metadata.chunks)} "
+                    f"chunks already completed"
+                )
+            else:
+                logger.warning("Corrupted progress file, starting download from scratch")
                 completed_chunks = set()
 
         writer = ChunkWriter(temp_path, metadata.size, self.config.chunk_size)
@@ -645,7 +697,7 @@ class TeleVault:
                 total_chunks=len(metadata.chunks),
                 completed_chunks=list(completed_chunks),
             )
-            progress_file.write_text(progress.to_json())
+            save_progress_with_crc(progress, progress_file)
 
             if progress_callback:
                 progress_callback(

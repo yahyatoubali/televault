@@ -95,113 +95,64 @@ def check_api_credentials() -> tuple[bool, str | None]:
 
 
 class VaultApp(App):
-    """Main TeleVault TUI Application."""
+    """TeleVault Terminal User Interface."""
+
+    TITLE = "TeleVault"
+    SUB_TITLE = "Encrypted Cloud Storage via Telegram"
 
     CSS = """
-    Screen {
-        align: center middle;
-    }
-
-    #main-container {
-        width: 100%;
-        height: 100%;
-    }
-
-    #sidebar {
-        width: 25;
-        height: 100%;
-        dock: left;
-        background: $surface-darken-1;
-        padding: 1;
-    }
-
-    #content {
-        width: 100%;
-        height: 100%;
-        padding: 1;
-    }
-
-    .sidebar-button {
-        width: 100%;
-        margin: 1 0;
-    }
-
-    .stats-box {
-        height: auto;
-        padding: 1;
-        background: $surface-darken-2;
-        border: solid $primary;
-        margin: 1 0;
-    }
-
-    DataTable {
-        height: 100%;
-    }
-
-    #status-bar {
-        dock: bottom;
-        height: 3;
-        background: $surface-darken-1;
-        color: $text;
-        padding: 0 2;
-        content-align: center middle;
-    }
-
-    #search-input {
-        width: 100%;
-        margin: 1 0;
-    }
-
-    .title {
-        text-align: center;
-        text-style: bold;
-        color: $primary;
-    }
-
-    ProgressBar {
-        width: 100%;
-        margin: 1 0;
-    }
-
-    #login-screen {
-        align: center middle;
-    }
-
-    .login-container {
-        width: 60;
-        height: auto;
-        border: solid $primary;
-        padding: 2;
-        background: $surface;
-    }
-
-    .info-text {
-        color: $text-muted;
-        text-align: center;
-    }
+    /* ... existing CSS ... */
     """
 
     BINDINGS = [
-        Binding("q", "quit", "Quit", show=True),
-        Binding("r", "refresh", "Refresh", show=True),
-        Binding("u", "upload", "Upload", show=True),
-        Binding("d", "download", "Download", show=True),
-        Binding("delete", "delete", "Delete", show=True),
-        Binding("s", "search", "Search", show=True),
-        Binding("l", "login", "Login", show=True),
+        Binding("q", "quit", "Quit"),
+        Binding("r", "refresh", "Refresh"),
+        Binding("u", "upload", "Upload"),
+        Binding("d", "download", "Download"),
+        Binding("s", "search", "Search"),
+        Binding("l", "login", "Login"),
+        Binding("delete", "delete", "Delete"),
     ]
 
-    vault = reactive(None)
-    files = reactive([])
-    status_message = reactive("Ready")
     is_authenticated = reactive(False)
     api_configured = reactive(False)
+    files = reactive([])
 
     def __init__(self):
         super().__init__()
-        self.vault_instance = None
+        self._vault: TeleVault | None = None
+        self._connected = False
         self.config = Config.load_or_create()
         self.selected_file = None
+
+    async def _get_vault(self) -> TeleVault:
+        """Get or create a persistent TeleVault connection."""
+        if self._vault is None or not self._connected:
+            self._vault = TeleVault()
+            await self._vault.connect()
+            self._connected = True
+        return self._vault
+
+    async def _release_vault(self) -> None:
+        """Disconnect and release the persistent connection."""
+        if self._vault and self._connected:
+            await self._vault.disconnect()
+            self._vault = None
+            self._connected = False
+
+    def on_unmount(self) -> None:
+        """Clean up connection when app exits."""
+        import contextlib
+
+        if self._vault and self._connected:
+            with contextlib.suppress(Exception):
+                import asyncio
+
+                asyncio.create_task(self._vault.disconnect())
+
+    status_message = reactive("Ready")
+    is_authenticated = reactive(False)
+    api_configured = reactive(False)
 
     def compose(self) -> ComposeResult:
         """Compose the main UI."""
@@ -316,16 +267,14 @@ class VaultApp(App):
     async def _check_auth(self) -> None:
         """Check if user is authenticated."""
         try:
-            self.vault_instance = TeleVault()
-            await self.vault_instance.connect(skip_channel=True)
+            vault = await self._get_vault()
 
-            if await self.vault_instance.is_authenticated():
+            if await vault.is_authenticated():
                 self.is_authenticated = True
-                await self.vault_instance.disconnect()
                 self.refresh(layout=True)
                 await self._load_files()
             else:
-                await self.vault_instance.disconnect()
+                await self._release_vault()
                 self.is_authenticated = False
                 self.status_message = "Not logged in - Press 'l' to login"
         except Exception as e:
@@ -339,8 +288,7 @@ class VaultApp(App):
 
         try:
             self.status_message = "Loading files..."
-            vault = TeleVault()
-            await vault.connect()
+            vault = await self._get_vault()
 
             files = await vault.list_files()
             self.files = files
@@ -364,7 +312,6 @@ class VaultApp(App):
             self.query_one("#stat-files", Label).update(f"Files: {len(files)}")
             self.query_one("#stat-size", Label).update(f"Total Size: {format_size(total_size)}")
 
-            await vault.disconnect()
             self.status_message = f"Loaded {len(files)} files"
 
         except Exception as e:
@@ -454,10 +401,8 @@ class VaultApp(App):
             return
 
         try:
-            vault = TeleVault()
-            await vault.connect()
+            vault = await self._get_vault()
             status = await vault.get_status()
-            await vault.disconnect()
 
             message = f"""
 📊 Vault Status
@@ -480,10 +425,8 @@ Compression: {status["compression_ratio"]:.1%}
             return
 
         try:
-            vault = TeleVault()
-            await vault.connect()
+            vault = await self._get_vault()
             me = await vault.telegram._client.get_me()
-            await vault.disconnect()
 
             if me:
                 name = f"{me.first_name or ''} {me.last_name or ''}".strip()
@@ -542,10 +485,8 @@ ID: {me.id}
 
                 async def do_delete():
                     try:
-                        vault = TeleVault()
-                        await vault.connect()
+                        vault = await self._get_vault()
                         deleted = await vault.delete(file_to_delete.id)
-                        await vault.disconnect()
 
                         if deleted:
                             self.notify(f"✓ Deleted: {file_to_delete.name}")

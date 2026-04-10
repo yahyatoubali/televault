@@ -1,8 +1,10 @@
 """Data models for TeleVault - stored as JSON on Telegram."""
 
 import json
+import zlib
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from pathlib import Path
 
 
 @dataclass
@@ -12,14 +14,17 @@ class ChunkInfo:
     index: int  # Chunk order (0-based)
     message_id: int  # Telegram message ID
     size: int  # Chunk size in bytes
-    hash: str  # BLAKE3 hash for verification
+    hash: str  # BLAKE3 hash for verification (post-compression/encryption)
+    original_hash: str = ""  # BLAKE3 hash of original plaintext chunk (pre-processing)
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict) -> "ChunkInfo":
-        return cls(**data)
+        # Backward compat: original_hash was added later
+        data.setdefault("original_hash", "")
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
 @dataclass
@@ -134,7 +139,15 @@ class TransferProgress:
 
     @classmethod
     def from_json(cls, text: str) -> "TransferProgress":
-        return cls(**json.loads(text))
+        data = json.loads(text)
+        # Backward compat: handle missing fields
+        data.setdefault("started_at", datetime.now().timestamp())
+        data.setdefault("operation", "download")
+        data.setdefault("file_id", "")
+        data.setdefault("file_name", "")
+        data.setdefault("total_chunks", 0)
+        data.setdefault("completed_chunks", [])
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
     @property
     def pending_chunks(self) -> list[int]:
@@ -146,3 +159,42 @@ class TransferProgress:
         if self.total_chunks == 0:
             return 100.0
         return (len(self.completed_chunks) / self.total_chunks) * 100
+
+
+def save_progress_with_crc(progress: TransferProgress, path: Path) -> None:
+    """Save transfer progress to file with CRC32 checksum for integrity."""
+    json_str = progress.to_json()
+    checksum = zlib.crc32(json_str.encode()) & 0xFFFFFFFF
+    content = f"{checksum:08x}\n{json_str}"
+    path.write_text(content)
+
+
+def load_progress_with_crc(path: Path) -> TransferProgress | None:
+    """Load transfer progress from file, verifying CRC32 checksum.
+
+    Returns None if file doesn't exist or is corrupted.
+    """
+    if not path.exists():
+        return None
+
+    try:
+        content = path.read_text()
+        lines = content.split("\n", 1)
+        if len(lines) != 2:
+            return None
+
+        stored_crc = int(lines[0], 16)
+        json_str = lines[1]
+        computed_crc = zlib.crc32(json_str.encode()) & 0xFFFFFFFF
+
+        if stored_crc != computed_crc:
+            import logging
+
+            logging.getLogger("televault").warning(
+                f"Progress file {path} has corrupted checksum, starting fresh"
+            )
+            return None
+
+        return TransferProgress.from_json(json_str)
+    except Exception:
+        return None

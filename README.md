@@ -2,12 +2,27 @@
 
 Unlimited cloud storage using your **own** Telegram account. No local database — everything lives in a private Telegram channel, encrypted on your machine before upload.
 
-## What's New in v2.1.0
+## What's New
 
-- **Resumable Transfers** - Interrupted uploads/downloads can be resumed with `--resume` flag
-- **Enhanced TUI** - New confirmation dialogs, progress bars, and file type icons
-- **Better Error Handling** - Improved cleanup on failures, directory auto-creation
-- **Fixed Login Flow** - Proper 2FA password support in TUI
+### v2.2.0 — Data Safety & Backups
+
+- **Backup Snapshots** — Create, restore, list, prune, and verify directory backups
+- **Retry Logic** — Exponential backoff on all Telegram operations (3 retries, FloodWait handling)
+- **Atomic Index Updates** — Version-based concurrency control prevents data loss from race conditions
+- **Parallel Downloads** — Configurable concurrency using existing `parallel_downloads` setting
+- **Upload Cleanup** — Failed uploads now automatically clean up orphaned messages
+- **Original Hash Verification** — Chunks store pre-processing hash for decrypt verification
+- **Progress File Integrity** — CRC32 checksums on `.progress` files detect corruption
+- **Garbage Collection** — `televault gc` finds and removes orphaned messages
+- **File Verification** — `televault verify <file>` re-downloads and checks all chunk hashes
+- **Verbose/Debug Logging** — `televault -v` and `televault --debug` flags
+- **TUI Connection Pooling** — Persistent connection instead of reconnecting per operation
+
+### v2.1.0
+
+- Resumable transfers with `--resume` flag
+- Enhanced TUI with progress bars, confirmation dialogs, file type icons
+- Fixed login flow with 2FA support
 
 ---
 
@@ -59,6 +74,13 @@ TELEVAULT_PASSWORD="strong-password" televault pull <file_id_or_name>
 | `televault rm <file>` | Delete a file |
 | `televault status` | Show vault statistics |
 | `televault whoami` | Show current account |
+| `televault verify <file>` | Verify file integrity |
+| `televault gc` | Garbage collect orphaned messages |
+| `televault backup create <dir>` | Create a backup snapshot |
+| `televault backup restore <id>` | Restore from a snapshot |
+| `televault backup list` | List all snapshots |
+| `televault backup prune` | Prune old snapshots |
+| `televault backup verify <id>` | Verify a snapshot |
 | `televault tui` | Launch interactive TUI |
 | `televault logout` | Clear session |
 
@@ -93,6 +115,67 @@ televault pull largefile.zip --resume
 
 ---
 
+## Backup & Restore
+
+TeleVault supports git-like backup snapshots of directories:
+
+```bash
+# Create a full backup
+televault backup create /important/data --name "daily-backup"
+
+# Create an incremental backup (only changed files)
+televault backup create /important/data --name "daily" --incremental
+
+# Dry run (show what would be backed up)
+televault backup create /important/data --dry-run
+
+# List all snapshots
+televault backup list
+
+# Restore from a snapshot
+televault backup restore <snapshot_id> --output /restore/path
+
+# Restore specific files
+televault backup restore <snapshot_id> --output /restore/path --files docs/readme.md
+
+# Verify snapshot integrity
+televault backup verify <snapshot_id>
+
+# Prune old snapshots (keep last 7 daily, 4 weekly, 6 monthly)
+televault backup prune --keep-daily 7 --keep-weekly 4 --keep-monthly 6
+
+# Dry-run prune
+televault backup prune --dry-run
+
+# Delete a specific snapshot
+televault backup delete <snapshot_id>
+```
+
+### How It Works
+
+- Each snapshot stores file metadata (path, hash, size, file ID)
+- Only changed files are uploaded in incremental backups
+- Snapshots reference files already in the vault (deduplication)
+- Restore downloads files from the vault using their file IDs
+- Pruning respects retention policies (daily/weekly/monthly)
+
+---
+
+## Data Safety
+
+TeleVault is designed for people who care about their data:
+
+- **Retry Logic** — All Telegram operations retry 3x with exponential backoff
+- **Atomic Index Updates** — Version-based concurrency control prevents data races
+- **Upload Cleanup** — Failed uploads automatically delete orphaned messages
+- **Hash Verification** — Every chunk is verified with BLAKE3 on download
+- **Original Hash** — Separate hash for pre-encryption data catches wrong-password errors
+- **Progress Integrity** — CRC32 checksums on resume files detect corruption
+- **Parallel Downloads** — Configurable concurrency for faster downloads
+- **Garbage Collection** — Find and remove orphaned messages
+
+---
+
 ## Interactive TUI
 
 Launch the Terminal User Interface for visual file management:
@@ -103,11 +186,11 @@ televault tui
 
 ### TUI Features
 
-- **File Browser** -Browse all files with icons, sizes, and encryption status
-- **Progress Bars** - Real-time upload/download progress with chunk counts
-- **Search** - Live search through your files
-- **Confirmations** - Safe delete with confirmation dialogs
-- **Login Flow** - Complete login flow with 2FA support
+- **File Browser** — Browse all files with icons, sizes, and encryption status
+- **Progress Bars** — Real-time upload/download progress with chunk counts
+- **Search** — Live search through your files
+- **Confirmations** — Safe delete with confirmation dialogs
+- **Login Flow** — Complete login flow with 2FA support
 
 ### Keyboard Shortcuts
 
@@ -135,29 +218,7 @@ televault push largefile.zip --resume
 televault pull largefile.zip --resume
 ```
 
-Progress is tracked per-chunk, so you can safely interrupt and resume later.
-
----
-
-## Storage Channel Setup
-
-### Interactive Mode (Recommended)
-
-```bash
-televault setup
-```
-
-Choose to create a new private channel or use an existing one.
-
-### Non-Interactive Options
-
-```bash
-# Auto-create new channel
-televault setup --auto-create
-
-# Use existing channel
-televault setup --channel-id -1001234567890
-```
+Progress is tracked per-chunk with CRC32 integrity checks.
 
 ---
 
@@ -187,8 +248,18 @@ Config file location: `~/.config/televault/config.json`
   "compression": true,
   "encryption": true,
   "parallel_uploads": 3,
-  "parallel_downloads": 5
+  "parallel_downloads": 5,
+  "max_retries": 3,
+  "retry_delay": 1.0
 }
+```
+
+Logging output: `~/.local/share/televault/televault.log`
+
+Enable verbose/debug logging:
+```bash
+televault -v ls      # Info level
+televault --debug ls # Debug level
 ```
 
 ---

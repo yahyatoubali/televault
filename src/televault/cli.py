@@ -11,6 +11,7 @@ from rich.table import Table
 
 from .config import Config, get_config_dir
 from .core import DownloadProgress, TeleVault, UploadProgress
+from .logging import setup_logging
 
 console = Console()
 
@@ -108,9 +109,18 @@ async def check_channel(vault: TeleVault) -> bool:
 
 @click.group(invoke_without_command=True)
 @click.option("-h", "--help", is_flag=True, help="Show this message and exit.")
+@click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging.")
+@click.option("--debug", is_flag=True, help="Enable debug logging.")
 @click.pass_context
-def main(ctx, help):
+def main(ctx, help, verbose, debug):
     """TeleVault - Unlimited cloud storage using Telegram."""
+    if debug:
+        setup_logging("DEBUG")
+    elif verbose:
+        setup_logging("INFO")
+    else:
+        setup_logging("WARNING")
+
     if help or ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
 
@@ -674,6 +684,431 @@ def tui():
     from .tui import run_tui
 
     run_tui()
+
+
+@main.command(name="gc")
+@click.option("--dry-run", is_flag=True, help="Show orphans without deleting them")
+@click.option("--clean-partials", is_flag=True, help="Also remove incomplete uploads")
+def garbage_collect(dry_run: bool, clean_partials: bool):
+    """Find and remove orphaned messages from the vault."""
+
+    async def _gc():
+        from .gc import cleanup_partial_uploads, collect_garbage
+
+        vault = TeleVault()
+        await vault.connect()
+
+        if not await check_auth(vault):
+            await vault.disconnect()
+            return
+
+        if not await check_channel(vault):
+            await vault.disconnect()
+            return
+
+        if clean_partials:
+            console.print("[bold]Cleaning up partial uploads...[/bold]")
+            cleaned = await cleanup_partial_uploads(vault.telegram)
+            console.print(f"  Removed {cleaned} incomplete uploads")
+
+        console.print("[bold]Scanning for orphaned messages...[/bold]")
+        result = await collect_garbage(vault.telegram, dry_run=dry_run)
+
+        if not result["orphaned_messages"]:
+            console.print("[green]No orphaned messages found. Vault is clean![/green]")
+        else:
+            from .cli import format_size
+
+            count = len(result["orphaned_messages"])
+            size = result["orphaned_size"]
+            console.print(f"  Found {count} orphaned messages ({format_size(size)})")
+
+            if dry_run:
+                console.print("[yellow]Dry run - no messages deleted.[/yellow]")
+                for msg in result["orphaned_messages"][:10]:
+                    console.print(
+                        f"  - Message {msg['id']} ({msg['type']}, {format_size(msg['size'])})"
+                    )
+            else:
+                deleted = result["deleted_count"]
+                console.print(f"[green]Deleted {deleted} orphaned messages[/green]")
+
+        await vault.disconnect()
+
+    run_async(_gc())
+
+
+@main.command()
+@click.argument("file_id_or_name")
+@click.option("--password", "-p", help="Decryption password", envvar="TELEVAULT_PASSWORD")
+def verify(file_id_or_name: str, password: str | None):
+    """Verify a file's integrity by re-downloading and checking all hashes."""
+
+    async def _verify():
+        vault = TeleVault(password=password)
+        await vault.connect()
+
+        if not await check_auth(vault):
+            await vault.disconnect()
+            return
+
+        if not await check_channel(vault):
+            await vault.disconnect()
+            return
+
+        from .chunker import hash_data as calc_hash
+
+        index = await vault.telegram.get_index()
+
+        if file_id_or_name in index.files:
+            metadata = await vault.telegram.get_metadata(index.files[file_id_or_name])
+        else:
+            files = await vault.list_files()
+            matches = [f for f in files if f.name == file_id_or_name or file_id_or_name in f.name]
+            if not matches:
+                console.print(f"[red]File not found: {file_id_or_name}[/red]")
+                await vault.disconnect()
+                sys.exit(1)
+            if len(matches) > 1:
+                console.print(f"[red]Multiple files match '{file_id_or_name}'[/red]")
+                await vault.disconnect()
+                sys.exit(1)
+            metadata = await vault.telegram.get_metadata(matches[0].message_id)
+
+        console.print(f"[bold]Verifying: {metadata.name}[/bold]")
+        console.print(f"  Size: {format_size(metadata.size)}")
+        console.print(f"  Chunks: {metadata.chunk_count}")
+        console.print(f"  Encrypted: {'Yes' if metadata.encrypted else 'No'}")
+        console.print(f"  Compressed: {'Yes' if metadata.compressed else 'No'}")
+
+        errors = 0
+        for i, chunk in enumerate(metadata.chunks, 1):
+            try:
+                data = await vault.telegram.download_chunk(chunk.message_id)
+
+                stored_hash = chunk.hash
+                actual_hash = calc_hash(data)
+
+                if stored_hash == actual_hash:
+                    console.print(f"  [green]✓[/green] Chunk {i}/{metadata.chunk_count} OK")
+                else:
+                    console.print(f"  [red]✗[/red] Chunk {i}/{metadata.chunk_count} HASH MISMATCH")
+                    errors += 1
+
+                if chunk.original_hash:
+                    pwd = password
+                    if metadata.encrypted and pwd:
+                        from .crypto import decrypt_chunk
+
+                        original_data = decrypt_chunk(data, pwd)
+                        if metadata.compressed:
+                            from .compress import decompress_data
+
+                            original_data = decompress_data(original_data)
+                        original_hash = calc_hash(original_data)
+                        if original_hash == chunk.original_hash:
+                            console.print("    [green]✓[/green] Decrypted content verified")
+                        else:
+                            console.print("    [red]✗[/red] Decrypted content HASH MISMATCH")
+                            errors += 1
+
+            except Exception as e:
+                console.print(f"  [red]✗[/red] Chunk {i}/{metadata.chunk_count} ERROR: {e}")
+                errors += 1
+
+        if errors == 0:
+            console.print("\n[bold green]All chunks verified successfully![/bold green]")
+        else:
+            console.print(f"\n[bold red]{errors} chunk(s) failed verification![/bold red]")
+
+        await vault.disconnect()
+
+    run_async(_verify())
+
+
+# === Backup Commands ===
+
+
+@main.group()
+def backup():
+    """Manage backup snapshots."""
+    pass
+
+
+@backup.command(name="create")
+@click.argument("path", type=click.Path(exists=True))
+@click.option("--name", "-n", help="Snapshot name (auto-generated if not provided)")
+@click.option("--password", "-p", help="Encryption password", envvar="TELEVAULT_PASSWORD")
+@click.option("--incremental", "-i", is_flag=True, help="Create incremental backup")
+@click.option("--parent", help="Parent snapshot ID for incremental backup")
+@click.option("--dry-run", is_flag=True, help="Show what would be backed up without uploading")
+def backup_create(
+    path: str,
+    name: str | None,
+    password: str | None,
+    incremental: bool,
+    parent: str | None,
+    dry_run: bool,
+):
+    """Create a backup snapshot of a directory."""
+
+    async def _create():
+        from .backup import BackupEngine
+
+        engine = BackupEngine(password=password)
+        await engine.connect()
+
+        if not await check_auth(engine._vault):
+            await engine.disconnect()
+            return
+
+        if not await check_channel(engine._vault):
+            await engine.disconnect()
+            return
+
+        try:
+            result = await engine.create_snapshot(
+                path=path,
+                name=name,
+                incremental=incremental,
+                parent_id=parent,
+                dry_run=dry_run,
+            )
+
+            if dry_run:
+                console.print("\n[bold]Dry Run Results:[/bold]")
+                console.print(f"  Path: {result['path']}")
+                console.print(f"  Total files: {result['total_files']}")
+                console.print(f"  Total size: {format_size(result['total_size'])}")
+                console.print(f"  Files to upload: {result['upload_files']}")
+                if result["skipped"] > 0:
+                    console.print(f"  Skipped (unchanged): {result['skipped']}")
+            else:
+                console.print(f"\n[bold green]✓ Snapshot created: {result.name}[/bold green]")
+                console.print(f"  ID: {result.id}")
+                console.print(f"  Files: {result.file_count}")
+                console.print(f"  Size: {format_size(result.total_size)}")
+                console.print(f"  Stored: {format_size(result.stored_size)}")
+                if result.parent_id:
+                    console.print(f"  Parent: {result.parent_id}")
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+        finally:
+            await engine.disconnect()
+
+    run_async(_create())
+
+
+@backup.command(name="restore")
+@click.argument("snapshot_id")
+@click.option("--output", "-o", type=click.Path(), help="Output directory")
+@click.option("--password", "-p", help="Decryption password", envvar="TELEVAULT_PASSWORD")
+@click.option("--files", "-f", multiple=True, help="Specific files to restore")
+def backup_restore(snapshot_id: str, output: str | None, password: str | None, files: tuple):
+    """Restore files from a backup snapshot."""
+
+    async def _restore():
+        from .backup import BackupEngine
+
+        engine = BackupEngine(password=password)
+        await engine.connect()
+
+        if not await check_auth(engine._vault):
+            await engine.disconnect()
+            return
+
+        if not await check_channel(engine._vault):
+            await engine.disconnect()
+            return
+
+        try:
+            result_path = await engine.restore_snapshot(
+                snapshot_id=snapshot_id,
+                output_path=output or ".",
+                password=password,
+                files=list(files) if files else None,
+            )
+            console.print(f"\n[bold green]✓ Restored to: {result_path}[/bold green]")
+        except FileNotFoundError as e:
+            console.print(f"[red]Error: {e}[/red]")
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+        finally:
+            await engine.disconnect()
+
+    run_async(_restore())
+
+
+@backup.command(name="list")
+def backup_list():
+    """List all backup snapshots."""
+
+    async def _list():
+        from .backup import BackupEngine
+
+        engine = BackupEngine()
+        await engine.connect()
+
+        if not await check_auth(engine._vault):
+            await engine.disconnect()
+            return
+
+        try:
+            snapshots = await engine.list_snapshots()
+
+            if not snapshots:
+                console.print("[yellow]No snapshots found[/yellow]")
+                return
+
+            table = Table(title="TeleVault Snapshots")
+            table.add_column("ID", style="cyan")
+            table.add_column("Name", style="bold")
+            table.add_column("Created", style="green")
+            table.add_column("Files", justify="right")
+            table.add_column("Size", justify="right")
+            table.add_column("Type")
+
+            import datetime
+
+            for s in snapshots:
+                created = datetime.datetime.fromtimestamp(s.created_at).strftime("%Y-%m-%d %H:%M")
+                snap_type = "Incremental" if s.is_incremental else "Full"
+                table.add_row(
+                    s.id[:8],
+                    s.name,
+                    created,
+                    str(s.file_count),
+                    format_size(s.total_size),
+                    snap_type,
+                )
+
+            console.print(table)
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+        finally:
+            await engine.disconnect()
+
+    run_async(_list())
+
+
+@backup.command(name="delete")
+@click.argument("snapshot_id")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+def backup_delete(snapshot_id: str, yes: bool):
+    """Delete a backup snapshot."""
+
+    async def _delete():
+        from .backup import BackupEngine
+
+        if not yes and not click.confirm(f"Delete snapshot {snapshot_id}?"):
+            return
+
+        engine = BackupEngine()
+        await engine.connect()
+
+        if not await check_auth(engine._vault):
+            await engine.disconnect()
+            return
+
+        try:
+            deleted = await engine.delete_snapshot(snapshot_id)
+            if deleted:
+                console.print(f"[green]✓ Deleted snapshot {snapshot_id}[/green]")
+            else:
+                console.print(f"[yellow]Snapshot not found: {snapshot_id}[/yellow]")
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+        finally:
+            await engine.disconnect()
+
+    run_async(_delete())
+
+
+@backup.command(name="prune")
+@click.option("--keep-daily", default=7, help="Keep last N daily snapshots")
+@click.option("--keep-weekly", default=4, help="Keep last N weekly snapshots")
+@click.option("--keep-monthly", default=6, help="Keep last N monthly snapshots")
+@click.option("--dry-run", is_flag=True, help="Show what would be pruned without deleting")
+def backup_prune(keep_daily: int, keep_weekly: int, keep_monthly: int, dry_run: bool):
+    """Prune old backup snapshots based on retention policy."""
+
+    async def _prune():
+        from .backup import BackupEngine
+
+        engine = BackupEngine()
+        await engine.connect()
+
+        if not await check_auth(engine._vault):
+            await engine.disconnect()
+            return
+
+        try:
+            policy = {
+                "keep_daily": keep_daily,
+                "keep_weekly": keep_weekly,
+                "keep_monthly": keep_monthly,
+            }
+
+            if dry_run:
+                snapshots = await engine.list_snapshots()
+                console.print("\n[bold]Retention policy:[/bold]")
+                console.print(f"  Keep daily: {keep_daily}")
+                console.print(f"  Keep weekly: {keep_weekly}")
+                console.print(f"  Keep monthly: {keep_monthly}")
+                console.print(f"\n  Total snapshots: {len(snapshots)}")
+                console.print("  (Dry run - no snapshots deleted)")
+                return
+
+            deleted = await engine.prune_snapshots(policy)
+            if deleted:
+                console.print(f"\n[green]✓ Pruned {len(deleted)} snapshots[/green]")
+                for sid in deleted:
+                    console.print(f"  Deleted: {sid}")
+            else:
+                console.print("\n[yellow]No snapshots pruned[/yellow]")
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+        finally:
+            await engine.disconnect()
+
+    run_async(_prune())
+
+
+@backup.command(name="verify")
+@click.argument("snapshot_id")
+@click.option("--password", "-p", help="Decryption password", envvar="TELEVAULT_PASSWORD")
+def backup_verify(snapshot_id: str, password: str | None):
+    """Verify a backup snapshot's integrity."""
+
+    async def _verify():
+        from .backup import BackupEngine
+
+        engine = BackupEngine(password=password)
+        await engine.connect()
+
+        if not await check_auth(engine._vault):
+            await engine.disconnect()
+            return
+
+        try:
+            result = await engine.verify_snapshot(snapshot_id)
+
+            console.print(f"\n[bold]Verifying snapshot: {result.get('name', snapshot_id)}[/bold]")
+            console.print(f"  Files: {result.get('total_files', 0)}")
+            console.print(f"  Verified: {result.get('verified', 0)}")
+
+            if result.get("valid"):
+                console.print("[bold green]✓ All files verified[/bold green]")
+            else:
+                console.print("[bold red]✗ Verification failed[/bold red]")
+                for error in result.get("errors", []):
+                    console.print(f"  [red]- {error}[/red]")
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+        finally:
+            await engine.disconnect()
+
+    run_async(_verify())
 
 
 if __name__ == "__main__":
