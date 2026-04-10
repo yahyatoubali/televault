@@ -727,3 +727,140 @@ class TeleVault:
         progress_file.unlink(missing_ok=True)
 
         return output_path
+
+    async def stream(
+        self,
+        file_id_or_name: str,
+        output=None,
+        password: str | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ):
+        """
+        Stream a file's content to an output stream (supports stdout for piping).
+
+        Args:
+            file_id_or_name: File ID or name to stream
+            output: Output stream (defaults to sys.stdout.buffer)
+            password: Decryption password
+            progress_callback: Optional progress callback
+
+        Returns:
+            Total bytes written
+        """
+        import sys
+
+        if not self._connected:
+            raise RuntimeError("Not connected. Call connect() first.")
+
+        password = password or self.password
+        if output is None:
+            output = sys.stdout.buffer
+
+        index = await self.telegram.get_index()
+
+        if file_id_or_name in index.files:
+            metadata_msg_id = index.files[file_id_or_name]
+        else:
+            files = await self.telegram.list_files()
+            matches = [f for f in files if f.name == file_id_or_name or file_id_or_name in f.name]
+
+            if not matches:
+                raise FileNotFoundError(f"File not found: {file_id_or_name}")
+            if len(matches) > 1:
+                raise ValueError(
+                    f"Multiple files match '{file_id_or_name}': {[f.name for f in matches]}"
+                )
+
+            metadata_msg_id = matches[0].message_id
+
+        metadata = await self.telegram.get_metadata(metadata_msg_id)
+
+        total_size = 0
+
+        for chunk_info in sorted(metadata.chunks, key=lambda c: c.index):
+            data = await self.telegram.download_chunk(chunk_info.message_id)
+
+            if hash_data(data) != chunk_info.hash:
+                raise ValueError(f"Chunk {chunk_info.index} hash mismatch")
+
+            if metadata.encrypted:
+                if not password:
+                    raise ValueError("File is encrypted but no password provided")
+                data = decrypt_chunk(data, password)
+
+            if metadata.compressed:
+                data = decompress_data(data)
+
+            if chunk_info.original_hash and hash_data(data) != chunk_info.original_hash:
+                logger.warning(f"Chunk {chunk_info.index} original hash mismatch")
+
+            output.write(data)
+            output.flush()
+            total_size += len(data)
+
+            if progress_callback:
+                progress_callback(
+                    DownloadProgress(
+                        file_name=metadata.name,
+                        total_size=metadata.size,
+                        downloaded_size=total_size,
+                        total_chunks=len(metadata.chunks),
+                        downloaded_chunks=chunk_info.index + 1,
+                        current_chunk=chunk_info.index,
+                    )
+                )
+
+        return total_size
+
+    async def upload_stream(
+        self,
+        data: bytes,
+        filename: str,
+        password: str | None = None,
+        progress_callback: ProgressCallback | None = None,
+    ) -> FileMetadata:
+        """
+        Upload data from a byte stream (e.g., stdin pipe).
+
+        Args:
+            data: Raw bytes to upload
+            filename: Name for the uploaded file
+            password: Encryption password
+            progress_callback: Optional progress callback
+
+        Returns:
+            FileMetadata of uploaded file
+        """
+        if not self._connected:
+            raise RuntimeError("Not connected. Call connect() first.")
+
+        password = password or self.password
+
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(
+            dir=tempfile.gettempdir(),
+            prefix=f"televault_{filename}_",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp.write(data)
+            tmp_path = Path(tmp.name)
+
+        try:
+            metadata = await self.upload(
+                tmp_path,
+                password=password,
+                progress_callback=progress_callback,
+            )
+            metadata.name = filename
+
+            await self.telegram.update_metadata(metadata.message_id, metadata)
+
+            index = await self.telegram.get_index()
+            index.add_file(metadata.id, metadata.message_id)
+            await self.telegram.save_index(index)
+
+            return metadata
+        finally:
+            tmp_path.unlink(missing_ok=True)

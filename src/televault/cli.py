@@ -111,15 +111,44 @@ async def check_channel(vault: TeleVault) -> bool:
 @click.option("-h", "--help", is_flag=True, help="Show this message and exit.")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose logging.")
 @click.option("--debug", is_flag=True, help="Enable debug logging.")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON (for supported commands).")
 @click.pass_context
-def main(ctx, help, verbose, debug):
-    """TeleVault - Unlimited cloud storage using Telegram."""
+def main(ctx, help, verbose, debug, as_json):
+    """TeleVault - Unlimited cloud storage using Telegram.
+
+    Short name: tvt (alias for televault)
+
+    Common commands:
+
+      tvt push <file>       Upload a file
+
+      tvt pull <file>       Download a file
+
+      tvt ls                List files
+
+      tvt cat <file>        Stream file to stdout
+
+      tvt preview <file>    Show file preview
+
+      tvt stat              Show vault statistics
+
+    Pipe examples:
+
+      cat secret.txt | tvt push - --name secret.txt
+
+      tvt cat photo.jpg > photo.jpg
+
+      tvt ls --json | jq '.[].name'
+    """
     if debug:
         setup_logging("DEBUG")
     elif verbose:
         setup_logging("INFO")
     else:
         setup_logging("WARNING")
+
+    ctx.ensure_object(dict)
+    ctx.obj["json"] = as_json
 
     if help or ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
@@ -239,12 +268,13 @@ def setup(channel_id: int | None, auto_create: bool):
 
 
 @main.command()
-@click.argument("file_path", type=click.Path(exists=True))
+@click.argument("file_path", type=click.Path(exists=False))
 @click.option("--password", "-p", help="Encryption password", envvar="TELEVAULT_PASSWORD")
 @click.option("--no-compress", is_flag=True, help="Disable compression")
 @click.option("--no-encrypt", is_flag=True, help="Disable encryption")
 @click.option("--recursive", "-r", is_flag=True, help="Upload directory recursively")
 @click.option("--resume", is_flag=True, help="Resume interrupted upload")
+@click.option("--name", "-n", help="Filename when reading from stdin (e.g., -)")
 def push(
     file_path: str,
     password: str | None,
@@ -252,8 +282,15 @@ def push(
     no_encrypt: bool,
     recursive: bool,
     resume: bool,
+    name: str | None,
 ):
-    """Upload a file or directory to TeleVault."""
+    """Upload a file or directory to TeleVault.
+
+    Use '-' as FILE_PATH to read from stdin:
+
+      cat data.json | tvt push - --name data.json
+
+    """
 
     async def _push():
         config = Config.load_or_create()
@@ -279,7 +316,53 @@ def push(
             await vault.disconnect()
             return
 
+        # Handle stdin upload (pipe: cat file | tvt push - --name file)
+        if file_path == "-":
+            if not name:
+                console.print("[red]Error: --name is required when reading from stdin[/red]")
+                console.print("[dim]Example: cat data.json | tvt push - --name data.json[/dim]")
+                await vault.disconnect()
+                return
+
+            import sys
+
+            data = sys.stdin.buffer.read()
+            if not data:
+                console.print("[red]Error: No data read from stdin[/red]")
+                await vault.disconnect()
+                return
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+            ) as progress:
+                progress.add_task(f"Uploading {name}", total=None)
+                metadata = await vault.upload_stream(
+                    data=data,
+                    filename=name,
+                    password=password,
+                )
+
+            console.print(
+                f"\n[bold green]Uploaded {name}[/bold green] ({format_size(metadata.size)})"
+            )
+            console.print(f"  File ID: {metadata.id}")
+
+            # Update file cache for completion
+            from .completion import save_file_cache
+
+            save_file_cache([{"id": metadata.id, "name": metadata.name, "size": metadata.size}])
+
+            await vault.disconnect()
+            return
+
         file_path_obj = Path(file_path)
+
+        if not file_path_obj.exists():
+            console.print(f"[red]Error: '{file_path}' not found[/red]")
+            await vault.disconnect()
+            return
 
         # Handle directory upload
         if file_path_obj.is_dir():
@@ -356,11 +439,17 @@ def push(
 
 @main.command()
 @click.argument("file_id_or_name")
-@click.option("--output", "-o", type=click.Path(), help="Output path")
+@click.option("--output", "-o", type=click.Path(), help="Output path (use '-' for stdout)")
 @click.option("--password", "-p", help="Decryption password", envvar="TELEVAULT_PASSWORD")
 @click.option("--resume", is_flag=True, help="Resume interrupted download")
 def pull(file_id_or_name: str, output: str | None, password: str | None, resume: bool):
-    """Download a file from TeleVault."""
+    """Download a file from TeleVault.
+
+    Use '-o -' to write to stdout (for piping):
+
+      tvt pull video.mp4 -o - > video.mp4
+
+    """
 
     async def _pull():
         vault = TeleVault(password=password)
@@ -371,6 +460,26 @@ def pull(file_id_or_name: str, output: str | None, password: str | None, resume:
             return
 
         if not await check_channel(vault):
+            await vault.disconnect()
+            return
+
+        # Handle stdout output (pipe mode)
+        if output == "-":
+            import sys
+
+            try:
+                total = await vault.stream(
+                    file_id_or_name,
+                    output=sys.stdout.buffer,
+                    password=password,
+                )
+                print(f"\n[{format_size(total)} downloaded]", file=sys.stderr)
+            except FileNotFoundError:
+                print(f"Error: File not found: {file_id_or_name}", file=sys.stderr)
+                sys.exit(1)
+            except ValueError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                sys.exit(1)
             await vault.disconnect()
             return
 
@@ -482,8 +591,9 @@ def list_files(as_json: bool, sort: str):
 
 @main.command()
 @click.argument("query")
-def search(query: str):
-    """Search files by name."""
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def search(query: str, as_json: bool):
+    """Search files by name (alias: find)."""
 
     async def _search():
         vault = TeleVault()
@@ -499,11 +609,25 @@ def search(query: str):
 
         files = await vault.search(query)
 
-        if not files:
-            console.print(f"[dim]No files matching '{query}'[/dim]")
+        if as_json:
+            import json
+
+            output = [
+                {"id": f.id, "name": f.name, "size": f.size, "encrypted": f.encrypted}
+                for f in files
+            ]
+            click.echo(json.dumps(output, indent=2))
         else:
-            for f in files:
-                console.print(f"[cyan]{f.id[:8]}[/cyan] {f.name} ({format_size(f.size)})")
+            if not files:
+                console.print(f"[dim]No files matching '{query}'[/dim]")
+            else:
+                for f in files:
+                    console.print(f"[cyan]{f.id[:8]}[/cyan] {f.name} ({format_size(f.size)})")
+
+        # Update file cache for completion
+        from .completion import save_file_cache
+
+        save_file_cache([{"id": f.id, "name": f.name, "size": f.size} for f in files])
 
         await vault.disconnect()
 
@@ -512,7 +636,8 @@ def search(query: str):
 
 @main.command()
 @click.argument("file_id_or_name")
-def info(file_id_or_name: str):
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def info(file_id_or_name: str, as_json: bool):
     """Show detailed file information."""
 
     async def _info():
@@ -546,26 +671,49 @@ def info(file_id_or_name: str):
 
             f = files[0]
 
-            console.print(f"[bold]{f.name}[/bold]\n")
-            console.print(f"  ID:          {f.id}")
-            console.print(f"  Size:        {format_size(f.size)}")
-            console.print(f"  Hash:        {f.hash}")
-            console.print(f"  Chunks:      {f.chunk_count}")
-            console.print(f"  Encrypted:   {'Yes 🔒' if f.encrypted else 'No'}")
-            console.print(f"  Compressed:  {'Yes' if f.compressed else 'No'}")
-            if f.compressed and f.compression_ratio:
-                console.print(f"  Comp. ratio: {f.compression_ratio:.1%}")
-            if f.mime_type:
-                console.print(f"  MIME type:   {f.mime_type}")
+            if as_json:
+                import json
 
-            from datetime import datetime
+                from datetime import datetime
 
-            created = datetime.fromtimestamp(f.created_at)
-            console.print(f"  Created:     {created.strftime('%Y-%m-%d %H:%M')}")
+                output = {
+                    "id": f.id,
+                    "name": f.name,
+                    "size": f.size,
+                    "hash": f.hash,
+                    "chunks": f.chunk_count,
+                    "encrypted": f.encrypted,
+                    "compressed": f.compressed,
+                    "compression_ratio": f.compression_ratio if f.compressed else None,
+                    "mime_type": f.mime_type,
+                    "created_at": f.created_at,
+                    "created_at_iso": datetime.fromtimestamp(f.created_at).isoformat()
+                    if f.created_at
+                    else None,
+                    "stored_size": sum(c.size for c in f.chunks) if f.chunks else None,
+                }
+                click.echo(json.dumps(output, indent=2))
+            else:
+                console.print(f"[bold]{f.name}[/bold]\n")
+                console.print(f"  ID:          {f.id}")
+                console.print(f"  Size:        {format_size(f.size)}")
+                console.print(f"  Hash:        {f.hash}")
+                console.print(f"  Chunks:      {f.chunk_count}")
+                console.print(f"  Encrypted:   {'Yes' if f.encrypted else 'No'}")
+                console.print(f"  Compressed:  {'Yes' if f.compressed else 'No'}")
+                if f.compressed and f.compression_ratio:
+                    console.print(f"  Comp. ratio: {f.compression_ratio:.1%}")
+                if f.mime_type:
+                    console.print(f"  MIME type:   {f.mime_type}")
 
-            if f.chunks:
-                stored = sum(c.size for c in f.chunks)
-                console.print(f"  Stored size: {format_size(stored)}")
+                from datetime import datetime
+
+                created = datetime.fromtimestamp(f.created_at)
+                console.print(f"  Created:     {created.strftime('%Y-%m-%d %H:%M')}")
+
+                if f.chunks:
+                    stored = sum(c.size for c in f.chunks)
+                    console.print(f"  Stored size: {format_size(stored)}")
 
         except Exception as e:
             console.print(f"[red]Error: {e}[/red]")
@@ -608,40 +756,6 @@ def rm(file_id_or_name: str, yes: bool):
         await vault.disconnect()
 
     run_async(_rm())
-
-
-@main.command()
-def status():
-    """Show vault status."""
-
-    async def _status():
-        vault = TeleVault()
-        await vault.connect()
-
-        if not await check_auth(vault):
-            await vault.disconnect()
-            return
-
-        if not await check_channel(vault):
-            await vault.disconnect()
-            return
-
-        try:
-            status = await vault.get_status()
-
-            console.print("[bold]TeleVault Status[/bold]\n")
-            console.print(f"  Channel: {status['channel_id']}")
-            console.print(f"  Files: {status['file_count']}")
-            console.print(f"  Total size: {format_size(status['total_size'])}")
-            console.print(f"  Stored size: {format_size(status['stored_size'])}")
-            console.print(f"  Compression ratio: {status['compression_ratio']:.1%}")
-        except Exception as e:
-            console.print(f"[red]Error: {e}[/red]")
-            console.print("\n[dim]Have you run 'televault login' and 'televault setup'?[/dim]")
-
-        await vault.disconnect()
-
-    run_async(_status())
 
 
 @main.command()
@@ -824,6 +938,220 @@ def verify(file_id_or_name: str, password: str | None):
         await vault.disconnect()
 
     run_async(_verify())
+
+
+@main.command()
+@click.argument("file_id_or_name")
+@click.option("--password", "-p", help="Decryption password", envvar="TELEVAULT_PASSWORD")
+def cat(file_id_or_name: str, password: str | None):
+    """Stream file content to stdout.
+
+    Useful for piping: tvt cat config.json | jq '.key'
+
+    """
+
+    async def _cat():
+        vault = TeleVault(password=password)
+        await vault.connect()
+
+        if not await check_auth(vault):
+            await vault.disconnect()
+            return
+
+        if not await check_channel(vault):
+            await vault.disconnect()
+            return
+
+        import sys
+
+        try:
+            total = await vault.stream(
+                file_id_or_name,
+                output=sys.stdout.buffer,
+                password=password,
+            )
+            print(f"\n[{format_size(total)} streamed]", file=sys.stderr)
+        except FileNotFoundError:
+            print(f"Error: File not found: {file_id_or_name}", file=sys.stderr)
+            sys.exit(1)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        finally:
+            await vault.disconnect()
+
+    run_async(_cat())
+
+
+@main.command()
+@click.argument("file_id_or_name")
+@click.option("--password", "-p", help="Decryption password", envvar="TELEVAULT_PASSWORD")
+@click.option(
+    "--size", type=click.Choice(["small", "medium", "large"]), default="small", help="Preview size"
+)
+def preview(file_id_or_name: str, password: str | None, size: str):
+    """Show a preview of a file without downloading it entirely.
+
+    Detects file type and shows appropriate preview:
+    - Images: dimensions and ASCII art placeholder
+    - Videos: format and metadata
+    - Audio: format and metadata
+    - Text files: first ~40 lines
+    - Other: hex dump of first 256 bytes
+
+    """
+
+    async def _preview():
+        from .preview import PreviewEngine
+
+        engine = PreviewEngine(password=password)
+        try:
+            await engine._ensure_connected()
+
+            if not await engine._vault.is_authenticated():
+                console.print("[red]Not logged in. Run 'tvt login' first.[/red]")
+                return
+
+            if not engine._vault.config.channel_id:
+                console.print("[red]No channel configured. Run 'tvt setup' first.[/red]")
+                return
+
+            await engine._vault.telegram.set_channel(engine._vault.config.channel_id)
+
+            result = await engine.preview(file_id_or_name, size=size, password=password)
+
+            console.print(f"\n[bold]{result.name}[/bold] ({result.file_type})")
+            console.print(f"  Size: {format_size(result.size)}")
+            console.print(f"  ID:   {result.file_id}")
+
+            if result.metadata:
+                for key, value in result.metadata.items():
+                    console.print(f"  {key}: {value}")
+
+            if result.preview_text:
+                console.print()
+                if result.file_type == "text":
+                    console.print("[dim]--- Preview ---[/dim]")
+                    for line in result.preview_text.splitlines()[:40]:
+                        console.print(line)
+                    console.print("[dim]--- End preview ---[/dim]")
+                else:
+                    console.print(result.preview_text)
+
+        except FileNotFoundError as e:
+            console.print(f"[red]Error: {e}[/red]")
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+        finally:
+            await engine.disconnect()
+
+    run_async(_preview())
+
+
+@main.command()
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def stat(as_json: bool):
+    """Show vault statistics."""
+
+    async def _stat():
+        vault = TeleVault()
+        await vault.connect()
+
+        if not await check_auth(vault):
+            await vault.disconnect()
+            return
+
+        if not await check_channel(vault):
+            await vault.disconnect()
+            return
+
+        try:
+            status = await vault.get_status()
+
+            if as_json:
+                import json
+
+                click.echo(json.dumps(status, indent=2))
+            else:
+                console.print("[bold]TeleVault Status[/bold]\n")
+                console.print(f"  Channel: {status['channel_id']}")
+                console.print(f"  Files: {status['file_count']}")
+                console.print(f"  Total size: {format_size(status['total_size'])}")
+                console.print(f"  Stored size: {format_size(status['stored_size'])}")
+                console.print(f"  Compression ratio: {status['compression_ratio']:.1%}")
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            console.print("\n[dim]Have you run 'tvt login' and 'tvt setup'?[/dim]")
+
+        await vault.disconnect()
+
+    run_async(_stat())
+
+
+@main.command()
+@click.argument("query")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def find(query: str, as_json: bool):
+    """Search files by name."""
+
+    async def _find():
+        vault = TeleVault()
+        await vault.connect()
+
+        if not await check_auth(vault):
+            await vault.disconnect()
+            return
+
+        if not await check_channel(vault):
+            await vault.disconnect()
+            return
+
+        files = await vault.search(query)
+
+        if as_json:
+            import json
+
+            output = [
+                {"id": f.id, "name": f.name, "size": f.size, "encrypted": f.encrypted}
+                for f in files
+            ]
+            click.echo(json.dumps(output, indent=2))
+        else:
+            if not files:
+                console.print(f"[dim]No files matching '{query}'[/dim]")
+            else:
+                for f in files:
+                    console.print(f"[cyan]{f.id[:8]}[/cyan] {f.name} ({format_size(f.size)})")
+
+        # Update file cache for completion
+        from .completion import save_file_cache
+
+        save_file_cache([{"id": f.id, "name": f.name, "size": f.size} for f in files])
+
+        await vault.disconnect()
+
+    run_async(_find())
+
+
+@main.command()
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish", "powershell"]))
+def completion(shell: str):
+    """Generate shell completion script.
+
+    Supported shells: bash, zsh, fish, powershell
+
+    Examples:
+
+      tvt completion bash >> ~/.bashrc
+
+      tvt completion zsh > ~/.zfunc/_tvt
+
+      tvt completion fish > ~/.config/fish/completions/tvt.fish
+
+    """
+    from .completion import install_completion
+
+    console.print(install_completion(shell))
 
 
 # === Backup Commands ===

@@ -4,6 +4,19 @@ Unlimited cloud storage using your **own** Telegram account. No local database �
 
 ## What's New
 
+### v2.5.0 — Preview System & CLI Restructure
+
+- **`tvt` command** — Short, Unix-style CLI (`tvt push`, `tvt pull`, `tvt ls`, etc.)
+- **Pipeable I/O** — `cat file | tvt push - --name file`, `tvt cat photo.jpg > photo.jpg`
+- **`tvt cat`** — Stream file content to stdout for piping
+- **`tvt preview`** — Terminal preview without full download (images, videos, text, hex)
+- **`tvt stat`** — Quick vault statistics (rename of `status`)
+- **`tvt find`** — Search files (alias for `search`)
+- **`tvt completion`** — Generate shell completion scripts (bash, zsh, fish, PowerShell)
+- **`--json` flag** — Pipeable JSON output on `ls`, `stat`, `info`, `find`
+- **File ID cache** — Auto-caches file IDs for shell completion
+- **Preview engine** — Downloads first chunk only, extracts metadata from headers (PNG/JPEG dimensions, MP4 format, WAV params, etc.)
+
 ### v2.4.0 — Auto Backup
 
 - **Scheduled Backups** — Create, list, run, and delete backup schedules
@@ -45,6 +58,13 @@ Unlimited cloud storage using your **own** Telegram account. No local database �
 
 ```bash
 pip install televault
+
+# Optional extras
+pip install televault[fuse]       # FUSE mount support
+pip install televault[webdav]     # WebDAV server support
+pip install televault[preview]    # Image preview support (Pillow)
+pip install televault[dev]        # Development tools
+pip install -e ".[dev,fuse,webdav,preview]"  # Everything
 ```
 
 Python 3.11+ is required.
@@ -59,19 +79,69 @@ export TELEGRAM_API_ID=your_api_id
 export TELEGRAM_API_HASH=your_api_hash
 
 # 2) Login with your Telegram account
-televault login
+tvt login
 
 # 3) Set up storage channel (interactive)
-televault setup
+tvt setup
 
 # 4) Upload a file
-TELEVAULT_PASSWORD="strong-password" televault push /path/to/file
+TELEVAULT_PASSWORD="strong-password" tvt push /path/to/file
 
 # 5) List files
-televault ls
+tvt ls
 
 # 6) Download a file
-TELEVAULT_PASSWORD="strong-password" televault pull <file_id_or_name>
+TELEVAULT_PASSWORD="strong-password" tvt pull <file_id_or_name>
+
+# 7) Stream a file to stdout
+tvt cat photo.jpg > photo.jpg
+
+# 8) Preview a file without full download
+tvt preview photo.jpg
+
+# 9) Install shell completion
+tvt completion bash >> ~/.bashrc
+```
+
+---
+
+## Shell Completion
+
+```bash
+# Bash
+tvt completion bash >> ~/.bashrc
+
+# Zsh
+tvt completion zsh > ~/.zfunc/_tvt
+
+# Fish
+tvt completion fish > ~/.config/fish/completions/tvt.fish
+
+# PowerShell
+tvt completion powershell | Add-Content $PROFILE
+```
+
+---
+
+## Pipeable I/O
+
+TeleVault commands are designed to work with Unix pipes:
+
+```bash
+# Upload from stdin
+echo "hello world" | tvt push - --name note.txt
+cat config.json | tvt push - --name config.json
+mysqldump mydb | tvt push - --name db-backup.sql
+
+# Download to stdout
+tvt cat config.json | jq '.database'
+tvt pull video.mp4 -o - | mpv -
+
+# JSON output for scripting
+tvt ls --json | jq '.[].name'
+tvt stat --json | jq '.file_count'
+tvt find "backup" --json | jq '.[].size'
+tvt info photo.jpg --json | jq '.hash'
 ```
 
 ---
@@ -80,31 +150,34 @@ TELEVAULT_PASSWORD="strong-password" televault pull <file_id_or_name>
 
 | Command | Description |
 |---------|-------------|
-| `televault login` | Authenticate with Telegram |
-| `televault setup` | Set up storage channel |
-| `televault push <file>` | Upload a file |
-| `televault pull <file>` | Download a file |
-| `televault ls` | List all files |
-| `televault search <query>` | Search files by name |
-| `televault rm <file>` | Delete a file |
-| `televault status` | Show vault statistics |
-| `televault whoami` | Show current account |
-| `televault verify <file>` | Verify file integrity |
-| `televault gc` | Garbage collect orphaned messages |
-| `televault backup create <dir>` | Create a backup snapshot |
-| `televault backup restore <id>` | Restore from a snapshot |
-| `televault backup list` | List all snapshots |
-| `televault backup prune` | Prune old snapshots |
-| `televault backup verify <id>` | Verify a snapshot |
-| `televault mount <dir>` | Mount vault as local filesystem (FUSE) |
-| `televault serve` | Start WebDAV server |
-| `televault schedule create <dir>` | Create a backup schedule |
-| `televault schedule list` | List backup schedules |
-| `televault schedule run <name>` | Run a schedule immediately |
-| `televault schedule install <name>` | Install schedule as systemd timer |
-| `televault watch --path <dir>` | Watch directory and auto-upload |
-| `televault tui` | Launch interactive TUI |
-| `televault logout` | Clear session |
+| `tvt push <file>` | Upload a file (use `-` for stdin) |
+| `tvt pull <file>` | Download a file (use `-o -` for stdout) |
+| `tvt ls` | List all files (`--json` for pipeable output) |
+| `tvt find <query>` | Search files by name (`--json`) |
+| `tvt rm <file>` | Delete a file |
+| `tvt cat <file>` | Stream file content to stdout |
+| `tvt preview <file>` | Show file preview without full download |
+| `tvt info <file>` | Show detailed file info (`--json`) |
+| `tvt stat` | Show vault statistics (`--json`) |
+| `tvt verify <file>` | Verify file integrity |
+| `tvt gc` | Garbage collect orphaned messages |
+| `tvt backup create <dir>` | Create a backup snapshot |
+| `tvt backup restore <id>` | Restore from a snapshot |
+| `tvt backup list` | List all snapshots |
+| `tvt backup prune` | Prune old snapshots |
+| `tvt backup verify <id>` | Verify a snapshot |
+| `tvt mount <dir>` | Mount vault as local filesystem (FUSE) |
+| `tvt serve` | Start WebDAV server |
+| `tvt schedule create <dir>` | Create a backup schedule |
+| `tvt schedule list` | List backup schedules |
+| `tvt schedule run <name>` | Run a schedule immediately |
+| `tvt schedule install <name>` | Install schedule as systemd timer |
+| `tvt watch --path <dir>` | Watch directory and auto-upload |
+| `tvt login` | Authenticate with Telegram |
+| `tvt setup` | Set up storage channel |
+| `tvt tui` | Launch interactive TUI |
+| `tvt completion <shell>` | Generate shell completion |
+| `tvt logout` | Clear session |
 
 ### Upload Options
 
