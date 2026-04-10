@@ -1,4 +1,9 @@
-"""FUSE filesystem driver for TeleVault - mount your vault as a local directory."""
+"""FUSE filesystem driver for TeleVault - mount your vault as a local directory.
+
+Supports on-demand chunk fetching: only the chunks needed for a read are downloaded,
+not the entire file. An LRU cache manages downloaded chunks in memory with
+configurable size limits.
+"""
 
 import asyncio
 import logging
@@ -6,27 +11,180 @@ import os
 import stat
 import sys
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 from .config import Config, get_data_dir
-from .core import TeleVault
 from .models import FileMetadata
 from .telegram import TelegramConfig
 
 logger = logging.getLogger("televault.fuse")
 
-FUSE_STATVFS = None
-
+FUSE_AVAILABLE = False
 try:
     from fuse import FUSE, FuseOSError, Operations as FuseOperations
 
     FUSE_AVAILABLE = True
 except ImportError:
-    FUSE_AVAILABLE = False
+    pass
+
+
+class LRUCache:
+    """Least Recently Used cache for file chunk data."""
+
+    def __init__(self, max_size_mb: int = 100):
+        self._max_size = max_size_mb * 1024 * 1024
+        self._cache: OrderedDict[str, bytes] = OrderedDict()
+        self._current_size = 0
+
+    def get(self, key: str) -> bytes | None:
+        if key in self._cache:
+            self._cache.move_to_end(key)
+            return self._cache[key]
+        return None
+
+    def put(self, key: str, value: bytes) -> None:
+        if key in self._cache:
+            self._cache.move_to_end(key)
+            old_size = len(self._cache[key])
+            self._current_size -= old_size
+            self._cache[key] = value
+            self._current_size += len(value)
+        else:
+            while self._current_size + len(value) > self._max_size and self._cache:
+                evicted_key, evicted_value = self._cache.popitem(last=False)
+                self._current_size -= len(evicted_value)
+            self._cache[key] = value
+            self._current_size += len(value)
+
+    def has(self, key: str) -> bool:
+        return key in self._cache
+
+    def clear(self) -> None:
+        self._cache.clear()
+        self._current_size = 0
+
+    @property
+    def size_mb(self) -> float:
+        return self._current_size / (1024 * 1024)
+
+
+class ChunkCache:
+    """Manages on-demand chunk fetching and caching for a single file."""
+
+    def __init__(
+        self,
+        metadata: FileMetadata,
+        vault,
+        lru_cache: LRUCache,
+        password: str | None = None,
+    ):
+        self.metadata = metadata
+        self._vault = vault
+        self._lru = lru_cache
+        self._password = password
+        self._lock = asyncio.Lock()
+
+    def _cache_key(self, chunk_index: int) -> str:
+        return f"{self.metadata.id}:{chunk_index}"
+
+    async def fetch_chunk(self, chunk_index: int) -> bytes:
+        """Fetch a chunk, using cache if available."""
+        key = self._cache_key(chunk_index)
+
+        cached = self._lru.get(key)
+        if cached is not None:
+            return cached
+
+        async with self._lock:
+            cached = self._lru.get(key)
+            if cached is not None:
+                return cached
+
+            chunk_info = None
+            for c in self.metadata.chunks:
+                if c.index == chunk_index:
+                    chunk_info = c
+                    break
+
+            if chunk_info is None:
+                raise FuseOSError(2)
+
+            from .chunker import hash_data
+            from .compress import decompress_data
+            from .crypto import decrypt_chunk
+
+            data = await self._vault.telegram.download_chunk(chunk_info.message_id)
+
+            if hash_data(data) != chunk_info.hash:
+                raise FuseOSError(5)
+
+            if self.metadata.encrypted and self._password:
+                data = decrypt_chunk(data, self._password)
+
+            if self.metadata.compressed:
+                data = decompress_data(data)
+
+            self._lru.put(key, data)
+            return data
+
+    async def fetch_range(self, offset: int, size: int) -> bytes:
+        """Fetch a byte range from the file, downloading only needed chunks."""
+        from .compress import decompress_data
+        from .crypto import decrypt_chunk
+
+        chunk_size = self._vault.config.chunk_size
+        result = bytearray()
+
+        first_chunk = offset // chunk_size
+        last_chunk = min((offset + size - 1) // chunk_size, len(self.metadata.chunks) - 1)
+
+        for chunk_idx in range(first_chunk, last_chunk + 1):
+            chunk_data = await self.fetch_chunk(chunk_idx)
+
+            chunk_start = chunk_idx * chunk_size
+            chunk_end = chunk_start + len(chunk_data)
+
+            read_start = max(0, offset - chunk_start)
+            read_end = min(len(chunk_data), offset + size - chunk_start)
+
+            if read_start < read_end:
+                result.extend(chunk_data[read_start:read_end])
+
+            if len(result) >= size:
+                break
+
+        return bytes(result[:size])
+
+    def invalidate(self) -> None:
+        """Remove all chunks for this file from the LRU cache."""
+        for chunk_info in self.metadata.chunks:
+            key = self._cache_key(chunk_info.index)
+            if self._lru.has(key):
+                self._lru._cache.pop(key, None)
+
+    async def prefetch(self, chunk_indices: list[int] | None = None) -> None:
+        """Prefetch chunks in parallel. If None, prefetch first 3 chunks."""
+        from .compress import decompress_data
+        from .crypto import decrypt_chunk
+
+        if chunk_indices is None:
+            chunk_indices = list(range(min(3, len(self.metadata.chunks))))
+
+        for idx in chunk_indices:
+            try:
+                await self.fetch_chunk(idx)
+            except Exception:
+                logger.debug(f"Prefetch failed for chunk {idx}")
 
 
 class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
-    """FUSE filesystem that maps TeleVault storage to a local mount point."""
+    """FUSE filesystem that maps TeleVault storage to a local mount point.
+
+    Uses on-demand chunk fetching: only the chunks needed for a specific read
+    are downloaded, not the entire file. An LRU cache keeps recently accessed
+    chunks in memory for fast re-reads.
+    """
 
     def __init__(
         self,
@@ -35,6 +193,7 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
         password: str | None = None,
         cache_dir: str | None = None,
         read_only: bool = False,
+        cache_size_mb: int = 100,
     ):
         if not FUSE_AVAILABLE:
             raise ImportError(
@@ -44,7 +203,7 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
         self.config = config or Config.load_or_create()
         self.password = password
         self.read_only = read_only
-        self._vault: TeleVault | None = None
+        self._vault = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._telegram_config = telegram_config
 
@@ -52,14 +211,15 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
         self.cache_dir = cache_path
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
+        self._lru = LRUCache(max_size_mb=cache_size_mb)
+        self._chunk_caches: dict[str, ChunkCache] = {}
         self._file_cache: dict[str, FileMetadata] = {}
         self._path_to_id: dict[str, str] = {}
         self._id_to_path: dict[str, str] = {}
         self._fd = 0
-        self._open_files: dict[int, Path] = {}
+        self._open_files: dict[int, str] = {}
         self._write_buffer: dict[int, bytes] = {}
         self._cache_lock = asyncio.Lock()
-        self._refresh_task: asyncio.Task | None = None
         self._last_refresh = 0.0
 
     def _run_async(self, coro):
@@ -82,6 +242,8 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
             return self._loop.run_until_complete(coro)
 
     async def _ensure_connected(self):
+        from .core import TeleVault
+
         if self._vault is None:
             self._vault = TeleVault(
                 config=self.config,
@@ -107,8 +269,22 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
                 self._id_to_path[f.id] = f"/{f.name}"
             self._last_refresh = now
 
-    def _get_stat(self, is_dir=False, size=0):
-        now = time.time()
+    async def _get_chunk_cache(self, file_id: str) -> ChunkCache:
+        if file_id not in self._chunk_caches:
+            meta = self._file_cache.get(file_id)
+            if meta is None:
+                raise FuseOSError(2)
+            await self._ensure_connected()
+            self._chunk_caches[file_id] = ChunkCache(
+                metadata=meta,
+                vault=self._vault,
+                lru_cache=self._lru,
+                password=self.password,
+            )
+        return self._chunk_caches[file_id]
+
+    def _get_stat(self, is_dir=False, size=0, mtime=None):
+        now = mtime or time.time()
         st = {
             "st_mode": (stat.S_IFDIR | 0o755) if is_dir else (stat.S_IFREG | 0o644),
             "st_nlink": 2 if is_dir else 1,
@@ -133,7 +309,7 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
             file_id = self._path_to_id[path]
             if file_id in self._file_cache:
                 meta = self._file_cache[file_id]
-                return self._get_stat(is_dir=False, size=meta.size)
+                return self._get_stat(is_dir=False, size=meta.size, mtime=meta.created_at)
 
         cached_file = self.cache_dir / path.lstrip("/")
         if cached_file.exists():
@@ -160,29 +336,47 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
 
         self._fd += 1
         fd = self._fd
-        local_path = self.cache_dir / path.lstrip("/")
+        self._open_files[fd] = file_id
 
-        if not local_path.exists():
-            local_path.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                self._run_async(self._vault.download(file_id, output_path=str(local_path)))
-            except Exception as e:
-                logger.error(f"Download failed for {path}: {e}")
-                raise FuseOSError(5)
+        chunk_cache = self._run_async(self._get_chunk_cache(file_id))
 
-        self._open_files[fd] = local_path
+        try:
+            self._run_async(chunk_cache.prefetch())
+        except Exception as e:
+            logger.debug(f"Prefetch failed for {path}: {e}")
+
         return fd
 
     def read(self, path, size, offset, fh):
-        local_path = self._open_files.get(fh)
-        if local_path is None:
-            local_path = self.cache_dir / path.lstrip("/")
-        if not local_path.exists():
+        file_id = self._open_files.get(fh)
+        if file_id is None:
+            file_id = self._path_to_id.get(path)
+        if file_id is None:
             raise FuseOSError(2)
 
-        with open(local_path, "rb") as f:
-            f.seek(offset)
-            return f.read(size)
+        meta = self._file_cache.get(file_id)
+        if meta is None:
+            raise FuseOSError(2)
+
+        if offset >= meta.size:
+            return b""
+
+        read_size = min(size, meta.size - offset)
+
+        try:
+            chunk_cache = self._run_async(self._get_chunk_cache(file_id))
+            data = self._run_async(chunk_cache.fetch_range(offset, read_size))
+            return data
+        except Exception as e:
+            logger.error(f"Read failed for {path} at offset {offset}: {e}")
+
+            local_path = self.cache_dir / path.lstrip("/")
+            if local_path.exists():
+                with open(local_path, "rb") as f:
+                    f.seek(offset)
+                    return f.read(size)
+
+            raise FuseOSError(5)
 
     def write(self, path, data, offset, fh):
         if self.read_only:
@@ -227,11 +421,19 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
             raise FuseOSError(5)
 
     async def _upload_local_file(self, local_path: Path, filename: str):
+        from .core import TeleVault
+
         await self._ensure_connected()
         metadata = await self._vault.upload(local_path)
         self._file_cache[metadata.id] = metadata
         self._path_to_id[f"/{filename}"] = metadata.id
         self._id_to_path[metadata.id] = f"/{filename}"
+        self._last_refresh = 0
+
+    def release(self, path, fh):
+        self._open_files.pop(fh, None)
+        self._write_buffer.pop(fh, None)
+        return 0
 
     def unlink(self, path):
         if self.read_only:
@@ -246,6 +448,12 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
             self._file_cache.pop(file_id, None)
             self._path_to_id.pop(path, None)
             self._id_to_path.pop(file_id, None)
+            self._chunk_caches.pop(file_id, None)
+            self._last_refresh = 0
+
+            local_path = self.cache_dir / path.lstrip("/")
+            if local_path.exists():
+                local_path.unlink()
         except Exception as e:
             logger.error(f"Delete failed for {path}: {e}")
             raise FuseOSError(5)
@@ -275,8 +483,9 @@ def mount_vault(
     cache_dir: str | None = None,
     foreground: bool = True,
     allow_other: bool = False,
+    cache_size_mb: int = 100,
 ):
-    """Mount the TeleVault as a FUSE filesystem."""
+    """Mount the TeleVault as a FUSE filesystem with on-demand chunk fetching."""
     if not FUSE_AVAILABLE:
         print(
             "Error: fusepy is required for FUSE mount.\n"
@@ -291,14 +500,16 @@ def mount_vault(
         password=password,
         cache_dir=cache_dir,
         read_only=read_only,
+        cache_size_mb=cache_size_mb,
     )
 
-    fuse_opts = {}
+    fuse_opts = {"ro" if read_only else "rw": True}
     if allow_other:
         fuse_opts["allow_other"] = True
 
     print(f"Mounting TeleVault at {mount_point}")
-    print("Press Ctrl+C to unmount")
+    print(f"  Cache: {cache_size_mb}MB LRU, on-demand chunk fetching")
+    print("  Press Ctrl+C to unmount")
 
     try:
         FUSE(fuse_ops, mount_point, foreground=foreground, **fuse_opts)

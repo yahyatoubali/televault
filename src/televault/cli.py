@@ -1444,6 +1444,7 @@ def backup_verify(snapshot_id: str, password: str | None):
 @click.option("--password", "-p", help="Encryption password", envvar="TELEVAULT_PASSWORD")
 @click.option("--read-only", is_flag=True, help="Mount as read-only")
 @click.option("--cache-dir", type=click.Path(), help="Local cache directory")
+@click.option("--cache-size", default=100, type=int, help="LRU cache size in MB (default: 100)")
 @click.option("--allow-other", is_flag=True, help="Allow other users to access the mount")
 @click.option(
     "--foreground/--background", default=True, help="Run in foreground (default) or background"
@@ -1453,10 +1454,17 @@ def mount(
     password: str | None,
     read_only: bool,
     cache_dir: str | None,
+    cache_size: int,
     allow_other: bool,
     foreground: bool,
 ):
-    """Mount TeleVault as a local filesystem (requires FUSE)."""
+    """Mount TeleVault as a local filesystem (requires FUSE).
+
+    Uses on-demand chunk fetching: only the chunks needed for each read
+    are downloaded, not the entire file. Recently accessed chunks are
+    kept in an LRU memory cache for fast re-reads.
+
+    """
 
     try:
         from .fuse import mount_vault
@@ -1480,6 +1488,7 @@ def mount(
     console.print(f"[bold blue]Mounting TeleVault at {mount_point}[/bold blue]")
     if read_only:
         console.print("[dim]Mode: read-only[/dim]")
+    console.print(f"[dim]  Cache: {cache_size}MB LRU, on-demand chunk fetching[/dim]")
 
     try:
         mount_vault(
@@ -1487,6 +1496,7 @@ def mount(
             password=password,
             read_only=read_only,
             cache_dir=cache_dir,
+            cache_size_mb=cache_size,
             foreground=foreground,
             allow_other=allow_other,
         )

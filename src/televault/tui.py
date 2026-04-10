@@ -1,6 +1,7 @@
 """Textual TUI for TeleVault."""
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 
@@ -24,6 +25,8 @@ from .cli import format_size
 from .config import Config
 from .config import get_config_dir as televault_config_dir
 from .core import TeleVault
+
+logger = logging.getLogger("televault.tui")
 
 console = Console()
 
@@ -101,7 +104,113 @@ class VaultApp(App):
     SUB_TITLE = "Encrypted Cloud Storage via Telegram"
 
     CSS = """
-    /* ... existing CSS ... */
+    /* Main layout */
+    #main-container {
+        layout: horizontal;
+        height: 100%;
+    }
+
+    /* Sidebar */
+    #sidebar {
+        width: 22;
+        height: 100%;
+        padding: 1 2;
+        border-right: thick $primary;
+        background: $surface;
+    }
+
+    #sidebar .title {
+        text-align: center;
+        color: $text;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    #sidebar .stats-box {
+        padding: 1;
+        margin-bottom: 1;
+        background: $surface-darken-1;
+        border: round $primary;
+    }
+
+    #sidebar .stats-box .title {
+        color: $accent;
+        text-style: bold;
+    }
+
+    .sidebar-button {
+        width: 100%;
+        margin-bottom: 1;
+    }
+
+    /* Content area */
+    #content {
+        height: 100%;
+        padding: 1 2;
+    }
+
+    #content .title {
+        color: $text;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    #file-table {
+        height: 1fr;
+    }
+
+    #status-bar {
+        dock: bottom;
+        height: 1;
+        background: $primary;
+        color: $text;
+        padding: 0 1;
+    }
+
+    /* Detail panel */
+    #detail-panel {
+        width: 40;
+        height: 100%;
+        padding: 1 2;
+        border-left: thick $primary;
+        background: $surface;
+        overflow-y: auto;
+    }
+
+    #detail-panel .title {
+        color: $accent;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    #detail-panel .field-label {
+        color: $text-muted;
+    }
+
+    #detail-panel .field-value {
+        color: $text;
+        margin-bottom: 1;
+    }
+
+    #detail-panel .preview-box {
+        background: $surface-darken-1;
+        border: round $primary;
+        padding: 1;
+        margin-top: 1;
+        max-height: 16;
+        overflow-y: auto;
+    }
+
+    /* Login screens */
+    .login-container {
+        max-width: 60;
+        padding: 2 4;
+        margin: 2;
+    }
+
+    .info-text {
+        color: $text-muted;
+    }
     """
 
     BINDINGS = [
@@ -111,6 +220,7 @@ class VaultApp(App):
         Binding("d", "download", "Download"),
         Binding("s", "search", "Search"),
         Binding("l", "login", "Login"),
+        Binding("p", "preview", "Preview"),
         Binding("delete", "delete", "Delete"),
     ]
 
@@ -249,8 +359,14 @@ class VaultApp(App):
 
                 # Status bar
                 yield Static(
-                    "Ready - Press 'q' to quit, 'u' to upload, 'd' to download", id="status-bar"
+                    "Ready - Press 'q' to quit, 'u' to upload, 'd' to download, 'p' to preview",
+                    id="status-bar",
                 )
+
+            # Detail / Preview panel
+            with Vertical(id="detail-panel"):
+                yield Label("📋 File Details", id="detail-title", classes="title")
+                yield Static("Select a file to see details", id="detail-content")
 
     async def on_mount(self) -> None:
         """Handle app mount."""
@@ -470,6 +586,58 @@ ID: {me.id}
         """Download action."""
         self.notify("Select a file and press Enter to download", severity="information")
 
+    def action_preview(self) -> None:
+        """Preview action - show selected file details in side panel."""
+        if not self.files:
+            self.notify("No files to preview", severity="warning")
+            return
+
+        try:
+            table = self.query_one("#file-table", DataTable)
+            row_index = table.cursor_row
+            if 0 <= row_index < len(self.files):
+                file_meta = self.files[row_index]
+                self._update_detail_panel(file_meta)
+            else:
+                self.notify("Select a file to preview", severity="information")
+        except Exception:
+            self.notify("Select a file to preview", severity="information")
+
+    def _update_detail_panel(self, file_meta) -> None:
+        """Update the detail panel with file information."""
+        try:
+            detail_title = self.query_one("#detail-title", Label)
+            detail_content = self.query_one("#detail-content", Static)
+
+            icon = get_file_icon(file_meta.name)
+            from datetime import datetime
+
+            created = datetime.fromtimestamp(file_meta.created_at).strftime("%Y-%m-%d %H:%M")
+
+            lines = []
+            lines.append(f"{icon} {file_meta.name}")
+            lines.append("")
+            lines.append(f"[bold]ID:[/bold] {file_meta.id}")
+            lines.append(f"[bold]Size:[/bold] {format_size(file_meta.size)}")
+            lines.append(f"[bold]Hash:[/bold] {file_meta.hash[:16]}...")
+            lines.append(f"[bold]Chunks:[/bold] {file_meta.chunk_count}")
+            lines.append(f"[bold]Encrypted:[/bold] {'Yes' if file_meta.encrypted else 'No'}")
+            lines.append(f"[bold]Compressed:[/bold] {'Yes' if file_meta.compressed else 'No'}")
+            if file_meta.compressed and file_meta.compression_ratio:
+                lines.append(f"[bold]Comp. ratio:[/bold] {file_meta.compression_ratio:.1%}")
+            lines.append(f"[bold]Created:[/bold] {created}")
+            if file_meta.mime_type:
+                lines.append(f"[bold]MIME:[/bold] {file_meta.mime_type}")
+            if file_meta.chunks:
+                stored = sum(c.size for c in file_meta.chunks)
+                lines.append(f"[bold]Stored:[/bold] {format_size(stored)}")
+
+            detail_title.update(f"📋 {icon} {file_meta.name[:30]}")
+            detail_content.update("\n".join(lines))
+
+        except Exception as e:
+            logger.debug(f"Error updating detail panel: {e}")
+
     def action_delete(self) -> None:
         """Delete action."""
         if not self.files:
@@ -526,7 +694,7 @@ ID: {me.id}
         row_index = event.cursor_row
         if 0 <= row_index < len(self.files):
             self.selected_file = self.files[row_index]
-            await self._download_file(self.selected_file)
+            self._update_detail_panel(self.selected_file)
 
     async def _download_file(self, file_metadata) -> None:
         """Download selected file."""

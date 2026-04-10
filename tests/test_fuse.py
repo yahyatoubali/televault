@@ -4,7 +4,66 @@ import stat
 
 import pytest
 
-from televault.fuse import FUSE_AVAILABLE
+from televault.fuse import FUSE_AVAILABLE, LRUCache
+
+
+class TestLRUCache:
+    def test_put_and_get(self):
+        cache = LRUCache(max_size_mb=1)
+        cache.put("key1", b"value1")
+        assert cache.get("key1") == b"value1"
+
+    def test_get_missing(self):
+        cache = LRUCache(max_size_mb=1)
+        assert cache.get("missing") is None
+
+    def test_eviction(self):
+        cache = LRUCache(max_size_mb=1)  # 1MB = 1048576 bytes
+        cache.put("a", b"x" * 500000)
+        cache.put("b", b"y" * 500000)
+        # Total ~1MB, both should fit
+        assert cache.get("a") is not None
+        assert cache.get("b") is not None
+
+        # Adding a third should evict oldest
+        cache.put("c", b"z" * 500000)
+        assert cache.get("a") is None  # evicted
+
+    def test_size_tracking(self):
+        cache = LRUCache(max_size_mb=1)
+        cache.put("key1", b"x" * 1024)
+        assert cache.size_mb > 0
+        assert cache.size_mb < 0.01  # ~1KB
+
+    def test_overwrite_updates_value(self):
+        cache = LRUCache(max_size_mb=1)
+        cache.put("key1", b"old_value")
+        cache.put("key1", b"new_value")
+        assert cache.get("key1") == b"new_value"
+
+    def test_clear(self):
+        cache = LRUCache(max_size_mb=1)
+        cache.put("key1", b"val1")
+        cache.put("key2", b"val2")
+        cache.clear()
+        assert cache.get("key1") is None
+        assert cache.size_mb == 0
+
+    def test_has(self):
+        cache = LRUCache(max_size_mb=1)
+        cache.put("key1", b"val")
+        assert cache.has("key1")
+        assert not cache.has("missing")
+
+    def test_lru_ordering(self):
+        cache = LRUCache(max_size_mb=1)
+        # Fill cache, then access "a" to make it recent
+        cache.put("a", b"x" * 400000)
+        cache.put("b", b"y" * 400000)
+        _ = cache.get("a")  # access "a" to make it recent
+        cache.put("c", b"z" * 400000)  # should evict "b", not "a"
+        assert cache.get("a") is not None
+        assert cache.get("b") is None  # evicted
 
 
 class TestFuseAvailability:
@@ -16,31 +75,3 @@ class TestFuseAvailability:
         else:
             with pytest.raises(ImportError):
                 from fuse import FUSE
-
-    def test_stat_helper(self):
-        if not FUSE_AVAILABLE:
-            pytest.skip("fusepy not available")
-
-        from televault.fuse import TeleVaultFuse
-
-        class FakeVault:
-            pass
-
-        fuse = TeleVaultFuse.__new__(TeleVaultFuse)
-        fuse.read_only = False
-        fuse._file_cache = {}
-        fuse._path_to_id = {}
-        fuse._id_to_path = {}
-
-        dir_stat = fuse._get_stat(is_dir=True)
-        assert stat.S_ISDIR(dir_stat["st_mode"])
-        assert dir_stat["st_nlink"] == 2
-
-        file_stat = fuse._get_stat(is_dir=False, size=1024)
-        assert stat.S_ISREG(file_stat["st_mode"])
-        assert file_stat["st_size"] == 1024
-
-        fuse.read_only = True
-        ro_stat = fuse._get_stat(is_dir=False, size=512)
-        assert ro_stat["st_mode"] & 0o444
-        assert not (ro_stat["st_mode"] & 0o222)
