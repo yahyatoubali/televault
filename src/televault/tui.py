@@ -216,6 +216,7 @@ class VaultApp(App):
 
     BINDINGS = [
         Binding("q", "quit", "Quit"),
+        Binding("ctrl+c", "quit", "Quit"),
         Binding("r", "refresh", "Refresh"),
         Binding("u", "upload", "Upload"),
         Binding("d", "download", "Download"),
@@ -264,6 +265,8 @@ class VaultApp(App):
                     loop.run_until_complete(self._vault.disconnect())
             except Exception:
                 pass
+            self._vault = None
+            self._connected = False
 
     def compose(self) -> ComposeResult:
         """Compose the main UI."""
@@ -285,9 +288,7 @@ class VaultApp(App):
             yield Label("")
             yield Label("Telegram API credentials not found!", classes="info-text")
             yield Label("")
-            yield Label(
-                "You need to provide your Telegram API credentials.", classes="info-text"
-            )
+            yield Label("You need to provide your Telegram API credentials.", classes="info-text")
             yield Label("Get them at: https://my.telegram.org", classes="info-text")
             yield Label("")
             yield Label("API ID:", classes="info-text")
@@ -397,8 +398,11 @@ class VaultApp(App):
                 self.is_authenticated = False
                 self.status_message = "Not logged in - Press 'l' to login"
         except Exception as e:
-            self.status_message = f"Error: {str(e)}"
+            logger.warning(f"Auth check failed: {e}")
+            await self._release_vault()
             self.is_authenticated = False
+            self.status_message = f"Connection error - Press 'l' to login"
+            self.notify(f"Could not connect: {str(e)[:80]}", severity="error")
 
     async def _load_files(self) -> None:
         """Load files from vault."""
@@ -1046,9 +1050,49 @@ class ConfirmScreen(Screen):
 
 
 def run_tui():
-    """Run the TUI application."""
+    """Run the TUI application with proper terminal cleanup."""
+    import sys
+    import os
+
     app = VaultApp()
-    app.run()
+    try:
+        app.run()
+    except KeyboardInterrupt:
+        pass
+    except SystemExit:
+        pass
+    except Exception as e:
+        try:
+            console.print(f"[red]Error: {e}[/red]")
+        except Exception:
+            print(f"Error: {e}")
+    finally:
+        try:
+            if (
+                hasattr(app, "_vault")
+                and hasattr(app, "_connected")
+                and app._vault
+                and app._connected
+            ):
+                import asyncio
+
+                try:
+                    loop = asyncio.get_event_loop()
+                    loop.run_until_complete(app._vault.disconnect())
+                except Exception:
+                    pass
+                app._vault = None
+                app._connected = False
+        except Exception:
+            pass
+
+        try:
+            sys.stdout.write("\033[?25h")
+            sys.stdout.flush()
+            if sys.stdin.isatty():
+                os.system("stty sane 2>/dev/null || true")
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
