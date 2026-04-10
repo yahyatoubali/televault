@@ -77,26 +77,61 @@ def show_api_credentials_error():
 
 
 def run_async(coro):
-    """Run async function."""
+    """Run async function with friendly error handling."""
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
 
-    if loop and loop.is_running():
-        import concurrent.futures
+    try:
+        if loop and loop.is_running():
+            import concurrent.futures
 
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(asyncio.run, coro)
-            return future.result()
-    else:
-        return asyncio.run(coro)
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(asyncio.run, coro)
+                return future.result()
+        else:
+            return asyncio.run(coro)
+    except ConnectionError as e:
+        console.print(f"[red]Connection error: {e}[/red]")
+        console.print("[dim]Check your internet connection and try again.[/dim]")
+        sys.exit(1)
+    except RuntimeError as e:
+        msg = str(e)
+        if "Not connected" in msg:
+            console.print("[red]Not connected to Telegram.[/red]")
+            console.print("[dim]Run 'tvt login' first.[/dim]")
+        else:
+            console.print(f"[red]Error: {e}[/red]")
+        sys.exit(1)
+    except FileNotFoundError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Interrupted.[/yellow]")
+        sys.exit(130)
+    except Exception as e:
+        error_type = type(e).__name__
+        if "FloodWait" in error_type:
+            console.print(f"[red]Telegram rate limit: {e}[/red]")
+            console.print("[dim]Wait a few minutes and try again.[/dim]")
+        elif "AuthKey" in error_type or "Unauthorized" in error_type:
+            console.print("[red]Session expired or invalid.[/red]")
+            console.print("[dim]Run 'tvt login' to re-authenticate.[/dim]")
+        elif "ApiId" in error_type:
+            console.print("[red]Invalid Telegram API credentials.[/red]")
+            console.print("[dim]Check your API_ID and API_HASH at https://my.telegram.org[/dim]")
+        else:
+            console.print(f"[red]Error ({error_type}): {e}[/red]")
+            console.print("[dim]Run with --debug for more details.[/dim]")
+        sys.exit(1)
 
 
 async def check_auth(vault: TeleVault) -> bool:
     """Check if user is authenticated. Returns True if authenticated, False otherwise."""
     if not await vault.is_authenticated():
-        console.print("[red]Not logged in. Run 'televault login' first.[/red]")
+        console.print("[red]Not logged in.[/red]")
+        console.print("[dim]Run 'tvt login' to authenticate.[/dim]")
         return False
     return True
 
@@ -104,7 +139,8 @@ async def check_auth(vault: TeleVault) -> bool:
 async def check_channel(vault: TeleVault) -> bool:
     """Check if channel is set. Returns True if set, False otherwise."""
     if vault.config.channel_id is None:
-        console.print("[red]No storage channel configured. Run 'televault setup' first.[/red]")
+        console.print("[red]No storage channel configured.[/red]")
+        console.print("[dim]Run 'tvt setup' to create or select a channel.[/dim]")
         return False
     return True
 
@@ -808,9 +844,17 @@ def whoami():
 @main.command()
 def tui():
     """Launch the interactive TUI."""
-    from .tui import run_tui
+    try:
+        from .tui import run_tui
 
-    run_tui()
+        run_tui()
+    except ImportError as e:
+        if "textual" in str(e).lower():
+            console.print("[red]Error: The TUI requires the 'textual' package.[/red]")
+            console.print("[dim]Install it with: pip install televault[/dim]")
+        else:
+            console.print(f"[red]Error: {e}[/red]")
+        sys.exit(1)
 
 
 @main.command(name="gc")

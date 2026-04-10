@@ -1054,18 +1054,36 @@ def run_tui():
     import sys
     import os
 
+    def _cleanup_terminal():
+        """Restore terminal state after TUI exits or crashes."""
+        try:
+            sys.stdout.write("\033[?25h")
+            sys.stdout.write("\033[0m")
+            sys.stdout.write("\033[2J")
+            sys.stdout.write("\033[H")
+            sys.stdout.flush()
+        except Exception:
+            pass
+        try:
+            if sys.stdin.isatty():
+                os.system("stty sane 2>/dev/null || true")
+        except Exception:
+            pass
+
     app = VaultApp()
     try:
         app.run()
     except KeyboardInterrupt:
-        pass
+        _cleanup_terminal()
+        print("\nTeleVault TUI exited.")
     except SystemExit:
-        pass
+        _cleanup_terminal()
     except Exception as e:
-        try:
-            console.print(f"[red]Error: {e}[/red]")
-        except Exception:
-            print(f"Error: {e}")
+        _cleanup_terminal()
+        print(f"\nTeleVault TUI error: {e}")
+        print("If the terminal looks broken, try running: reset")
+    else:
+        _cleanup_terminal()
     finally:
         try:
             if (
@@ -1083,14 +1101,6 @@ def run_tui():
                     pass
                 app._vault = None
                 app._connected = False
-        except Exception:
-            pass
-
-        try:
-            sys.stdout.write("\033[?25h")
-            sys.stdout.flush()
-            if sys.stdin.isatty():
-                os.system("stty sane 2>/dev/null || true")
         except Exception:
             pass
 
