@@ -26,7 +26,7 @@
 <p align="center">
   <a href="#installation"><code>pip install televault</code></a>
   <span>&nbsp;·&nbsp;</span>
-  <a href="https://televault.readthedocs.io">Docs</a>
+  <a href="https://yahyatoubali.github.io/televault/">Docs</a>
   <span>&nbsp;·&nbsp;</span>
   <a href="#quick-start">Quick Start</a>
   <span>&nbsp;·&nbsp;</span>
