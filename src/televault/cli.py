@@ -1053,10 +1053,15 @@ def tui():
 
 
 @main.command(name="gc")
-@click.option("--dry-run", is_flag=True, help="Show orphans without deleting them")
+@click.option(
+    "--force", is_flag=True, help="Actually delete orphaned messages (default is dry-run)"
+)
 @click.option("--clean-partials", is_flag=True, help="Also remove incomplete uploads")
-def garbage_collect(dry_run: bool, clean_partials: bool):
-    """Find and remove orphaned messages from the vault."""
+def garbage_collect(force: bool, clean_partials: bool):
+    """Find and remove orphaned messages from the vault.
+
+    By default runs in dry-run mode (no deletions). Use --force to actually delete.
+    """
 
     async def _gc():
         from .gc import cleanup_partial_uploads, collect_garbage
@@ -1077,6 +1082,12 @@ def garbage_collect(dry_run: bool, clean_partials: bool):
             cleaned = await cleanup_partial_uploads(vault.telegram)
             console.print(f"  Removed {cleaned} incomplete uploads")
 
+        dry_run = not force
+        if dry_run:
+            console.print(
+                "[yellow]Dry run - no messages will be deleted. Use --force to delete.[/yellow]"
+            )
+
         console.print("[bold]Scanning for orphaned messages...[/bold]")
         result = await collect_garbage(vault.telegram, dry_run=dry_run)
 
@@ -1088,11 +1099,12 @@ def garbage_collect(dry_run: bool, clean_partials: bool):
             console.print(f"  Found {count} orphaned messages ({format_size(size)})")
 
             if dry_run:
-                console.print("[yellow]Dry run - no messages deleted.[/yellow]")
                 for msg in result["orphaned_messages"][:10]:
                     console.print(
                         f"  - Message {msg['id']} ({msg['type']}, {format_size(msg['size'])})"
                     )
+                if count > 10:
+                    console.print(f"  ... and {count - 10} more")
             else:
                 deleted = result["deleted_count"]
                 console.print(f"[green]Deleted {deleted} orphaned messages[/green]")

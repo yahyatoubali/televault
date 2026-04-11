@@ -5,6 +5,19 @@ import logging
 logger = logging.getLogger("televault.gc")
 
 
+async def _collect_pinned_ids(telegram) -> set[int]:
+    """Collect IDs of all pinned messages (index, snapshot index, etc.)."""
+    pinned_ids: set[int] = set()
+    if not telegram._channel_id:
+        return pinned_ids
+
+    async for msg in telegram._client.iter_messages(telegram._channel_id, filter=None, limit=50):
+        if msg.pinned:
+            pinned_ids.add(msg.id)
+
+    return pinned_ids
+
+
 async def collect_garbage(telegram, dry_run: bool = False) -> dict:
     """
     Find and optionally remove orphaned messages from the Telegram channel.
@@ -27,6 +40,9 @@ async def collect_garbage(telegram, dry_run: bool = False) -> dict:
     index = await telegram.get_index()
     referenced_msg_ids: set[int] = set()
 
+    pinned_ids = await _collect_pinned_ids(telegram)
+    referenced_msg_ids.update(pinned_ids)
+
     for file_id, msg_id in index.files.items():
         referenced_msg_ids.add(msg_id)
         try:
@@ -41,7 +57,7 @@ async def collect_garbage(telegram, dry_run: bool = False) -> dict:
 
     async for msg in telegram._client.iter_messages(telegram._channel_id, limit=None):
         if msg.id not in referenced_msg_ids:
-            size = msg.file.size if msg.file else 0
+            size = msg.file.size if msg.file else len(msg.text) if msg.text else 0
             total_orphaned_size += size
             orphaned_messages.append(
                 {
