@@ -2,23 +2,23 @@
 
 ## System Overview
 
-TeleVault provides unlimited cloud storage by using a private Telegram channel as a persistent data store, accessed via the MTProto protocol through Telethon. There is no local database -- all state is maintained as pinned messages and message reply graphs within the channel. File content is encrypted on the client machine before upload, ensuring the plaintext never leaves the user's control.
+TeleVault provides unlimited cloud storage by using a private Telegram channel as a persistent data store, accessed via the MTProto protocol through Telethon. There is no local database -- all state is maintained as pinned messages and message reply graphs within the channel. File content is encrypted on the client before upload, ensuring plaintext never leaves the user's control.
 
-The CLI tool is installed as `tvt`, with `televault` and `tv` as aliases:
+The CLI tool installs as `tvt`, with `televault` as an alias:
 
 ```
 [project.scripts]
-televault = "televault.cli:main"
-tv        = "televault.cli:main"
+tvt        = "televault.cli:main"
+televault  = "televault.cli:main"
 ```
 
 ### Module Map
 
 | Module | Responsibility |
 |---|---|
-| `cli.py` | Click-based CLI, command dispatch, progress display |
-| `core.py` | `TeleVault` class -- upload, download, list, search, delete, resume |
-| `telegram.py` | `TelegramVault` -- MTProto client wrapper, index management, message I/O |
+| `cli.py` | Click-based CLI, command dispatch, progress display, friendly error handling |
+| `core.py` | `TeleVault` class -- upload, download, list, search, delete, resume, stream |
+| `telegram.py` | `TelegramVault` -- MTProto client wrapper, index management, message I/O, channel ops |
 | `models.py` | Data models: `FileMetadata`, `ChunkInfo`, `VaultIndex`, `TransferProgress` |
 | `chunker.py` | File splitting/merging, `ChunkWriter`, BLAKE3 hashing |
 | `crypto.py` | AES-256-GCM encryption, scrypt KDF, streaming encryptor/decryptor |
@@ -27,19 +27,21 @@ tv        = "televault.cli:main"
 | `retry.py` | Exponential backoff with jitter, FloodWait handling |
 | `backup.py` | `BackupEngine` -- snapshot create/restore/list/delete/prune/verify |
 | `snapshot.py` | `Snapshot`, `SnapshotFile`, `SnapshotIndex`, `RetentionPolicy` |
-| `fuse.py` | `TeleVaultFuse` -- FUSE filesystem driver (requires `fusepy`) |
-| `webdav.py` | `WebDAVHandler` + `WebDAVServer` -- HTTP/WebDAV access (requires `aiohttp`) |
+| `fuse.py` | `TeleVaultFuse` -- FUSE driver with on-demand chunk streaming and LRU cache |
+| `webdav.py` | `WebDAVHandler` + `WebDAVServer` -- HTTP/WebDAV access |
+| `preview.py` | `PreviewEngine` -- terminal previews from first 1-2 chunks |
+| `completion.py` | Shell completion scripts (bash, zsh, fish, PowerShell) |
 | `watcher.py` | `FileWatcher` -- polling-based directory monitor with BLAKE2 hashing |
 | `schedule.py` | Schedule CRUD, systemd timer generation, cron entry generation |
 | `gc.py` | Orphan message detection and cleanup |
 | `logging.py` | `RotatingFileHandler` setup, console + file output |
-| `tui.py` | Textual-based interactive terminal UI |
+| `tui.py` | Textual-based interactive terminal UI with detail panel |
 
 ---
 
 ## Storage Model
 
-A single private Telegram channel holds every piece of TeleVault data. The channel contains two categories of pinned messages and two categories of content messages:
+A single private Telegram channel holds every piece of TeleVault data. The channel contains pinned index messages and content messages organized in reply chains:
 
 ```
 Channel
@@ -111,17 +113,6 @@ Channel
 
 The `version` field implements optimistic concurrency control. On save, the client reads the current version, increments it, and overwrites the pinned message. If the version mismatches (concurrent modification), the save is retried up to 5 times with backoff.
 
-### SnapshotIndex (stored as pinned text message)
-
-```json
-{
-  "version": 2,
-  "type": "snapshot_index",
-  "snapshots": { "snap01abc": 150 },
-  "updated_at": 1700000200.0
-}
-```
-
 ---
 
 ## Encryption Pipeline
@@ -139,7 +130,7 @@ Original File
      |
      v
   Optional Compression (zstd level 3)
-  -- skipped for incompressible extensions (see below)
+  -- skipped for incompressible extensions
      |
      v
   Encryption (AES-256-GCM)
@@ -174,7 +165,7 @@ Download chunk message by message_id
      |
      v
   Verify original_hash (BLAKE3 matches ChunkInfo.original_hash)
-  -- catches wrong-password decryption that nonetheless passes GCM
+  -- catches wrong-password decryption that passes GCM
      |
      v
   Write chunk at correct offset via ChunkWriter
@@ -204,20 +195,11 @@ Other: `.woff` `.woff2` `.br`
 
 ---
 
-## Chunk Management
+##Chunk Management
 
 ### Chunk Size
 
 Default: 100 MB (`100 * 1024 * 1024`). Configurable via `config.json`. Telegram's MTProto limit is ~2 GB per file; chunks stay well within this at 100 MB.
-
-### Chunk Layout
-
-Each chunk is uploaded as a Telegram `send_file` message with `reply_to` set to the file's metadata message ID. This creates a reply chain that allows iterating all chunks for a given file:
-
-```python
-async for msg in client.iter_messages(channel, reply_to=metadata_msg_id):
-    # msg is a chunk message
-```
 
 ### Parallel Transfers
 
@@ -228,56 +210,40 @@ async for msg in client.iter_messages(channel, reply_to=metadata_msg_id):
 
 ### ChunkWriter
 
-The `ChunkWriter` pre-allocates the output file with `f.truncate(total_size)` and writes each chunk at its computed offset (`chunk.index * chunk_size`). This supports out-of-order writes during parallel downloads.
+Pre-allocates the output file with `f.truncate(total_size)` and writes each chunk at its computed offset (`chunk.index * chunk_size`). Supports out-of-order writes during parallel downloads.
 
 ### TransferProgress with CRC32
 
-For resumable downloads, `TransferProgress` tracks completed chunk indices. Progress is saved to a `.progress` file alongside the `.partial` download file:
-
-```
-output.dat.partial       <- pre-allocated, partially written
-output.dat.progress      <- CRC32-protected JSON: {operation, file_id, file_name, total_chunks, completed_chunks, started_at}
-```
-
-The CRC32 integrity check ensures corrupted progress files are discarded and the download starts fresh.
+For resumable downloads, progress is saved to a `.progress` file alongside the `.partial` download file. The CRC32 integrity check ensures corrupted progress files are discarded and the download starts fresh.
 
 ---
 
-## Index System
+## FUSE Virtual Drive
 
-### VaultIndex
+The `TeleVaultFuse` class implements `fusepy.Operations` with on-demand chunk streaming:
 
-- Pinned message in the channel
-- Maps `file_id` -> `metadata_message_id`
-- Version field for optimistic concurrency (retries up to 5 times on conflict)
-- Updated atomically on every file add/remove
+- **On open**: Prefetches first 3 chunks into LRU cache
+- **On read**: Downloads only the chunks overlapping the requested byte range
+- **On write**: Buffers writes locally, uploads on flush
+- **LRU Cache**: Configurable size (default 100 MB), `OrderedDict`-based eviction
+- **Cache invalidation**: On file delete, removes all cached chunks
+- **Debounced refresh**: 2-second debounce on index refresh for `getattr`/`readdir`
+- **ChunkCache**: Per-file chunk manager that fetches only needed chunks
+- **Read-only mode**: Returns `EACCES` (errno 30) for write attempts
+- **StatFS**: Reports a virtual 4 TB filesystem
 
-### SnapshotIndex
+---
 
-- Second pinned message in the channel (distinguished by `"type": "snapshot_index"`)
-- Maps `snapshot_id` -> `message_id`
-- Has its own version counter
+## Preview System
 
-### FileMetadata
+The `PreviewEngine` downloads only the first 1-2 chunks and extracts metadata from binary headers without requiring a full download:
 
-- One per file, stored as a compact JSON text message
-- Contains: id, name, size, BLAKE3 hash, list of `ChunkInfo`, encryption/compression flags, timestamps
-- Chunk messages reply to this metadata message, forming a queryable thread
-
-### Snapshot
-
-- One per backup, stored as a compact JSON text message with `"type": "snapshot"`
-- Contains: id, name, source_path, file_count, total_size, parent_id (for incremental), list of `SnapshotFile`
-- Each `SnapshotFile` references a file_id already stored in the vault
-
-### Index Conflict Resolution
-
-When saving the index, the client:
-1. Reads the current pinned VaultIndex/SnapshotIndex
-2. Checks its version against the expected version
-3. If versions match: increments version and edits the pinned message
-4. If versions conflict: retries up to 5 times with increasing backoff (0.5s, 1.0s, ...)
-5. If no index exists: creates a new pinned message
+- **Classification**: Categorizes files as image/video/audio/text/document/archive/binary
+- **Image metadata**: PNG dimensions, JPEG dimensions, GIF dimensions
+- **Video metadata**: MKV/WebM magic, MP4 ftyp brand, AVI RIFF header
+- **Audio metadata**: MP3 ID3 tags, FLAC stream info, WAV format
+- **Text preview**: UTF-8 detection, line counting, first N lines
+- **Hex dump**: Binary files shown as hex + ASCII
 
 ---
 
@@ -300,18 +266,22 @@ tvt ls                             List files
   --json                           JSON output (pipeable)
   --sort <name|size|date>          Sort order
 
-tvt rm <file_id_or_name>           Delete file
-  --yes / -y                       Skip confirmation
-
 tvt cat <file_id_or_name>          Output file to stdout (pipeable)
 
-tvt preview <file_id_or_name>      File preview
+tvt preview <file_id_or_name>      File preview without full download
+  --password / -p                  Decryption password
 
 tvt info <file_id_or_name>         Detailed file information
+  --json                           JSON output
 
 tvt stat                           Vault status/overview
+  --json                           JSON output
 
 tvt find <query>                   Search files by name
+  --json                           JSON output
+
+tvt rm <file_id_or_name>           Delete file
+  --yes / -y                       Skip confirmation
 
 tvt verify <file_id_or_name>       Verify file integrity
   --password / -p                  Decryption password
@@ -320,10 +290,20 @@ tvt gc                             Garbage collection
   --dry-run                        List orphans without deleting
   --clean-partials                 Remove incomplete uploads
 
+tvt login                          Telegram authentication
+  --phone / -p <number>            Phone number
+
+tvt setup                          Configure storage channel
+  --channel-id / -c <id>           Use existing channel by ID
+  --auto / -a                      Auto-create channel without prompting
+
+tvt channel                        Show current channel info
+
 tvt mount <mount_point>            Mount as FUSE filesystem
   --password / -p                  Encryption password
   --read-only                      Read-only mount
   --cache-dir                      Local cache directory
+  --cache-size                     Max cache size in MB (default 100)
   --allow-other                     Allow other users
   --foreground / --background     Foreground or daemon mode
 
@@ -334,17 +314,17 @@ tvt serve                          Start WebDAV server
   --read-only                      Read-only mode
   --cache-dir                      Local cache directory
 
-tvt watch                          Watch directories for changes
-  --path / -p <dir>                Directory to watch (multiple)
-  --password / -P                  Encryption password
-  --interval <seconds>             Poll interval (default 5.0)
-  --exclude / -e <pattern>         Exclude patterns
+tvt whoami                         Show current Telegram account
+tvt logout                         Clear session
+tvt tui                            Launch interactive TUI
+
+tvt completion <shell>             Generate shell completion
+  (bash, zsh, fish, powershell)
 
 tvt backup create <path>           Create backup snapshot
   --name / -n                      Snapshot name
   --password / -p                  Encryption password
   --incremental / -i               Incremental backup
-  --parent <id>                    Parent snapshot ID
   --dry-run                        Show plan without uploading
 
 tvt backup restore <snapshot_id>   Restore from snapshot
@@ -355,37 +335,17 @@ tvt backup restore <snapshot_id>   Restore from snapshot
 tvt backup list                    List snapshots
 tvt backup delete <snapshot_id>    Delete snapshot
 tvt backup prune                   Prune old snapshots
-  --keep-daily <N>                 Keep N daily (default 7)
-  --keep-weekly <N>                Keep N weekly (default 4)
-  --keep-monthly <N>               Keep N monthly (default 6)
-  --dry-run                        Show what would be pruned
+  --keep-daily / --keep-weekly / --keep-monthly
+  --dry-run
 tvt backup verify <snapshot_id>    Verify snapshot integrity
 
 tvt schedule create <path>         Create backup schedule
-  --name / -n                      Schedule name
-  --interval <hourly|daily|weekly|monthly>
-  --password / -p                  Encryption password
-  --incremental                    Incremental backups
+  --name / -n, --interval, --password, --incremental
 
-tvt schedule list                  List schedules
-tvt schedule run <name>            Run a scheduled backup
-tvt schedule delete <name>         Delete schedule
-tvt schedule install <name>        Install as systemd timer (Linux)
-tvt schedule uninstall <name>      Remove systemd timer
-tvt schedule show-systemd <name>  Show systemd unit files
+tvt schedule list / run / delete / install / uninstall / show-systemd
 
-tvt login                          Telegram authentication
-  --phone / -p <number>            Phone number
-
-tvt setup                          Set up storage channel
-  --channel-id / -c <id>           Use existing channel
-  --auto-create                    Create without prompting
-
-tvt logout                         Clear session
-tvt whoami                         Show current Telegram user
-tvt tui                            Launch interactive TUI
-
-tvt completion                     Shell completion
+tvt watch                          Watch directories for changes
+  --path / -p, --interval, --exclude
 ```
 
 ### Global Flags
@@ -394,52 +354,25 @@ tvt completion                     Shell completion
 |---|---|
 | `-v` / `--verbose` | INFO-level logging |
 | `--debug` | DEBUG-level logging |
-| `--json` | Machine-readable output (on `ls`, `stat`, `info`, `find`) |
+| `--version` | Show version |
+| `--help` | Show help |
 
 ### Pipeable Commands
 
 - `tvt push -` reads from stdin
 - `tvt pull -o -` writes to stdout
 - `tvt cat <file>` writes to stdout
-- `tvt ls --json` outputs JSON array
+- `tvt ls --json`, `tvt stat --json`, `tvt info --json`, `tvt find --json` output JSON
 
----
+### Error Handling
 
-## Virtual Drive Architecture
-
-### FUSE Mount
-
-The `TeleVaultFuse` class implements `fusepy.Operations` and maps vault files onto a local mount point.
-
-Key behaviors:
-- **Read path**: On `open()`, downloads the file from Telegram to `~/.local/share/televault/fuse_cache/` and serves subsequent `read()` calls from the local cache.
-- **Write path**: On `flush()`, uploads the buffered data to the vault and updates the in-memory index.
-- **Index refresh**: Refreshes the file listing on every `getattr()`/`readdir()` call, with a 2-second debounce to avoid excessive API calls.
-- **Cache location**: `~/.local/share/televault/fuse_cache/`
-- **Read-only mode**: Supports mounting as read-only, returning `FuseOSError(30)` for write attempts.
-- **StatFS**: Reports a virtual 4 TB filesystem.
-
-### WebDAV Server
-
-The `WebDAVHandler` + `WebDAVServer` classes provide WebDAV access using `aiohttp`. Supports the following HTTP methods:
-
-| Method | WebDAV Method | Behavior |
-|---|---|---|
-| `GET` | File download + HTML directory listing | Downloads file to cache, serves content |
-| `HEAD` | File metadata | Returns content-type and content-length |
-| `PUT` | File upload | Writes to local cache then uploads to vault |
-| `DELETE` | File deletion | Deletes file from vault and local cache |
-| `PROPFIND` | Directory listing | Returns XML multistatus response |
-| `PROPPATCH` | No-op | Returns 200 |
-| `OPTIONS` | Capabilities | Returns `DAV: 1, 2` header |
-| `LOCK` | Advisory lock | Returns lock token |
-| `MKCOL` | Not allowed | Returns 405 |
-
-Index refresh has a 5-second debounce. Cache location defaults to `~/.local/share/televault/webdav_cache/`.
-
-### Streaming FUSE (Planned)
-
-On-demand chunk fetching with LRU cache is planned but not yet implemented. The current FUSE implementation always downloads the entire file before serving reads.
+All CLI errors are user-friendly. No Python tracebacks leak to the terminal:
+- `ConnectionError` -> "Check your internet connection"
+- `RuntimeError("Not connected")` -> "Run `tvt login` first"
+- `FloodWaitError` -> "Wait a few minutes and try again"
+- `AuthKeyError/Unauthorized` -> "Session expired, run `tvt login`"
+- `ApiIdInvalidError` -> "Check your API credentials"
+- `KeyboardInterrupt` -> clean "Interrupted"
 
 ---
 
@@ -447,76 +380,15 @@ On-demand chunk fetching with LRU cache is planned but not yet implemented. The 
 
 ### FileWatcher (`watcher.py`)
 
-A polling-based filesystem monitor that detects changed files and uploads them automatically.
-
-Key characteristics:
-- **Polling**: Scans watched directories at a configurable interval (default 5 seconds)
-- **Change detection**: Uses BLAKE2b (16-byte digest) file hashing to detect modifications
-- **Exclusion patterns**: `.git`, `__pycache__`, `.DS_Store`, `*.pyc`, `*.partial`, `*.tmp`, etc.
-- **Initial scan**: On startup, treats all new files as changed and uploads them
-- **State persistence**: Saves file hashes and watched directories to `watcher_state.json`
+Polling-based filesystem monitor with BLAKE2b change detection, exclusion patterns (.git, __pycache__, etc.), and state persistence to `watcher_state.json`.
 
 ### ScheduleConfig
 
-Stored as individual JSON files in `~/.config/televault/schedules/<name>.json`:
-
-```json
-{
-  "name": "daily-docs",
-  "path": "/home/user/documents",
-  "interval": "daily",
-  "enabled": true,
-  "incremental": false,
-  "password": null,
-  "last_run": 1700000000.0,
-  "last_status": "success"
-}
-```
+Stored as individual JSON files in `~/.config/televault/schedules/<name>.json` with interval, path, password, and last-run tracking.
 
 ### systemd Timer Integration
 
-Installing a schedule creates two files in `~/.config/systemd/user/`:
-
-**`televault-<name>.timer`:**
-```ini
-[Unit]
-Description=TeleVault backup: <name>
-After=network-online.target
-Wants=network-online.target
-
-[Timer]
-OnCalendar=Daily
-Persistent=true
-RandomizedDelaySec=300
-
-[Install]
-WantedBy=timers.target
-```
-
-**`televault-<name>.service`:**
-```ini
-[Unit]
-Description=TeleVault backup: <name>
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=televault backup create "<path>" --name "<name>" [--incremental]
-```
-
-After writing the unit files, runs `systemctl --user daemon-reload`, `enable`, and `start`.
-
-### Cron Entry Generation
-
-For non-Linux systems, `generate_cron_entry()` produces:
-
-| Interval | Cron Expression |
-|---|---|
-| hourly | `0 * * * *` |
-| daily | `0 2 * * *` |
-| weekly | `0 2 * * 0` |
-| monthly | `0 2 1 * *` |
+Installing a schedule creates `televault-<name>.timer` and `televault-<name>.service` in `~/.config/systemd/user/`.
 
 ---
 
@@ -529,79 +401,27 @@ delay = min(base_delay * 2^attempt, max_delay)
 delay = delay * (0.5 + random())   # jitter
 ```
 
-Default parameters from `Config`:
-- `max_retries = 3`
-- `retry_delay = 1.0` (base_delay)
-- `max_delay = 60.0` seconds
+Default: `max_retries = 3`, `retry_delay = 1.0`, `max_delay = 60.0`
 
 ### FloodWaitError Handling
 
-Telegram's `FloodWaitError` includes a `seconds` attribute. The retry logic:
-- Uses the server-suggested wait time if it exceeds the calculated backoff delay
-- Caps retries at 3 attempts for flood waits
-- Raises immediately if `seconds > 300` (5 minutes)
-
-### Atomic Index Saves
-
-`save_index()` uses version-based optimistic concurrency:
-1. Read current pinned index, note its version
-2. Increment version and edit the pinned message
-3. On conflict (version mismatch), retry up to 5 times with `0.5 * (attempt + 1)` second delay
+Uses server-suggested wait time if it exceeds calculated backoff. Caps retries at 3 for flood waits. Raises immediately if `seconds > 300`.
 
 ### Upload Cleanup on Failure
 
-If an `asyncio.gather()` of chunk uploads fails:
-- All uploaded chunk messages and the metadata message are deleted from the channel
-- The index is not updated, so no orphaned references remain
-
-### CRC32-Protected Progress Files
-
-Resumable downloads write progress to a `.progress` file formatted as:
-
-```
-<CRC32 hex 8 chars>
-<JSON TransferProgress>
-```
-
-On resume, the CRC32 is recomputed and compared. If it does not match, the progress file is discarded and the download restarts.
+All uploaded chunk messages and the metadata message are deleted. Index is not updated.
 
 ### Garbage Collection
 
-The `gc` module provides two operations:
-
-1. **`collect_garbage()`**: Scans all messages in the channel and identifies any message whose ID is not referenced by the VaultIndex (orphaned chunks, stale metadata). Reports orphaned size and optionally deletes them in batches of 100.
-
-2. **`cleanup_partial_uploads()`**: Iterates through all files in the index and removes any where `is_complete()` returns false (metadata exists but not all chunks are present).
+`collect_garbage()` scans for orphaned messages. `cleanup_partial_uploads()` removes incomplete uploads.
 
 ---
 
 ## Security Model
 
-### Encryption
-
-- **Algorithm**: AES-256-GCM (Authenticated Encryption with Associated Data)
-- **Key Derivation**: scrypt with parameters `N=2^17, r=8, p=1`, output length 32 bytes
-- **Per-chunk randomness**: Each chunk gets a fresh 16-byte salt and 12-byte nonce
-- **Authentication**: GCM produces a 16-byte authentication tag, providing integrity verification
-- **Password isolation**: The password never leaves the client machine. Only derived keys interact with the encrypted data.
-
-### Integrity Verification
-
-```
-BLAKE3(original plaintext)  ->  ChunkInfo.original_hash
-BLAKE3(encrypted ciphertext) ->  ChunkInfo.hash
-BLAKE3(full file plaintext)  ->  FileMetadata.hash
-```
-
-The `original_hash` field in `ChunkInfo` serves a dual purpose:
-1. Verifies chunk integrity before re-encryption
-2. Detects wrong-password decryption (even if GCM tag verification passes erroneously, the plaintext hash will not match)
-
-### Threat Model
-
 | Threat | Mitigation |
 |---|---|
-| Telegram server reads data | AES-256-GCM encryption; server only sees ciphertext |
+| Telegram server reads data | AES-256-GCM encryption; server sees only ciphertext |
 | Data corruption in transit | BLAKE3 hash at chunk and file level |
 | Wrong password decryption | GCM authentication + original_hash double check |
 | Concurrent index modification | Optimistic concurrency with version counter |
@@ -622,6 +442,7 @@ The `original_hash` field in `ChunkInfo` serves a dual purpose:
 | Log file | `~/.local/share/televault/televault.log` |
 | FUSE cache | `~/.local/share/televault/fuse_cache/` |
 | WebDAV cache | `~/.local/share/televault/webdav_cache/` |
+| Completion cache | `~/.config/televault/completion_cache.json` |
 | Watcher state | `~/.local/share/televault/watcher/watcher_state.json` |
 | systemd timers | `~/.config/systemd/user/televault-<name>.{timer,service}` |
 
@@ -640,163 +461,4 @@ On Windows: config uses `%APPDATA%`, data uses `%LOCALAPPDATA%`. On other Unix: 
   "max_retries": 3,
   "retry_delay": 1.0
 }
-```
-
-### Telegram Credentials (`telegram.json`)
-
-```json
-{
-  "api_id": 12345,
-  "api_hash": "your_api_hash_here",
-  "session_string": "base64_encoded_session"
-}
-```
-
-Credentials are resolved in order: environment variables `TELEGRAM_API_ID` / `TELEGRAM_API_HASH`, then the config file.
-
-### Logging
-
-`RotatingFileHandler` with:
-- Maximum file size: 10 MB
-- Backup count: 3
-- Log format: `%(asctime)s [%(levelname)s] %(name)s:%(funcName)s:%(lineno)d - %(message)s`
-- Console: stderr at the configured level
-- File: DEBUG level, always active
-
----
-
-## Data Flow Diagrams
-
-### Upload Flow
-
-```
-                        User
-                         |
-                     tvt push file.bin
-                         |
-                         v
-                   +------------+
-                   | core.py    |
-                   | TeleVault  |
-                   | .upload()  |
-                   +------------+
-                         |
-            +------------+------------+
-            |                         |
-            v                         v
-     +-------------+          +----------------+
-     | chunker.py  |          | config.py      |
-     | Split into  |          | chunk_size,    |
-     | 100MB chunks|          | encryption,    |
-     +-------------+          | compression    |
-            |                +----------------+
-            v
-     Per chunk (parallel, semaphore=3):
-            |
-            +---> Compute original_hash (BLAKE3 of plaintext)
-            |
-            +---> Optional: compress_data() [zstd level 3]
-            |         if should_compress(filename)
-            |
-            +---> encrypt_chunk() [AES-256-GCM]
-            |         28-byte header: salt(16) + nonce(12)
-            |         ciphertext + 16-byte GCM tag
-            |
-            +---> Compute hash (BLAKE3 of encrypted data)
-            |
-            +---> telegram.upload_chunk()
-            |         send_file with reply_to=metadata_msg_id
-            |
-            v
-     Collect all ChunkInfo objects
-            |
-            v
-     Update FileMetadata with chunks list
-            |
-            v
-     telegram.update_metadata(metadata_msg_id, metadata)
-            |
-            v
-     Update VaultIndex: add_file(file_id, metadata_msg_id)
-            |
-            v
-     telegram.save_index(index)  [version-gated]
-```
-
-### Download Flow
-
-```
-                        User
-                         |
-                     tvt pull abc123
-                         |
-                         v
-                   +------------+
-                   | core.py    |
-                   | TeleVault  |
-                   | .download()|
-                   +------------+
-                         |
-                         v
-     telegram.get_index() -> find file_id -> metadata_msg_id
-                         |
-                         v
-     telegram.get_metadata(metadata_msg_id) -> FileMetadata
-                         |
-                         v
-     ChunkWriter(output_path, total_size, chunk_size)
-         pre-allocates file with f.truncate(total_size)
-                         |
-                         v
-     Per chunk (parallel, semaphore=5):
-            |
-            +---> telegram.download_chunk(message_id)
-            |
-            +---> Verify hash: BLAKE3(data) == ChunkInfo.hash
-            |
-            +---> Decrypt: decrypt_chunk(data, password)
-            |         extract 28-byte header, scrypt key derivation,
-            |         AES-256-GCM decrypt
-            |
-            +---> Decompress: decompress_data() [zstd]
-            |
-            +---> Verify original_hash: BLAKE3(plaintext) == ChunkInfo.original_hash
-            |
-            +---> writer.write_chunk(Chunk(index, data))
-            |         seeks to index * chunk_size, writes in place
-            |
-            v
-     All chunks complete
-            |
-            v
-     Verify file-level hash: BLAKE3(output_file) == FileMetadata.hash
-            |
-            v
-     Success -> return output_path
-     Failure -> delete output_file, raise error
-```
-
-### Backup Snapshot Flow
-
-```
-     tvt backup create /data/project --name weekly
-            |
-            v
-     BackupEngine.create_snapshot()
-            |
-            +---> Walk directory, collect files
-            |
-            +---> [incremental] Compare BLAKE3 hashes with parent snapshot
-            |         Skip unchanged files
-            |
-            +---> Upload each new/changed file via TeleVault.upload()
-            |
-            +---> Build Snapshot object with SnapshotFile list
-            |
-            +---> Upload snapshot as JSON text message
-            |
-            +---> Update SnapshotIndex (pinned message)
-            |
-            v
-     Return Snapshot with id, file_count, total_size
 ```
