@@ -284,10 +284,24 @@ class TeleVault:
         # Update metadata with chunk info
         await self.telegram.update_metadata(metadata_msg_id, metadata)
 
-        # Update index
-        index = await self.telegram.get_index()
-        index.add_file(file_id, metadata_msg_id)
-        await self.telegram.save_index(index)
+        # Save index: read current, merge, write back
+        # This preserves any files added by concurrent operations
+        max_index_retries = 3
+        for attempt in range(max_index_retries):
+            try:
+                index = await self.telegram.get_index()
+                if file_id not in index.files:
+                    index.add_file(file_id, metadata_msg_id)
+                await self.telegram.save_index(index)
+                break
+            except Exception as e:
+                if attempt >= max_index_retries - 1:
+                    logger.error(f"Failed to save index after upload: {e}")
+                    logger.error(f"File data is safe on Telegram (metadata msg {metadata_msg_id})")
+                    logger.error("Run 'tvt gc --clean-partials' to clean up, or 'tvt push' again")
+                    raise
+                logger.warning(f"Index save retry {attempt + 1}: {e}")
+                await asyncio.sleep(0.5 * (attempt + 1))
 
         return metadata
 
@@ -617,9 +631,19 @@ class TeleVault:
         metadata.chunks = [chunk_results[i] for i in sorted(chunk_results.keys())]
         await self.telegram.update_metadata(existing_msg_id, metadata)
 
-        index = await self.telegram.get_index()
-        index.add_file(file_id, existing_msg_id)
-        await self.telegram.save_index(index)
+        max_index_retries = 3
+        for attempt in range(max_index_retries):
+            try:
+                index = await self.telegram.get_index()
+                if file_id not in index.files:
+                    index.add_file(file_id, existing_msg_id)
+                await self.telegram.save_index(index)
+                break
+            except Exception as e:
+                if attempt >= max_index_retries - 1:
+                    raise
+                logger.warning(f"Index save retry {attempt + 1}: {e}")
+                await asyncio.sleep(0.5 * (attempt + 1))
 
         return metadata
 
@@ -878,9 +902,20 @@ class TeleVault:
 
             await self.telegram.update_metadata(metadata.message_id, metadata)
 
-            index = await self.telegram.get_index()
-            index.add_file(metadata.id, metadata.message_id)
-            await self.telegram.save_index(index)
+            # upload() already saved the index, but update the name change
+            max_index_retries = 3
+            for attempt in range(max_index_retries):
+                try:
+                    index = await self.telegram.get_index()
+                    if metadata.id not in index.files:
+                        index.add_file(metadata.id, metadata.message_id)
+                    await self.telegram.save_index(index)
+                    break
+                except Exception as e:
+                    if attempt >= max_index_retries - 1:
+                        raise
+                    logger.warning(f"Index save retry {attempt + 1}: {e}")
+                    await asyncio.sleep(0.5 * (attempt + 1))
 
             return metadata
         finally:

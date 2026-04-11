@@ -536,7 +536,7 @@ class TelegramVault:
         if not self._channel_id:
             raise ValueError("No channel set")
 
-        # Get index
+        # Get index and remove entry FIRST (crash safety)
         index = await self.get_index()
 
         if file_id not in index.files:
@@ -544,23 +544,24 @@ class TelegramVault:
 
         metadata_msg_id = index.files[file_id]
 
-        # Collect all message IDs to delete
-        msg_ids = [metadata_msg_id]
-
+        # Read metadata to collect chunk IDs before removing from index
+        chunk_msg_ids: list[int] = []
         try:
-            async for chunk_msg in self.iter_file_chunks(metadata_msg_id):
-                msg_ids.append(chunk_msg.id)
+            metadata = await self.get_metadata(metadata_msg_id)
+            chunk_msg_ids = [c.message_id for c in metadata.chunks]
         except Exception:
-            # If we can't get chunk messages, continue with just metadata
             pass
 
-        # Delete messages (ignore errors for already-deleted messages)
-        with contextlib.suppress(Exception):
-            await self._client.delete_messages(self._channel_id, msg_ids)
-
-        # Update index
+        # Remove from index BEFORE deleting messages (crash safety)
+        # If crash happens after index update but before message deletion,
+        # gc will clean up the orphaned messages
         index.remove_file(file_id)
         await self.save_index(index)
+
+        # Delete messages (ignore errors for already-deleted messages)
+        msg_ids = [metadata_msg_id] + chunk_msg_ids
+        with contextlib.suppress(Exception):
+            await self._client.delete_messages(self._channel_id, msg_ids)
 
         return True
 
