@@ -42,7 +42,6 @@ FILE_ICONS = {
 
 
 def get_file_icon(filename: str) -> str:
-    """Get an icon based on file extension."""
     ext = filename.lower().split(".")[-1] if "." in filename else ""
 
     image_exts = {"jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic", "heif"}
@@ -68,35 +67,6 @@ def get_file_icon(filename: str) -> str:
         return FILE_ICONS["unknown"]
 
 
-def check_api_credentials() -> tuple[bool, str | None]:
-    """Check if Telegram API credentials are set.
-
-    Returns:
-        (is_configured, config_path_or_error)
-    """
-    # Check environment variables
-    api_id = os.environ.get("TELEGRAM_API_ID")
-    api_hash = os.environ.get("TELEGRAM_API_HASH")
-
-    if api_id and api_hash:
-        return True, None
-
-    # Check config file
-    config_path = televault_config_dir() / "telegram.json"
-    if config_path.exists():
-        try:
-            import json
-
-            with open(config_path) as f:
-                data = json.load(f)
-                if data.get("api_id") and data.get("api_hash"):
-                    return True, None
-        except Exception:
-            pass
-
-    return False, str(config_path)
-
-
 class VaultApp(App):
     """TeleVault Terminal User Interface."""
 
@@ -104,13 +74,11 @@ class VaultApp(App):
     SUB_TITLE = "Encrypted Cloud Storage via Telegram"
 
     CSS = """
-    /* Main layout */
     #main-container {
         layout: horizontal;
         height: 100%;
     }
 
-    /* Sidebar */
     #sidebar {
         width: 22;
         height: 100%;
@@ -143,7 +111,6 @@ class VaultApp(App):
         margin-bottom: 1;
     }
 
-    /* Content area */
     #content {
         width: 1fr;
         height: 100%;
@@ -168,7 +135,6 @@ class VaultApp(App):
         padding: 0 1;
     }
 
-    /* Detail panel */
     #detail-panel {
         width: 40;
         height: 100%;
@@ -202,15 +168,30 @@ class VaultApp(App):
         overflow-y: auto;
     }
 
-    /* Login screens */
-    .login-container {
-        max-width: 60;
+    #setup-panel {
         padding: 2 4;
-        margin: 2;
+        height: 100%;
     }
 
-    .info-text {
+    #setup-panel .title {
+        color: $accent;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    #setup-panel .step {
+        color: $text;
+        margin-bottom: 1;
+    }
+
+    #setup-panel .cmd {
+        color: $accent;
+        text-style: bold;
+    }
+
+    #setup-panel .hint {
         color: $text-muted;
+        margin-bottom: 1;
     }
     """
 
@@ -221,13 +202,12 @@ class VaultApp(App):
         Binding("u", "upload", "Upload"),
         Binding("d", "download", "Download"),
         Binding("s", "search", "Search"),
-        Binding("l", "login", "Login"),
         Binding("p", "preview", "Preview"),
         Binding("delete", "delete", "Delete"),
     ]
 
     is_authenticated = reactive(False)
-    api_configured = reactive(False)
+    has_channel = reactive(False)
     files = reactive([])
 
     def __init__(self):
@@ -238,7 +218,6 @@ class VaultApp(App):
         self.selected_file = None
 
     async def _get_vault(self) -> TeleVault:
-        """Get or create a persistent TeleVault connection."""
         if self._vault is None or not self._connected:
             self._vault = TeleVault()
             await self._vault.connect()
@@ -246,7 +225,6 @@ class VaultApp(App):
         return self._vault
 
     async def _release_vault(self) -> None:
-        """Disconnect and release the persistent connection."""
         if self._vault and self._connected:
             await self._vault.disconnect()
             self._vault = None
@@ -255,7 +233,6 @@ class VaultApp(App):
     status_message = reactive("Ready")
 
     def on_unmount(self) -> None:
-        """Clean up connection when app exits."""
         if self._vault and self._connected:
             try:
                 loop = asyncio.get_event_loop()
@@ -269,72 +246,16 @@ class VaultApp(App):
             self._connected = False
 
     def compose(self) -> ComposeResult:
-        """Compose the main UI."""
         yield Header(show_clock=True)
-
-        if not self.api_configured:
-            yield from self._compose_api_setup_screen()
-        elif not self.is_authenticated:
-            yield from self._compose_login_screen()
-        else:
-            yield from self._compose_main_screen()
-
+        yield from self._compose_main_screen()
         yield Footer()
 
-    def _compose_api_setup_screen(self) -> ComposeResult:
-        """Compose the API credentials setup screen."""
-        with Container(id="login-screen"), Container(classes="login-container"):
-            yield Label("⚙️ API Configuration Required", classes="title")
-            yield Label("")
-            yield Label("Telegram API credentials not found!", classes="info-text")
-            yield Label("")
-            yield Label("You need to provide your Telegram API credentials.", classes="info-text")
-            yield Label("Get them at: https://my.telegram.org", classes="info-text")
-            yield Label("")
-            yield Label("API ID:", classes="info-text")
-            yield Input(placeholder="12345", id="api-id-input")
-            yield Label("")
-            yield Label("API Hash:", classes="info-text")
-            yield Input(placeholder="your_api_hash_here", id="api-hash-input")
-            yield Label("")
-            yield Label("These will be saved to your config file.", classes="info-text")
-            yield Label("")
-
-            with Horizontal():
-                yield Button("💾 Save", id="btn-save-api", variant="primary")
-                yield Button("❌ Exit", id="btn-exit-setup", variant="error")
-
-            yield Label("")
-            yield Label("Press Ctrl+C to exit anytime", classes="info-text")
-
-    def _compose_login_screen(self) -> ComposeResult:
-        """Compose the login screen."""
-        with Container(id="login-screen"), Container(classes="login-container"):
-            yield Label("TeleVault", classes="title")
-            yield Label("")
-            yield Label("Welcome to TeleVault", classes="info-text")
-            yield Label("Your encrypted Telegram cloud storage", classes="info-text")
-            yield Label("")
-
-            yield Label("Status: Not Authenticated", id="auth-status")
-            yield Label("")
-
-            with Horizontal():
-                yield Button("🔐 Login", id="btn-login", variant="primary")
-                yield Button("❌ Exit", id="btn-exit", variant="error")
-
-            yield Label("")
-            yield Label("Press Ctrl+C to exit anytime", classes="info-text")
-
     def _compose_main_screen(self) -> ComposeResult:
-        """Compose the main application screen."""
         with Container(id="main-container"):
-            # Sidebar
             with Vertical(id="sidebar"):
                 yield Label("📁 TeleVault", classes="title")
                 yield Label("")
 
-                # Stats
                 with Container(classes="stats-box"):
                     yield Label("📊 Statistics", classes="title")
                     yield Label("Files: 0", id="stat-files")
@@ -347,65 +268,109 @@ class VaultApp(App):
                 yield Button("🔄 Refresh", id="btn-refresh", classes="sidebar-button")
                 yield Button("ℹ️ Status", id="btn-status", classes="sidebar-button")
                 yield Button("👤 Whoami", id="btn-whoami", classes="sidebar-button")
-                yield Button("🔓 Logout", id="btn-logout", classes="sidebar-button")
 
-            # Main content
             with Vertical(id="content"):
                 yield Label("📁 File Browser", classes="title")
                 yield Input(placeholder="Search files...", id="search-input")
 
-                # File table
                 table = DataTable(id="file-table")
                 table.add_columns("ID", "Name", "Size", "Chunks", "Encrypted", "Actions")
                 table.cursor_type = "row"
                 table.zebra_stripes = True
                 yield table
 
-                # Status bar
                 yield Static(
-                    "Ready - Press 'q' to quit, 'u' to upload, 'd' to download, 'p' to preview",
+                    "Ready - Press 'q' to quit, 'p' to preview, 'u' to upload",
                     id="status-bar",
                 )
 
-            # Detail / Preview panel
             with Vertical(id="detail-panel"):
                 yield Label("📋 File Details", id="detail-title", classes="title")
                 yield Static("Select a file to see details", id="detail-content")
 
     async def on_mount(self) -> None:
-        """Handle app mount."""
         self.title = "TeleVault - Encrypted Cloud Storage"
 
-        # Check API credentials first
-        is_configured, _ = check_api_credentials()
-        self.api_configured = is_configured
+        config_path = televault_config_dir() / "telegram.json"
+        api_configured = os.environ.get("TELEGRAM_API_ID") and os.environ.get("TELEGRAM_API_HASH")
+        if not api_configured and config_path.exists():
+            try:
+                import json
 
-        if self.api_configured:
-            # Check authentication on mount
-            await self._check_auth()
+                with open(config_path) as f:
+                    data = json.load(f)
+                if data.get("api_id") and data.get("api_hash"):
+                    api_configured = True
+                if data.get("session_string"):
+                    pass
+            except Exception:
+                pass
+
+        if not api_configured:
+            self.is_authenticated = False
+            self.has_channel = False
+            self.status_message = "Not configured"
+            self._show_setup_hint("api")
+            return
+
+        session_string = None
+        if config_path.exists():
+            try:
+                import json
+
+                with open(config_path) as f:
+                    data = json.load(f)
+                session_string = data.get("session_string")
+            except Exception:
+                pass
+
+        if not session_string:
+            self.is_authenticated = False
+            self.status_message = "Not logged in"
+            self._show_setup_hint("login")
+            return
+
+        has_channel = self.config.channel_id is not None
+        if not has_channel:
+            self.has_channel = False
+            self.status_message = "No channel"
+            self._show_setup_hint("channel")
+            return
+
+        await self._check_auth()
+
+    def _show_setup_hint(self, step: str) -> None:
+        try:
+            status_bar = self.query_one("#status-bar", Static)
+            if step == "api":
+                status_bar.update("⚠ Not configured. Run: tvt login  |  Press 'q' to quit")
+            elif step == "login":
+                status_bar.update("⚠ Not logged in. Run: tvt login  |  Press 'q' to quit")
+            elif step == "channel":
+                status_bar.update("⚠ No channel. Run: tvt setup  |  Press 'q' to quit")
+        except Exception:
+            pass
 
     async def _check_auth(self) -> None:
-        """Check if user is authenticated."""
         try:
             vault = await self._get_vault()
 
             if await vault.is_authenticated():
                 self.is_authenticated = True
-                self.refresh(layout=True)
+                self.has_channel = True
                 await self._load_files()
             else:
                 await self._release_vault()
                 self.is_authenticated = False
-                self.status_message = "Not logged in - Press 'l' to login"
+                self.status_message = "Not logged in - Run: tvt login"
         except Exception as e:
             logger.warning(f"Auth check failed: {e}")
             await self._release_vault()
             self.is_authenticated = False
-            self.status_message = f"Connection error - Press 'l' to login"
+            self.status_message = "Connection error - Run: tvt login"
             self.notify(f"Could not connect: {str(e)[:80]}", severity="error")
 
     async def _load_files(self) -> None:
-        """Load files from vault."""
         if not self.is_authenticated:
             return
 
@@ -416,7 +381,6 @@ class VaultApp(App):
             files = await vault.list_files()
             self.files = files
 
-            # Update table
             table = self.query_one("#file-table", DataTable)
             table.clear()
 
@@ -430,7 +394,6 @@ class VaultApp(App):
                     "[Enter] Download | [Del] Delete",
                 )
 
-            # Update stats
             total_size = sum(f.size for f in files)
             self.query_one("#stat-files", Label).update(f"Files: {len(files)}")
             self.query_one("#stat-size", Label).update(f"Total Size: {format_size(total_size)}")
@@ -448,18 +411,9 @@ class VaultApp(App):
             self.status_message = f"Error loading files: {str(e)}"
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Handle button presses."""
         button_id = event.button.id
 
-        if button_id == "btn-save-api":
-            await self._save_api_credentials()
-        elif button_id == "btn-exit-setup":
-            self.exit()
-        elif button_id == "btn-login":
-            await self._do_login()
-        elif button_id == "btn-exit":
-            self.exit()
-        elif button_id == "btn-upload":
+        if button_id == "btn-upload":
             await self._do_upload()
         elif button_id == "btn-search":
             await self._do_search()
@@ -469,65 +423,22 @@ class VaultApp(App):
             await self._show_status()
         elif button_id == "btn-whoami":
             await self._show_whoami()
-        elif button_id == "btn-logout":
-            await self._do_logout()
-
-    async def _save_api_credentials(self) -> None:
-        """Save API credentials to config file."""
-        api_id = self.query_one("#api-id-input", Input).value.strip()
-        api_hash = self.query_one("#api-hash-input", Input).value.strip()
-
-        if not api_id or not api_hash:
-            self.notify("Please enter both API ID and API Hash", severity="error")
-            return
-
-        try:
-            # Validate API ID is a number
-            api_id_int = int(api_id)
-
-            # Save to config file
-            config_path = televault_config_dir() / "telegram.json"
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-
-            import json
-
-            config_data = {"api_id": api_id_int, "api_hash": api_hash, "session_string": None}
-
-            with open(config_path, "w") as f:
-                json.dump(config_data, f, indent=2)
-
-            self.notify("✓ API credentials saved successfully!")
-            self.api_configured = True
-            self.refresh(layout=True)
-            await self._check_auth()
-
-        except ValueError:
-            self.notify("API ID must be a number", severity="error")
-        except Exception as e:
-            self.notify(f"Error saving credentials: {str(e)}", severity="error")
-
-    async def _do_login(self) -> None:
-        """Show login dialog."""
-        self.push_screen(LoginScreen())
 
     async def _do_upload(self) -> None:
-        """Show upload dialog."""
         if not self.is_authenticated:
-            self.notify("Please login first", severity="error")
+            self.notify("Not logged in. Run: tvt login", severity="error")
             return
         self.push_screen(UploadScreen())
 
     async def _do_search(self) -> None:
-        """Focus search input."""
         if not self.is_authenticated:
-            self.notify("Please login first", severity="error")
+            self.notify("Not logged in. Run: tvt login", severity="error")
             return
         self.query_one("#search-input", Input).focus()
 
     async def _show_status(self) -> None:
-        """Show vault status."""
         if not self.is_authenticated:
-            self.notify("Please login first", severity="error")
+            self.notify("Not logged in. Run: tvt login", severity="error")
             return
 
         try:
@@ -556,15 +467,14 @@ Compression: {ratio_str}
             self.notify(f"Error: {str(e)}", severity="error")
 
     async def _show_whoami(self) -> None:
-        """Show current user info."""
         if not self.is_authenticated:
-            self.notify("Please login first", severity="error")
+            self.notify("Not logged in. Run: tvt login", severity="error")
             return
 
         try:
             vault = await self._get_vault()
             if not await vault.is_authenticated():
-                self.notify("Not logged in", severity="error")
+                self.notify("Not logged in. Run: tvt login", severity="error")
                 return
             me = await vault.telegram._client.get_me()
 
@@ -584,38 +494,16 @@ ID: {me.id}
         except Exception as e:
             self.notify(f"Error: {str(e)}", severity="error")
 
-    async def _do_logout(self) -> None:
-        """Logout user."""
-        await self._release_vault()
-
-        config_dir = televault_config_dir()
-        telegram_config = config_dir / "telegram.json"
-
-        if telegram_config.exists():
-            telegram_config.unlink()
-            self.is_authenticated = False
-            self.files = []
-            self.refresh(layout=True)
-            self.notify("Logged out successfully", severity="information")
-        else:
-            self.is_authenticated = False
-            self.refresh(layout=True)
-            self.notify("Not logged in", severity="warning")
-
     def action_refresh(self) -> None:
-        """Refresh action."""
         asyncio.create_task(self._load_files())
 
     def action_upload(self) -> None:
-        """Upload action."""
         asyncio.create_task(self._do_upload())
 
     def action_download(self) -> None:
-        """Download action."""
         self.notify("Select a file and press Enter to download", severity="information")
 
     def action_preview(self) -> None:
-        """Preview action - show selected file details in side panel."""
         if not self.files:
             self.notify("No files to preview", severity="warning")
             return
@@ -632,7 +520,6 @@ ID: {me.id}
             self.notify("Select a file to preview", severity="information")
 
     def _update_detail_panel(self, file_meta) -> None:
-        """Update the detail panel with file information."""
         try:
             detail_title = self.query_one("#detail-title", Label)
             detail_content = self.query_one("#detail-content", Static)
@@ -676,12 +563,10 @@ ID: {me.id}
             logger.debug(f"Error updating detail panel: {e}")
 
     def action_delete(self) -> None:
-        """Delete action."""
         if not self.files:
             self.notify("No files to delete", severity="warning")
             return
 
-        # Get selected file from table
         try:
             table = self.query_one("#file-table", DataTable)
             row_index = table.cursor_row
@@ -716,15 +601,9 @@ ID: {me.id}
             self.notify("Select a file to delete", severity="information")
 
     def action_search(self) -> None:
-        """Search action."""
         asyncio.create_task(self._do_search())
 
-    def action_login(self) -> None:
-        """Login action."""
-        asyncio.create_task(self._do_login())
-
     async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        """Handle file selection."""
         if not self.files:
             return
 
@@ -734,136 +613,14 @@ ID: {me.id}
             self._update_detail_panel(self.selected_file)
 
     async def _download_file(self, file_metadata) -> None:
-        """Download selected file."""
         self.push_screen(DownloadScreen(file_metadata))
 
     def watch_status_message(self, message: str) -> None:
-        """Update status bar when message changes."""
         try:
             status_bar = self.query_one("#status-bar", Static)
             status_bar.update(message)
         except Exception:
             pass
-
-
-class LoginScreen(Screen):
-    """Login screen for authentication."""
-
-    def compose(self) -> ComposeResult:
-        with Container(classes="login-container"):
-            yield Label("🔐 Login to Telegram", classes="title")
-            yield Label("")
-            yield Label("Enter your phone number:", classes="info-text")
-            yield Input(placeholder="+1234567890", id="phone-input")
-            yield Label("")
-            yield Button("Send Code", id="btn-send-code", variant="primary")
-            yield Button("Cancel", id="btn-cancel")
-
-    async def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-send-code":
-            phone = self.query_one("#phone-input", Input).value
-            if phone:
-                await self._do_login(phone)
-        elif event.button.id == "btn-cancel":
-            self.app.pop_screen()
-
-    async def _do_login(self, phone: str) -> None:
-        """Perform login."""
-        try:
-            self.app.notify("Connecting to Telegram...")
-
-            vault = TeleVault()
-            await vault.connect(skip_channel=True)
-
-            if await vault.is_authenticated():
-                self.app.notify("Already logged in!")
-                self.app.is_authenticated = True
-                self.app.refresh(layout=True)
-                await vault.disconnect()
-                self.app.pop_screen()
-                return
-
-            self.app.notify("Sending verification code...")
-            sent_code = await vault.telegram._client.send_code_request(phone)
-
-            self.app.notify(f"Code sent to {phone}")
-            self.app.push_screen(CodeScreen(vault, phone, sent_code.phone_code_hash))
-
-        except Exception as e:
-            error_msg = str(e)
-            self.app.notify(f"Login error: {error_msg}", severity="error")
-
-
-class CodeScreen(Screen):
-    """Screen for entering verification code."""
-
-    def __init__(self, vault: TeleVault, phone: str, sent_code_hash: str | None = None):
-        super().__init__()
-        self.vault = vault
-        self.phone = phone
-        self.sent_code_hash = sent_code_hash
-
-    def compose(self) -> ComposeResult:
-        with Container(classes="login-container"):
-            yield Label("📱 Verification Code", classes="title")
-            yield Label("")
-            yield Label(f"Enter the code sent to {self.phone}:", classes="info-text")
-            yield Input(placeholder="12345", id="code-input")
-            yield Label("")
-            yield Label("2FA Password (if enabled):", classes="info-text")
-            yield Input(placeholder="Leave empty if no 2FA", id="password-input", password=True)
-            yield Label("")
-            yield Button("Verify", id="btn-verify", variant="primary")
-            yield Button("Back", id="btn-back")
-
-    async def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-verify":
-            code = self.query_one("#code-input", Input).value
-            password = self.query_one("#password-input", Input).value
-            if code:
-                await self._verify_code(code, password or None)
-        elif event.button.id == "btn-back":
-            await self.vault.disconnect()
-            self.app.pop_screen()
-
-    async def _verify_code(self, code: str, password: str | None) -> None:
-        """Verify the code."""
-        try:
-            from telethon.errors import SessionPasswordNeededError
-
-            try:
-                await self.vault.telegram._client.sign_in(self.phone, code)
-            except SessionPasswordNeededError:
-                if password:
-                    await self.vault.telegram._client.sign_in(password=password)
-                else:
-                    self.app.notify(
-                        "2FA password required. Please enter your password.", severity="error"
-                    )
-                    return
-
-            session_string = self.vault.telegram._client.session.save()
-            from .telegram import TelegramConfig
-
-            config = TelegramConfig.from_env()
-            config.session_string = session_string
-            config.save()
-
-            self.app.notify("✓ Login successful!")
-            self.app.is_authenticated = True
-            self.app.refresh(layout=True)
-            await self.vault.disconnect()
-            self.app.pop_screen()
-            self.app.pop_screen()
-
-        except Exception as e:
-            error_msg = str(e)
-            if "2FA" in error_msg or "password" in error_msg.lower():
-                self.app.notify(
-                    "2FA password required. Please enter your password.", severity="error"
-                )
-            else:
-                self.app.notify(f"Verification failed: {error_msg}", severity="error")
 
 
 class UploadScreen(Screen):
@@ -897,7 +654,6 @@ class UploadScreen(Screen):
             self.app.pop_screen()
 
     async def _upload_file(self, path: str, password: str | None) -> None:
-        """Upload the file."""
         progress_label = self.query_one("#upload-progress", Static)
         vault = None
         try:
@@ -982,7 +738,6 @@ class DownloadScreen(Screen):
             self.app.pop_screen()
 
     async def _download_file(self, output: str | None, password: str | None) -> None:
-        """Download the file."""
         progress_label = self.query_one("#download-progress", Static)
         vault = None
         try:
@@ -1051,11 +806,10 @@ class ConfirmScreen(Screen):
 
 def run_tui():
     """Run the TUI application with proper terminal cleanup."""
-    import sys
     import os
+    import sys
 
     def _cleanup_terminal():
-        """Restore terminal state after TUI exits or crashes."""
         try:
             sys.stdout.write("\033[?25h")
             sys.stdout.write("\033[0m")
