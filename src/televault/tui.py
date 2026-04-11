@@ -168,30 +168,21 @@ class VaultApp(App):
         overflow-y: auto;
     }
 
-    #setup-panel {
-        padding: 2 4;
+    #loading-container {
+        align: center middle;
         height: 100%;
     }
 
-    #setup-panel .title {
-        color: $accent;
-        text-style: bold;
-        margin-bottom: 1;
-    }
-
-    #setup-panel .step {
+    #loading-label {
+        text-align: center;
         color: $text;
-        margin-bottom: 1;
-    }
-
-    #setup-panel .cmd {
-        color: $accent;
         text-style: bold;
+        margin: 1;
     }
 
-    #setup-panel .hint {
+    #loading-hint {
+        text-align: center;
         color: $text-muted;
-        margin-bottom: 1;
     }
     """
 
@@ -209,6 +200,7 @@ class VaultApp(App):
     is_authenticated = reactive(False)
     has_channel = reactive(False)
     files = reactive([])
+    _loading = reactive(True)
 
     def __init__(self):
         super().__init__()
@@ -226,29 +218,59 @@ class VaultApp(App):
 
     async def _release_vault(self) -> None:
         if self._vault and self._connected:
-            await self._vault.disconnect()
+            with contextlib.suppress(Exception):
+                await self._vault.disconnect()
             self._vault = None
             self._connected = False
 
-    status_message = reactive("Ready")
+    status_message = reactive("Connecting...")
 
     def on_unmount(self) -> None:
         if self._vault and self._connected:
-            try:
+            with contextlib.suppress(Exception):
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
                     loop.create_task(self._vault.disconnect())
                 else:
                     loop.run_until_complete(self._vault.disconnect())
-            except Exception:
-                pass
             self._vault = None
             self._connected = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield from self._compose_main_screen()
+        yield from self._compose_loading()
         yield Footer()
+
+    def _compose_loading(self) -> ComposeResult:
+        with Container(id="loading-container"):
+            yield Label("TeleVault", id="loading-label")
+            yield Label("Connecting to Telegram...", id="loading-hint")
+
+    def watch_is_authenticated(self, authenticated: bool) -> None:
+        if authenticated and self._loading:
+            self._loading = False
+            self._clear_and_mount_main()
+
+    def watch_has_channel(self, has_channel: bool) -> None:
+        if has_channel and self.is_authenticated and self._loading:
+            self._loading = False
+            self._clear_and_mount_main()
+
+    def _clear_and_mount_main(self) -> None:
+        try:
+            for child in list(self.children):
+                if hasattr(child, "id") and child.id in ("loading-container",):
+                    child.remove()
+            for widget in self._compose_main_screen():
+                self.mount(widget)
+        except Exception as e:
+            logger.warning(f"Error switching to main screen: {e}")
+            with contextlib.suppress(Exception):
+                self._force_redraw()
+
+    def _force_redraw(self) -> None:
+        with contextlib.suppress(Exception):
+            self.screen.refresh()
 
     def _compose_main_screen(self) -> ComposeResult:
         with Container(id="main-container"):
@@ -291,84 +313,116 @@ class VaultApp(App):
     async def on_mount(self) -> None:
         self.title = "TeleVault - Encrypted Cloud Storage"
 
-        config_path = televault_config_dir() / "telegram.json"
-        api_configured = os.environ.get("TELEGRAM_API_ID") and os.environ.get("TELEGRAM_API_HASH")
-        if not api_configured and config_path.exists():
-            try:
-                import json
-
-                with open(config_path) as f:
-                    data = json.load(f)
-                if data.get("api_id") and data.get("api_hash"):
-                    api_configured = True
-                if data.get("session_string"):
-                    pass
-            except Exception:
-                pass
-
-        if not api_configured:
-            self.is_authenticated = False
-            self.has_channel = False
-            self.status_message = "Not configured"
-            self._show_setup_hint("api")
-            return
-
-        session_string = None
-        if config_path.exists():
-            try:
-                import json
-
-                with open(config_path) as f:
-                    data = json.load(f)
-                session_string = data.get("session_string")
-            except Exception:
-                pass
-
-        if not session_string:
-            self.is_authenticated = False
-            self.status_message = "Not logged in"
-            self._show_setup_hint("login")
-            return
-
-        has_channel = self.config.channel_id is not None
-        if not has_channel:
-            self.has_channel = False
-            self.status_message = "No channel"
-            self._show_setup_hint("channel")
-            return
-
-        await self._check_auth()
-
-    def _show_setup_hint(self, step: str) -> None:
         try:
-            status_bar = self.query_one("#status-bar", Static)
-            if step == "api":
-                status_bar.update("⚠ Not configured. Run: tvt login  |  Press 'q' to quit")
-            elif step == "login":
-                status_bar.update("⚠ Not logged in. Run: tvt login  |  Press 'q' to quit")
-            elif step == "channel":
-                status_bar.update("⚠ No channel. Run: tvt setup  |  Press 'q' to quit")
+            config_path = televault_config_dir() / "telegram.json"
+            api_configured = bool(
+                os.environ.get("TELEGRAM_API_ID") and os.environ.get("TELEGRAM_API_HASH")
+            )
+
+            if not api_configured and config_path.exists():
+                try:
+                    import json
+
+                    with open(config_path) as f:
+                        data = json.load(f)
+                    if data.get("api_id") and data.get("api_hash"):
+                        api_configured = True
+                except Exception:
+                    pass
+
+            if not api_configured:
+                self.is_authenticated = False
+                self.has_channel = False
+                self._loading = False
+                self.status_message = "Not configured"
+                self._update_loading_text(
+                    "⚠ Not configured",
+                    "Run: tvt login  |  Press 'q' to quit",
+                )
+                return
+
+            session_string = None
+            if config_path.exists():
+                try:
+                    import json
+
+                    with open(config_path) as f:
+                        data = json.load(f)
+                    session_string = data.get("session_string")
+                except Exception:
+                    pass
+
+            if not session_string:
+                self.is_authenticated = False
+                self._loading = False
+                self.status_message = "Not logged in"
+                self._update_loading_text(
+                    "⚠ Not logged in",
+                    "Run: tvt login  |  Press 'q' to quit",
+                )
+                return
+
+            if self.config.channel_id is None:
+                self.has_channel = False
+                self._loading = False
+                self.status_message = "No channel"
+                self._update_loading_text(
+                    "⚠ No channel configured",
+                    "Run: tvt setup  |  Press 'q' to quit",
+                )
+                return
+
+            await self._check_auth()
+        except Exception as e:
+            logger.error(f"on_mount error: {e}", exc_info=True)
+            self._loading = False
+            self.status_message = f"Error: {e}"
+            self._update_loading_text(
+                "⚠ Error",
+                f"{str(e)[:60]}  |  Press 'q' to quit",
+            )
+
+    def _update_loading_text(self, title: str, hint: str) -> None:
+        try:
+            loading_label = self.query_one("#loading-label", Label)
+            loading_hint = self.query_one("#loading-hint", Label)
+            loading_label.update(title)
+            loading_hint.update(hint)
         except Exception:
             pass
 
     async def _check_auth(self) -> None:
         try:
+            self._update_loading_text("Connecting...", "Authenticating with Telegram...")
             vault = await self._get_vault()
 
             if await vault.is_authenticated():
                 self.is_authenticated = True
                 self.has_channel = True
+                self._loading = False
+                with contextlib.suppress(Exception):
+                    self._clear_and_mount_main()
                 await self._load_files()
             else:
                 await self._release_vault()
                 self.is_authenticated = False
-                self.status_message = "Not logged in - Run: tvt login"
+                self._loading = False
+                self.status_message = "Not logged in"
+                self._update_loading_text(
+                    "⚠ Not logged in",
+                    "Run: tvt login  |  Press 'q' to quit",
+                )
         except Exception as e:
-            logger.warning(f"Auth check failed: {e}")
-            await self._release_vault()
+            logger.error(f"Auth check failed: {e}", exc_info=True)
+            with contextlib.suppress(Exception):
+                await self._release_vault()
             self.is_authenticated = False
-            self.status_message = "Connection error - Run: tvt login"
-            self.notify(f"Could not connect: {str(e)[:80]}", severity="error")
+            self._loading = False
+            self.status_message = "Connection error"
+            self._update_loading_text(
+                "⚠ Connection error",
+                f"{str(e)[:50]}  |  Run: tvt login  |  Press 'q' to quit",
+            )
 
     async def _load_files(self) -> None:
         if not self.is_authenticated:
@@ -395,8 +449,11 @@ class VaultApp(App):
                 )
 
             total_size = sum(f.size for f in files)
-            self.query_one("#stat-files", Label).update(f"Files: {len(files)}")
-            self.query_one("#stat-size", Label).update(f"Total Size: {format_size(total_size)}")
+            try:
+                self.query_one("#stat-files", Label).update(f"Files: {len(files)}")
+                self.query_one("#stat-size", Label).update(f"Total Size: {format_size(total_size)}")
+            except Exception:
+                pass
 
             try:
                 status = await vault.get_status()
@@ -408,7 +465,9 @@ class VaultApp(App):
             self.status_message = f"Loaded {len(files)} files"
 
         except Exception as e:
-            self.status_message = f"Error loading files: {str(e)}"
+            logger.error(f"Error loading files: {e}", exc_info=True)
+            self.status_message = f"Error loading files: {str(e)[:80]}"
+            self.notify(f"Failed to load files: {str(e)[:60]}", severity="error")
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id

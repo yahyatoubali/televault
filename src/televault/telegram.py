@@ -165,7 +165,6 @@ class TelegramVault:
         Returns dict with: accessible, writable, title, channel_id
         """
         from telethon.tl.functions.channels import GetFullChannelRequest
-        from telethon.tl.functions.messages import SendMessageRequest
 
         result = {
             "accessible": False,
@@ -267,16 +266,16 @@ class TelegramVault:
         return VaultIndex()
 
     async def save_index(self, index: VaultIndex) -> int:
-        """Save the vault index as pinned message with optimistic concurrency."""
+        """Save the vault index as pinned message."""
         if not self._channel_id:
             raise ValueError("No channel set")
 
         index.updated_at = datetime.now().timestamp()
 
-        max_attempts = 5
+        max_attempts = 3
         for attempt in range(max_attempts):
             existing_msg_id = None
-            existing_version = None
+            existing_version = 0
 
             async for msg in self._client.iter_messages(
                 self._channel_id,
@@ -285,24 +284,17 @@ class TelegramVault:
             ):
                 if msg.pinned and msg.text:
                     try:
-                        existing = VaultIndex.from_json(msg.text)
-                        existing_msg_id = msg.id
-                        existing_version = existing.version
-                        break
-                    except json.JSONDecodeError:
+                        data = json.loads(msg.text)
+                        if "files" in data:
+                            existing = VaultIndex.from_json(msg.text)
+                            existing_msg_id = msg.id
+                            existing_version = existing.version
+                            break
+                    except (json.JSONDecodeError, Exception):
                         continue
 
             if existing_msg_id is not None:
-                current_index = await self.get_index()
-                if existing_version is not None and current_index.version != existing_version:
-                    logger.warning(
-                        f"Index version conflict (attempt {attempt + 1}): "
-                        f"expected {existing_version}, got {current_index.version}. Retrying..."
-                    )
-                    await asyncio.sleep(0.5 * (attempt + 1))
-                    continue
-
-                index.version = (existing_version or 0) + 1
+                index.version = existing_version + 1
                 try:
                     await self._client.edit_message(
                         self._channel_id,
@@ -313,8 +305,8 @@ class TelegramVault:
                 except Exception as e:
                     if attempt >= max_attempts - 1:
                         raise
-                    logger.warning(f"save_index conflict (attempt {attempt + 1}): {e}")
-                    await asyncio.sleep(1.0 * (attempt + 1))
+                    logger.warning(f"save_index retry {attempt + 1}/{max_attempts}: {e}")
+                    await asyncio.sleep(0.5 * (attempt + 1))
             else:
                 index.version = 1
                 msg = await self._client.send_message(
@@ -324,7 +316,7 @@ class TelegramVault:
                 await self._client.pin_message(self._channel_id, msg.id)
                 return msg.id
 
-        raise RuntimeError("Failed to save index after concurrency retries")
+        raise RuntimeError("Failed to save index after retries")
 
     # === File Operations ===
 
