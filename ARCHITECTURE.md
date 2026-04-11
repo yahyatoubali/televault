@@ -18,7 +18,7 @@ televault  = "televault.cli:main"
 |---|---|
 | `cli.py` | Click-based CLI, command dispatch, progress display, friendly error handling |
 | `core.py` | `TeleVault` class -- upload, download, list, search, delete, resume, stream |
-| `telegram.py` | `TelegramVault` -- MTProto client wrapper, index management, message I/O, channel ops |
+| `telegram.py` | `TelegramVault` -- MTProto client wrapper, index management, message I/O, channel ops, message compression |
 | `models.py` | Data models: `FileMetadata`, `ChunkInfo`, `VaultIndex`, `TransferProgress` |
 | `chunker.py` | File splitting/merging, `ChunkWriter`, BLAKE3 hashing |
 | `crypto.py` | AES-256-GCM encryption, scrypt KDF, streaming encryptor/decryptor |
@@ -33,9 +33,9 @@ televault  = "televault.cli:main"
 | `completion.py` | Shell completion scripts (bash, zsh, fish, PowerShell) |
 | `watcher.py` | `FileWatcher` -- polling-based directory monitor with BLAKE2 hashing |
 | `schedule.py` | Schedule CRUD, systemd timer generation, cron entry generation |
-| `gc.py` | Orphan message detection and cleanup |
+| `gc.py` | Orphan message detection and cleanup (dry-run default, pinned message protection) |
 | `logging.py` | `RotatingFileHandler` setup, console + file output |
-| `tui.py` | Textual-based interactive terminal UI with detail panel |
+| `tui.py` | Textual-based interactive terminal UI (file browser, auth-aware loading) |
 
 ---
 
@@ -47,10 +47,30 @@ A single private Telegram channel holds every piece of TeleVault data. The chann
 Channel
  +-- Pinned: VaultIndex (file_id -> metadata_message_id)
  +-- Pinned: SnapshotIndex (snapshot_id -> message_id)
- +-- Text messages: FileMetadata (JSON)
+ +-- Text messages: FileMetadata (JSON, possibly compressed)
  +-- File messages: chunk data (replying to their FileMetadata message)
- +-- Text messages: Snapshot (JSON)
+ +-- Text messages: Snapshot (JSON, possibly compressed)
 ```
+
+### Message Compression
+
+Telegram limits text messages to 4096 characters. TeleVault automatically compresses messages that exceed this limit using zlib + base64 encoding with a `__TV1__` prefix:
+
+```python
+# Compression (on send):
+if len(json_text) > 4096:
+    compressed = zlib.compress(json_text.encode("utf-8"), 9)
+    encoded = base64.b64encode(compressed).decode("ascii")
+    message = f"__TV1__{encoded}"
+
+# Decompression (on read):
+if message.startswith("__TV1__"):
+    encoded = message[len("__TV1__"):]
+    compressed = base64.b64decode(encoded)
+    json_text = zlib.decompress(compressed).decode("utf-8")
+```
+
+This applies to all text messages: `VaultIndex`, `FileMetadata`, `Snapshot`, and `SnapshotIndex`. Backward compatible -- uncompressed messages are read as-is.
 
 ### Message Topology
 
@@ -74,21 +94,21 @@ Channel
    chunk0 chunk1 chunk2      chunk0 chunk1  chunk2
 ```
 
-### FileMetadata (stored as JSON text message)
+### FileMetadata (stored as JSON text message, auto-compressed if >4096 chars)
 
 ```json
 {
   "id": "abc123def456",
   "name": "photo.jpg",
   "size": 5242880,
-  "hash": "a1b2c3d4...32 chars of BLAKE3",
+  "hash": "a1b2c3d4...64 chars of BLAKE3",
   "chunks": [
     {
       "index": 0,
       "message_id": 43,
       "size": 10485780,
-      "hash": "e5f6a7b8...32 chars of BLAKE3 (post-processing)",
-      "original_hash": "c9d0e1f2...32 chars of BLAKE3 (pre-processing)"
+      "hash": "e5f6a7b8...64 chars of BLAKE3 (post-processing)",
+      "original_hash": "c9d0e1f2...64 chars of BLAKE3 (pre-processing)"
     }
   ],
   "encrypted": true,
@@ -101,7 +121,7 @@ Channel
 }
 ```
 
-### VaultIndex (stored as pinned text message)
+### VaultIndex (stored as pinned text message, auto-compressed if >4096 chars)
 
 ```json
 {
@@ -111,7 +131,38 @@ Channel
 }
 ```
 
-The `version` field implements optimistic concurrency control. On save, the client reads the current version, increments it, and overwrites the pinned message. If the version mismatches (concurrent modification), the save is retried up to 5 times with backoff.
+The `version` field is incremented on each save. The `save_index` method finds the pinned message, reads its version, increments it, and edits the message in place. Retries only on Telegram API errors (3 attempts with backoff), not on phantom version conflicts.
+
+---
+
+## Crash Safety
+
+### Upload
+
+1. Upload metadata message -> get `metadata_msg_id`
+2. Upload all chunks in parallel (3 concurrent by default)
+3. On chunk upload failure: delete all uploaded chunks + metadata (cleanup)
+4. Update metadata with chunk info
+5. **Save index with 3 retries** -- file data is already safe on Telegram even if index save fails
+
+If the process crashes after step 2 but before step 5, the file data exists on Telegram but is not in the index. Running `tvt gc --clean-partials` will detect and clean up incomplete uploads, or re-pushing the file will add it to the index.
+
+### Delete
+
+1. **Remove file from index first** (crash safety: if interrupted, the file is no longer referenced but data still exists on Telegram)
+2. Read metadata to collect chunk message IDs
+3. Delete all messages (metadata + chunks) -- errors are suppressed since the index already no longer references them
+
+If the process crashes after step 1 but before step 3, `tvt gc` will find the orphaned messages and clean them up.
+
+### Garbage Collection
+
+`tvt gc` is **dry-run by default**. Use `--force` to actually delete messages.
+
+Protection rules:
+- **Pinned messages are never deleted** -- the vault index and snapshot index are always preserved
+- Only messages not referenced by any file in the index are considered orphans
+- `--clean-partials` detects and removes incomplete uploads (files in index with missing chunks)
 
 ---
 
@@ -195,7 +246,7 @@ Other: `.woff` `.woff2` `.br`
 
 ---
 
-##Chunk Management
+## Chunk Management
 
 ### Chunk Size
 
@@ -286,8 +337,8 @@ tvt rm <file_id_or_name>           Delete file
 tvt verify <file_id_or_name>       Verify file integrity
   --password / -p                  Decryption password
 
-tvt gc                             Garbage collection
-  --dry-run                        List orphans without deleting
+tvt gc                             Garbage collection (dry-run by default)
+  --force                          Actually delete orphaned messages
   --clean-partials                 Remove incomplete uploads
 
 tvt login                          Telegram authentication
@@ -305,7 +356,7 @@ tvt mount <mount_point>            Mount as FUSE filesystem
   --cache-dir                      Local cache directory
   --cache-size                     Max cache size in MB (default 100)
   --allow-other                     Allow other users
-  --foreground / --background     Foreground or daemon mode
+  --foreground / --background      Foreground or daemon mode
 
 tvt serve                          Start WebDAV server
   --host / -h <addr>               Bind address (default 0.0.0.0)
@@ -333,13 +384,13 @@ tvt backup restore <snapshot_id>   Restore from snapshot
   --files / -f                     Specific files to restore
 
 tvt backup list                    List snapshots
-tvt backup delete <snapshot_id>    Delete snapshot
+tvt backup delete <snapshot_id>     Delete snapshot
 tvt backup prune                   Prune old snapshots
   --keep-daily / --keep-weekly / --keep-monthly
   --dry-run
-tvt backup verify <snapshot_id>    Verify snapshot integrity
+tvt backup verify <snapshot_id>     Verify snapshot integrity
 
-tvt schedule create <path>         Create backup schedule
+tvt schedule create <path>          Create backup schedule
   --name / -n, --interval, --password, --incremental
 
 tvt schedule list / run / delete / install / uninstall / show-systemd
@@ -373,6 +424,24 @@ All CLI errors are user-friendly. No Python tracebacks leak to the terminal:
 - `AuthKeyError/Unauthorized` -> "Session expired, run `tvt login`"
 - `ApiIdInvalidError` -> "Check your API credentials"
 - `KeyboardInterrupt` -> clean "Interrupted"
+
+---
+
+## TUI
+
+The TUI (`tvt tui`) is a Textual-based file browser. It does **not** handle authentication or channel setup -- users must run `tvt login` and `tvt setup` via the CLI first.
+
+Startup flow:
+1. Show loading screen ("Connecting to Telegram...")
+2. Check for API credentials and session in `~/.config/televault/telegram.json`
+3. If not configured: show "Run: tvt login" with instructions
+4. If not logged in: show "Run: tvt login" with instructions
+5. If no channel: show "Run: tvt setup" with instructions
+6. If authenticated: transition to file browser, load files
+
+The file browser shows: file list (ID, Name, Size, Chunks, Encrypted), detail panel (metadata preview), sidebar (stats, actions).
+
+Key bindings: `q` quit, `r` refresh, `u` upload, `d` download, `s` search, `p` preview, `Delete` delete.
 
 ---
 
@@ -411,9 +480,13 @@ Uses server-suggested wait time if it exceeds calculated backoff. Caps retries a
 
 All uploaded chunk messages and the metadata message are deleted. Index is not updated.
 
+### Index Save Retries
+
+Index saves retry up to 3 times with backoff (0.5s, 1.0s, 1.5s). Only Telegram API errors trigger retries. File data is already safe on Telegram before index save is attempted.
+
 ### Garbage Collection
 
-`collect_garbage()` scans for orphaned messages. `cleanup_partial_uploads()` removes incomplete uploads.
+`tvt gc` scans for orphaned messages. Pinned messages (index, snapshot_index) are always protected from deletion. Default is dry-run mode; use `--force` to actually delete. `tvt gc --clean-partials` detects incomplete uploads.
 
 ---
 
@@ -424,9 +497,10 @@ All uploaded chunk messages and the metadata message are deleted. Index is not u
 | Telegram server reads data | AES-256-GCM encryption; server sees only ciphertext |
 | Data corruption in transit | BLAKE3 hash at chunk and file level |
 | Wrong password decryption | GCM authentication + original_hash double check |
-| Concurrent index modification | Optimistic concurrency with version counter |
+| Concurrent index modification | Version counter with 3 retries on API errors |
 | Flood limits / rate limiting | Exponential backoff with FloodWait handling |
-| Orphaned data | Garbage collection command |
+| Accidental data deletion by gc | Dry-run by default, pinned messages always protected |
+| Large metadata exceeding Telegram limit | Automatic zlib+base64 compression with `__TV1__` prefix |
 
 ---
 
@@ -462,3 +536,15 @@ On Windows: config uses `%APPDATA%`, data uses `%LOCALAPPDATA%`. On other Unix: 
   "retry_delay": 1.0
 }
 ```
+
+### Telegram Credentials (`telegram.json`)
+
+```json
+{
+  "api_id": 12345678,
+  "api_hash": "your_api_hash",
+  "session_string": "base64_encoded_session"
+}
+```
+
+The `session_string` is a `StringSession` from Telethon that allows reconnection without re-authentication. It is stored after `tvt login` and reused by all subsequent commands.
