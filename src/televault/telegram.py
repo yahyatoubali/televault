@@ -1,10 +1,12 @@
 """Telegram MTProto client wrapper for TeleVault."""
 
 import asyncio
+import base64
 import contextlib
 import io
 import json
 import logging
+import zlib
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime
@@ -23,6 +25,28 @@ from .models import FileMetadata, VaultIndex
 from .retry import is_retryable
 
 logger = logging.getLogger("televault.telegram")
+
+TELEGRAM_MSG_LIMIT = 4096
+TV_PREFIX = "__TV1__"
+
+
+def _compress_message(text: str) -> str:
+    """Compress text to fit Telegram's message size limit."""
+    if len(text) <= TELEGRAM_MSG_LIMIT:
+        return text
+    compressed = zlib.compress(text.encode("utf-8"), 9)
+    encoded = base64.b64encode(compressed).decode("ascii")
+    return f"{TV_PREFIX}{encoded}"
+
+
+def _decompress_message(text: str) -> str:
+    """Decompress text that was compressed by _compress_message."""
+    if not text.startswith(TV_PREFIX):
+        return text
+    encoded = text[len(TV_PREFIX) :]
+    compressed = base64.b64decode(encoded)
+    return zlib.decompress(compressed).decode("utf-8")
+
 
 # TeleVault Telegram app credentials
 # Users must provide their own from https://my.telegram.org
@@ -247,7 +271,6 @@ class TelegramVault:
         if not self._channel_id:
             raise ValueError("No channel set")
 
-        # Get pinned messages
         async for msg in self._client.iter_messages(
             self._channel_id,
             filter=None,
@@ -255,14 +278,13 @@ class TelegramVault:
         ):
             if msg.pinned and msg.text:
                 try:
-                    data = json.loads(msg.text)
-                    # Check if it looks like our index (has 'files' key)
+                    text = _decompress_message(msg.text)
+                    data = json.loads(text)
                     if "files" in data:
-                        return VaultIndex.from_json(msg.text)
+                        return VaultIndex.from_json(text)
                 except json.JSONDecodeError:
                     continue
 
-        # No valid index found, create empty one
         return VaultIndex()
 
     async def save_index(self, index: VaultIndex) -> int:
@@ -271,6 +293,7 @@ class TelegramVault:
             raise ValueError("No channel set")
 
         index.updated_at = datetime.now().timestamp()
+        index_text = _compress_message(index.to_json())
 
         max_attempts = 3
         for attempt in range(max_attempts):
@@ -284,9 +307,10 @@ class TelegramVault:
             ):
                 if msg.pinned and msg.text:
                     try:
-                        data = json.loads(msg.text)
+                        text = _decompress_message(msg.text)
+                        data = json.loads(text)
                         if "files" in data:
-                            existing = VaultIndex.from_json(msg.text)
+                            existing = VaultIndex.from_json(text)
                             existing_msg_id = msg.id
                             existing_version = existing.version
                             break
@@ -295,11 +319,12 @@ class TelegramVault:
 
             if existing_msg_id is not None:
                 index.version = existing_version + 1
+                index_text = _compress_message(index.to_json())
                 try:
                     await self._client.edit_message(
                         self._channel_id,
                         existing_msg_id,
-                        index.to_json(),
+                        index_text,
                     )
                     return existing_msg_id
                 except Exception as e:
@@ -309,9 +334,10 @@ class TelegramVault:
                     await asyncio.sleep(0.5 * (attempt + 1))
             else:
                 index.version = 1
+                index_text = _compress_message(index.to_json())
                 msg = await self._client.send_message(
                     self._channel_id,
-                    index.to_json(),
+                    index_text,
                 )
                 await self._client.pin_message(self._channel_id, msg.id)
                 return msg.id
@@ -325,11 +351,13 @@ class TelegramVault:
         if not self._channel_id:
             raise ValueError("No channel set")
 
+        metadata_text = _compress_message(metadata.to_json())
+
         for attempt in range(3):
             try:
                 msg = await self._client.send_message(
                     self._channel_id,
-                    metadata.to_json(),
+                    metadata_text,
                 )
                 logger.debug(f"Uploaded metadata for {metadata.id}")
                 return msg.id
@@ -356,7 +384,8 @@ class TelegramVault:
                 msg = await self._client.get_messages(self._channel_id, ids=message_id)
                 if not msg or not msg.text:
                     raise ValueError(f"Metadata message {message_id} not found")
-                return FileMetadata.from_json(msg.text)
+                text = _decompress_message(msg.text)
+                return FileMetadata.from_json(text)
             except FloodWaitError as e:
                 if e.seconds > 300:
                     raise
@@ -377,12 +406,14 @@ class TelegramVault:
         if not self._channel_id:
             raise ValueError("No channel set")
 
+        metadata_text = _compress_message(metadata.to_json())
+
         for attempt in range(3):
             try:
                 await self._client.edit_message(
                     self._channel_id,
                     message_id,
-                    metadata.to_json(),
+                    metadata_text,
                 )
                 return
             except FloodWaitError as e:

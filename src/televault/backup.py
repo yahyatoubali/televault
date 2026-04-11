@@ -10,7 +10,7 @@ from .chunker import hash_file
 from .config import Config
 from .core import TeleVault
 from .snapshot import Snapshot, SnapshotFile, SnapshotIndex, categorize_snapshot_age
-from .telegram import TelegramConfig
+from .telegram import TelegramConfig, _compress_message, _decompress_message
 
 logger = logging.getLogger("televault.backup")
 
@@ -397,7 +397,8 @@ class BackupEngine:
             if not msg or not msg.text:
                 return None
 
-            snapshot = Snapshot.from_json(msg.text)
+            text = _decompress_message(msg.text)
+            snapshot = Snapshot.from_json(text)
             snapshot.message_id = msg_id
             return snapshot
         except Exception as e:
@@ -415,9 +416,10 @@ class BackupEngine:
         ):
             if msg.pinned and msg.text:
                 try:
-                    data = json.loads(msg.text)
+                    text = _decompress_message(msg.text)
+                    data = json.loads(text)
                     if data.get("type") == "snapshot_index":
-                        return SnapshotIndex.from_json(msg.text)
+                        return SnapshotIndex.from_json(text)
                 except (json.JSONDecodeError, KeyError):
                     continue
 
@@ -430,6 +432,7 @@ class BackupEngine:
             raise ValueError("No channel set")
 
         index.updated_at = datetime.now().timestamp()
+        index_text = _compress_message(index.to_json())
 
         existing_msg_id = None
         async for msg in self._vault.telegram._client.iter_messages(
@@ -437,7 +440,8 @@ class BackupEngine:
         ):
             if msg.pinned and msg.text:
                 try:
-                    data = json.loads(msg.text)
+                    text = _decompress_message(msg.text)
+                    data = json.loads(text)
                     if data.get("type") == "snapshot_index":
                         existing_msg_id = msg.id
                         break
@@ -445,12 +449,10 @@ class BackupEngine:
                     continue
 
         if existing_msg_id:
-            await self._vault.telegram._client.edit_message(
-                channel_id, existing_msg_id, index.to_json()
-            )
+            await self._vault.telegram._client.edit_message(channel_id, existing_msg_id, index_text)
             return existing_msg_id
         else:
-            msg = await self._vault.telegram._client.send_message(channel_id, index.to_json())
+            msg = await self._vault.telegram._client.send_message(channel_id, index_text)
             await self._vault.telegram._client.pin_message(channel_id, msg.id)
             return msg.id
 
