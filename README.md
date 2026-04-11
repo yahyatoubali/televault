@@ -15,7 +15,7 @@
   ██║╚█████╔╝  
   ╚═╝░╚════╝░  </pre>
   <br>
-  Unlim̸ited cl̸oud st̸orag̸e via T̸ele̸gr̸am
+  Unlimited cloud storage via Telegram
 </h1>
 
 <p align="center">
