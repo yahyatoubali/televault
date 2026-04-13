@@ -41,6 +41,7 @@ class UploadProgress:
     total_chunks: int
     uploaded_chunks: int
     current_chunk: int
+    phase: str = "uploading"  # "hashing", "metadata", "uploading", "index", "done"
 
     @property
     def percent(self) -> float:
@@ -59,6 +60,7 @@ class DownloadProgress:
     total_chunks: int
     downloaded_chunks: int
     current_chunk: int
+    phase: str = "downloading"  # "metadata", "downloading", "verifying", "done"
 
     @property
     def percent(self) -> float:
@@ -183,6 +185,20 @@ class TeleVault:
             file_name = file_path.name
 
         file_size = file_path.stat().st_size
+
+        if progress_callback:
+            progress_callback(
+                UploadProgress(
+                    file_name=file_name if name else file_path.name,
+                    total_size=file_size,
+                    uploaded_size=0,
+                    total_chunks=0,
+                    uploaded_chunks=0,
+                    current_chunk=0,
+                    phase="hashing",
+                )
+            )
+
         file_hash = hash_file(file_path)
         file_id = generate_file_id(file_name, file_size)
 
@@ -201,6 +217,19 @@ class TeleVault:
             encrypted=self.config.encryption and password is not None,
             compressed=self.config.compression and should_compress(file_name),
         )
+
+        if progress_callback:
+            progress_callback(
+                UploadProgress(
+                    file_name=file_name,
+                    total_size=file_size,
+                    uploaded_size=0,
+                    total_chunks=total_chunks,
+                    uploaded_chunks=0,
+                    current_chunk=0,
+                    phase="metadata",
+                )
+            )
 
         # Upload metadata message first
         metadata_msg_id = await self.telegram.upload_metadata(metadata)
@@ -257,6 +286,7 @@ class TeleVault:
                                 total_chunks=total_chunks,
                                 uploaded_chunks=uploaded_count,
                                 current_chunk=chunk.index,
+                                phase="uploading",
                             )
                         )
 
@@ -297,6 +327,19 @@ class TeleVault:
         metadata.chunks = [chunk_results[i] for i in sorted(chunk_results.keys())]
 
         # Update metadata with chunk info
+        if progress_callback:
+            progress_callback(
+                UploadProgress(
+                    file_name=file_name,
+                    total_size=file_size,
+                    uploaded_size=file_size,
+                    total_chunks=total_chunks,
+                    uploaded_chunks=total_chunks,
+                    current_chunk=total_chunks - 1,
+                    phase="index",
+                )
+            )
+
         await self.telegram.update_metadata(metadata_msg_id, metadata)
 
         async with self._index_lock:
@@ -320,6 +363,19 @@ class TeleVault:
                         raise
                     logger.warning(f"Index save retry {attempt + 1}: {e}")
                     await asyncio.sleep(0.5 * (attempt + 1))
+
+        if progress_callback:
+            progress_callback(
+                UploadProgress(
+                    file_name=file_name,
+                    total_size=file_size,
+                    uploaded_size=file_size,
+                    total_chunks=total_chunks,
+                    uploaded_chunks=total_chunks,
+                    current_chunk=total_chunks - 1,
+                    phase="done",
+                )
+            )
 
         return metadata
 
@@ -368,6 +424,19 @@ class TeleVault:
             metadata_msg_id = matches[0].message_id
 
         # Get metadata
+        if progress_callback:
+            progress_callback(
+                DownloadProgress(
+                    file_name=file_id_or_name,
+                    total_size=0,
+                    downloaded_size=0,
+                    total_chunks=0,
+                    downloaded_chunks=0,
+                    current_chunk=0,
+                    phase="metadata",
+                )
+            )
+
         metadata = await self.telegram.get_metadata(metadata_msg_id)
 
         # Determine output path
@@ -381,6 +450,19 @@ class TeleVault:
 
         downloaded_size = 0
         total_chunks = len(metadata.chunks)
+
+        if progress_callback:
+            progress_callback(
+                DownloadProgress(
+                    file_name=metadata.name,
+                    total_size=metadata.size,
+                    downloaded_size=0,
+                    total_chunks=total_chunks,
+                    downloaded_chunks=0,
+                    current_chunk=0,
+                    phase="downloading",
+                )
+            )
 
         # Parallel download with configurable concurrency
         semaphore = asyncio.Semaphore(self.config.parallel_downloads)
@@ -440,6 +522,7 @@ class TeleVault:
                                 total_chunks=total_chunks,
                                 downloaded_chunks=len(chunk_data),
                                 current_chunk=chunk_info.index,
+                                phase="downloading",
                             )
                         )
 
@@ -453,9 +536,23 @@ class TeleVault:
         # Check for download errors
         for r in results:
             if isinstance(r, Exception):
+                writer.close()
                 raise r
 
         # Verify final hash
+        if progress_callback:
+            progress_callback(
+                DownloadProgress(
+                    file_name=metadata.name,
+                    total_size=metadata.size,
+                    downloaded_size=metadata.size,
+                    total_chunks=total_chunks,
+                    downloaded_chunks=total_chunks,
+                    current_chunk=total_chunks - 1,
+                    phase="verifying",
+                )
+            )
+
         try:
             if hash_file(output_path) != metadata.hash:
                 raise ValueError(
@@ -463,9 +560,25 @@ class TeleVault:
                     "try re-downloading or checking your network/Telegram storage."
                 )
         except ValueError:
+            writer.close()
             if output_path.exists():
                 output_path.unlink()
             raise
+
+        writer.close()
+
+        if progress_callback:
+            progress_callback(
+                DownloadProgress(
+                    file_name=metadata.name,
+                    total_size=metadata.size,
+                    downloaded_size=metadata.size,
+                    total_chunks=total_chunks,
+                    downloaded_chunks=total_chunks,
+                    current_chunk=total_chunks - 1,
+                    phase="done",
+                )
+            )
 
         return output_path
 

@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import signal
 import sys
+import time
 from pathlib import Path
 
 import click
@@ -25,6 +26,34 @@ def format_size(size: int) -> str:
             return f"{size:.1f} {unit}"
         size /= 1024
     return f"{size:.1f} PB"
+
+
+def format_speed(bytes_per_sec: float) -> str:
+    """Format transfer speed as human readable."""
+    if bytes_per_sec <= 0:
+        return ""
+    for unit in ["B/s", "KB/s", "MB/s", "GB/s"]:
+        if bytes_per_sec < 1024:
+            return f"{bytes_per_sec:.1f} {unit}"
+        bytes_per_sec /= 1024
+    return f"{bytes_per_sec:.1f} TB/s"
+
+
+PHASE_LABELS = {
+    "uploading": {
+        "hashing": "Hashing",
+        "metadata": "Sending metadata",
+        "uploading": "Uploading",
+        "index": "Saving index",
+        "done": "Done",
+    },
+    "downloading": {
+        "metadata": "Fetching metadata",
+        "downloading": "Downloading",
+        "verifying": "Verifying",
+        "done": "Done",
+    },
+}
 
 
 def check_api_credentials_cli() -> bool:
@@ -625,24 +654,57 @@ def push(
             console.print(f"\n[bold green]✓ Uploaded {len(files)} files[/bold green]")
         else:
             # Single file upload with progress
-            file_size = file_path_obj.stat().st_size
 
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
                 BarColumn(),
                 TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-                TextColumn("({task.fields[size]})"),
+                TextColumn("{task.fields[speed]}"),
                 TimeRemainingColumn(),
                 console=console,
                 refresh_per_second=10,
             ) as progress:
                 task = progress.add_task(
-                    f"Uploading {file_path_obj.name}", total=100, size=format_size(file_size)
+                    f"Hashing {file_path_obj.name}",
+                    total=100,
+                    speed="",
                 )
 
+                start_time = time.monotonic()
+                last_size = 0
+
                 def on_progress(p: UploadProgress):
-                    progress.update(task, completed=p.percent)
+                    nonlocal last_size, start_time
+                    phase_label = PHASE_LABELS["uploading"].get(p.phase, p.phase)
+
+                    elapsed = time.monotonic() - start_time
+                    if p.phase == "uploading" and elapsed > 0:
+                        speed = (p.uploaded_size - last_size) / max(elapsed, 0.001)
+                        speed_str = format_speed(speed)
+                    elif p.phase in ("hashing", "metadata", "index"):
+                        speed_str = ""
+                    else:
+                        speed_str = ""
+
+                    if p.phase in ("hashing", "metadata", "index"):
+                        progress.update(
+                            task,
+                            description=f"{phase_label} {file_path_obj.name}",
+                            completed=p.percent,
+                            speed=speed_str,
+                        )
+                    else:
+                        progress.update(
+                            task,
+                            description=f"{phase_label} {file_path_obj.name}",
+                            completed=p.percent,
+                            speed=speed_str,
+                        )
+
+                    if p.phase == "uploading":
+                        start_time = time.monotonic()
+                        last_size = p.uploaded_size
 
                 if resume:
                     metadata = await vault.upload_resume(file_path, progress_callback=on_progress)
@@ -724,14 +786,39 @@ def pull(file_id_or_name: str, output: str | None, password: str | None, resume:
             TextColumn("[progress.description]{task.description}"),
             BarColumn(),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TextColumn("{task.fields[speed]}"),
             TimeRemainingColumn(),
             console=console,
             refresh_per_second=10,
         ) as progress:
-            task = progress.add_task(f"Downloading {file_id_or_name}", total=100)
+            task = progress.add_task(
+                f"Fetching {file_id_or_name}",
+                total=100,
+                speed="",
+            )
+
+            start_time = time.monotonic()
+            last_size = 0
 
             def on_progress(p: DownloadProgress):
-                progress.update(task, completed=p.percent)
+                nonlocal last_size, start_time
+                phase_label = PHASE_LABELS["downloading"].get(p.phase, p.phase)
+
+                elapsed = time.monotonic() - start_time
+                if p.phase == "downloading" and elapsed > 0 and p.downloaded_size > 0:
+                    speed = p.downloaded_size / max(elapsed, 0.001)
+                    speed_str = format_speed(speed)
+                elif p.phase in ("metadata", "verifying"):
+                    speed_str = ""
+                else:
+                    speed_str = ""
+
+                progress.update(
+                    task,
+                    description=f"{phase_label} {p.file_name}",
+                    completed=p.percent,
+                    speed=speed_str,
+                )
 
             try:
                 if resume:

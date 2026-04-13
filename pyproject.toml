@@ -1,6 +1,6 @@
 [project]
 name = "televault"
-version = "3.1.0"
+version = "3.1.1"
 description = "Unlimited cloud storage using Telegram MTProto. No local DB - everything on Telegram."
 readme = "README.md"
 requires-python = ">=3.11"
