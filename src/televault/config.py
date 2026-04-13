@@ -37,6 +37,10 @@ class Config:
     # Telegram settings
     channel_id: int | None = None
 
+    # Cached message IDs for O(1) index lookups
+    index_msg_id: int | None = None
+    snapshot_index_msg_id: int | None = None
+
     # Chunking
     chunk_size: int = 100 * 1024 * 1024  # 100MB
 

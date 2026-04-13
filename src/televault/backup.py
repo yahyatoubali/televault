@@ -411,14 +411,29 @@ class BackupEngine:
         if not channel_id:
             raise ValueError("No channel set")
 
+        config = Config.load()
+        if config.snapshot_index_msg_id:
+            try:
+                msg = await self._vault.telegram._client.get_messages(
+                    channel_id, ids=config.snapshot_index_msg_id
+                )
+                if msg and msg.text:
+                    text = _decompress_message(msg.text)
+                    data = json.loads(text)
+                    if data.get("type") == "snapshot_index":
+                        return SnapshotIndex.from_json(text)
+            except Exception:
+                pass
+
         async for msg in self._vault.telegram._client.iter_messages(
-            channel_id, filter=None, limit=50
+            channel_id, filter=None, limit=None
         ):
             if msg.pinned and msg.text:
                 try:
                     text = _decompress_message(msg.text)
                     data = json.loads(text)
                     if data.get("type") == "snapshot_index":
+                        self._save_snapshot_index_msg_id(msg.id)
                         return SnapshotIndex.from_json(text)
                 except (json.JSONDecodeError, KeyError):
                     continue
@@ -434,27 +449,53 @@ class BackupEngine:
         index.updated_at = datetime.now().timestamp()
         index_text = _compress_message(index.to_json())
 
-        existing_msg_id = None
+        config = Config.load()
+        existing_msg_id = config.snapshot_index_msg_id
+
+        if existing_msg_id:
+            msg = await self._vault.telegram._client.get_messages(channel_id, ids=existing_msg_id)
+            if msg and msg.text:
+                try:
+                    text = _decompress_message(msg.text)
+                    data = json.loads(text)
+                    if data.get("type") == "snapshot_index":
+                        await self._vault.telegram._client.edit_message(
+                            channel_id, existing_msg_id, index_text
+                        )
+                        return existing_msg_id
+                except Exception:
+                    pass
+
         async for msg in self._vault.telegram._client.iter_messages(
-            channel_id, filter=None, limit=50
+            channel_id, filter=None, limit=None
         ):
             if msg.pinned and msg.text:
                 try:
                     text = _decompress_message(msg.text)
                     data = json.loads(text)
                     if data.get("type") == "snapshot_index":
-                        existing_msg_id = msg.id
-                        break
+                        await self._vault.telegram._client.edit_message(
+                            channel_id, msg.id, index_text
+                        )
+                        self._save_snapshot_index_msg_id(msg.id)
+                        return msg.id
                 except (json.JSONDecodeError, KeyError):
                     continue
 
-        if existing_msg_id:
-            await self._vault.telegram._client.edit_message(channel_id, existing_msg_id, index_text)
-            return existing_msg_id
-        else:
-            msg = await self._vault.telegram._client.send_message(channel_id, index_text)
-            await self._vault.telegram._client.pin_message(channel_id, msg.id)
-            return msg.id
+        msg = await self._vault.telegram._client.send_message(channel_id, index_text)
+        await self._vault.telegram._client.pin_message(channel_id, msg.id)
+        self._save_snapshot_index_msg_id(msg.id)
+        return msg.id
+
+    def _save_snapshot_index_msg_id(self, msg_id: int) -> None:
+        """Persist snapshot index message ID to config."""
+        try:
+            config = Config.load()
+            if config.snapshot_index_msg_id != msg_id:
+                config.snapshot_index_msg_id = msg_id
+                config.save()
+        except Exception:
+            pass
 
 
 def _generate_snapshot_id(name: str, file_count: int) -> str:

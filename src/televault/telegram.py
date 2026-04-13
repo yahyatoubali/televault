@@ -20,7 +20,7 @@ from telethon.tl.types import (
     Message,
 )
 
-from .config import get_config_dir
+from .config import Config, get_config_dir
 from .models import FileMetadata, VaultIndex
 from .retry import is_retryable
 
@@ -127,6 +127,7 @@ class TelegramVault:
         self._client: TelegramClient | None = None
         self._channel: Channel | None = None
         self._channel_id: int | None = None
+        self._index_msg_id: int | None = None
 
     async def connect(self) -> None:
         """Connect to Telegram."""
@@ -267,20 +268,50 @@ class TelegramVault:
     # === Index Operations ===
 
     async def get_index(self) -> VaultIndex:
-        """Get the vault index from pinned message."""
+        """Get the vault index from pinned message.
+
+        Uses cached index_msg_id for O(1) lookup.
+        Falls back to scanning pinned messages if not cached.
+        """
         if not self._channel_id:
             raise ValueError("No channel set")
+
+        if self._index_msg_id:
+            try:
+                msg = await self._client.get_messages(self._channel_id, ids=self._index_msg_id)
+                if msg and msg.text:
+                    text = _decompress_message(msg.text)
+                    data = json.loads(text)
+                    if "files" in data:
+                        return VaultIndex.from_json(text)
+            except Exception:
+                pass
+
+        config = Config.load()
+        if config.index_msg_id and config.index_msg_id != self._index_msg_id:
+            try:
+                msg = await self._client.get_messages(self._channel_id, ids=config.index_msg_id)
+                if msg and msg.text:
+                    text = _decompress_message(msg.text)
+                    data = json.loads(text)
+                    if "files" in data:
+                        self._index_msg_id = msg.id
+                        return VaultIndex.from_json(text)
+            except Exception:
+                pass
 
         async for msg in self._client.iter_messages(
             self._channel_id,
             filter=None,
-            limit=10,
+            limit=None,
         ):
             if msg.pinned and msg.text:
                 try:
                     text = _decompress_message(msg.text)
                     data = json.loads(text)
                     if "files" in data:
+                        self._index_msg_id = msg.id
+                        self._save_index_msg_id(msg.id)
                         return VaultIndex.from_json(text)
                 except json.JSONDecodeError:
                     continue
@@ -288,61 +319,81 @@ class TelegramVault:
         return VaultIndex()
 
     async def save_index(self, index: VaultIndex) -> int:
-        """Save the vault index as pinned message."""
+        """Save the vault index, using cached message ID for fast lookup."""
         if not self._channel_id:
             raise ValueError("No channel set")
 
         index.updated_at = datetime.now().timestamp()
-        index_text = _compress_message(index.to_json())
 
-        max_attempts = 3
-        for attempt in range(max_attempts):
-            existing_msg_id = None
+        if not self._index_msg_id:
+            config = Config.load()
+            self._index_msg_id = config.index_msg_id
+
+        if self._index_msg_id:
             existing_version = 0
-
-            async for msg in self._client.iter_messages(
-                self._channel_id,
-                filter=None,
-                limit=10,
-            ):
-                if msg.pinned and msg.text:
+            try:
+                msg = await self._client.get_messages(self._channel_id, ids=self._index_msg_id)
+                if msg and msg.text:
                     try:
                         text = _decompress_message(msg.text)
                         data = json.loads(text)
                         if "files" in data:
-                            existing = VaultIndex.from_json(text)
-                            existing_msg_id = msg.id
-                            existing_version = existing.version
-                            break
-                    except (json.JSONDecodeError, Exception):
-                        continue
+                            existing_version = VaultIndex.from_json(text).version
+                    except json.JSONDecodeError:
+                        pass
+            except Exception:
+                msg = None
 
-            if existing_msg_id is not None:
-                index.version = existing_version + 1
-                index_text = _compress_message(index.to_json())
+            index.version = existing_version + 1 if existing_version else (index.version or 1)
+            index_text = _compress_message(index.to_json())
+
+            for attempt in range(3):
                 try:
-                    await self._client.edit_message(
-                        self._channel_id,
-                        existing_msg_id,
-                        index_text,
+                    msg_check = await self._client.get_messages(
+                        self._channel_id, ids=self._index_msg_id
                     )
-                    return existing_msg_id
-                except Exception as e:
-                    if attempt >= max_attempts - 1:
-                        raise
-                    logger.warning(f"save_index retry {attempt + 1}/{max_attempts}: {e}")
-                    await asyncio.sleep(0.5 * (attempt + 1))
-            else:
-                index.version = 1
-                index_text = _compress_message(index.to_json())
-                msg = await self._client.send_message(
-                    self._channel_id,
-                    index_text,
-                )
-                await self._client.pin_message(self._channel_id, msg.id)
-                return msg.id
+                    if msg_check and msg_check.text:
+                        await self._client.edit_message(
+                            self._channel_id,
+                            self._index_msg_id,
+                            index_text,
+                        )
+                    else:
+                        new_msg = await self._client.send_message(
+                            self._channel_id,
+                            index_text,
+                        )
+                        await self._client.pin_message(self._channel_id, new_msg.id)
+                        self._index_msg_id = new_msg.id
 
-        raise RuntimeError("Failed to save index after retries")
+                    self._save_index_msg_id(self._index_msg_id)
+                    return self._index_msg_id
+                except Exception as e:
+                    if attempt >= 2:
+                        raise
+                    logger.warning(f"save_index retry {attempt + 1}/3: {e}")
+                    await asyncio.sleep(0.5 * (attempt + 1))
+
+        index.version = 1
+        index_text = _compress_message(index.to_json())
+        msg = await self._client.send_message(
+            self._channel_id,
+            index_text,
+        )
+        await self._client.pin_message(self._channel_id, msg.id)
+        self._index_msg_id = msg.id
+        self._save_index_msg_id(msg.id)
+        return msg.id
+
+    def _save_index_msg_id(self, msg_id: int) -> None:
+        """Persist index message ID to config for fast lookups."""
+        try:
+            config = Config.load()
+            if config.index_msg_id != msg_id:
+                config.index_msg_id = msg_id
+                config.save()
+        except Exception:
+            pass
 
     # === File Operations ===
 
