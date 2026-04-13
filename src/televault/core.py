@@ -206,80 +206,92 @@ class TeleVault:
         metadata_msg_id = await self.telegram.upload_metadata(metadata)
         metadata.message_id = metadata_msg_id
 
-        # Prepare chunks for parallel upload
+        # Streaming parallel upload: use a queue so only N chunks are in memory at once
         chunk_results: dict[int, ChunkInfo] = {}
         uploaded_count = 0
         lock = asyncio.Lock()
-        uploaded_msg_ids: list[int] = []  # Track for cleanup on failure
+        uploaded_msg_ids: list[int] = []
 
-        async def upload_single_chunk(chunk):
+        semaphore = asyncio.Semaphore(self.config.parallel_uploads)
+        chunk_queue: asyncio.Queue = asyncio.Queue(maxsize=self.config.parallel_uploads * 2)
+
+        async def process_and_upload(chunk):
             nonlocal uploaded_count
 
-            data = chunk.data
-            original_hash = hash_data(data)
-
-            # Compress if enabled
-            if metadata.compressed:
-                data = compress_data(data)
-
-            # Encrypt if enabled
-            if metadata.encrypted and password:
-                data = encrypt_chunk(data, password)
-
-            # Upload chunk
-            chunk_msg_id = await self.telegram.upload_chunk(
-                data=data,
-                filename=f"{file_id}_{chunk.index:04d}.chunk",
-                reply_to=metadata_msg_id,
-            )
-
-            # Track chunk info
-            chunk_info = ChunkInfo(
-                index=chunk.index,
-                message_id=chunk_msg_id,
-                size=len(data),
-                hash=hash_data(data),
-                original_hash=original_hash,
-            )
-
-            async with lock:
-                chunk_results[chunk.index] = chunk_info
-                uploaded_msg_ids.append(chunk_msg_id)
-                uploaded_count += 1
-
-                # Progress callback
-                if progress_callback:
-                    progress_callback(
-                        UploadProgress(
-                            file_name=file_name,
-                            total_size=file_size,
-                            uploaded_size=int(file_size * uploaded_count / total_chunks),
-                            total_chunks=total_chunks,
-                            uploaded_chunks=uploaded_count,
-                            current_chunk=chunk.index,
-                        )
-                    )
-
-        # Upload chunks in parallel (limited concurrency)
-        semaphore = asyncio.Semaphore(self.config.parallel_uploads)
-
-        async def upload_with_limit(chunk):
             async with semaphore:
-                await upload_single_chunk(chunk)
+                data = chunk.data
+                # Free the raw chunk data reference early
+                chunk_data_raw = chunk.data
+                original_hash = hash_data(chunk_data_raw)
 
-        # Collect all chunks first for parallel processing
-        chunks = list(iter_chunks(file_path, chunk_size))
+                if metadata.compressed:
+                    data = compress_data(data)
+                if metadata.encrypted and password:
+                    data = encrypt_chunk(data, password)
 
-        if chunks:
+                chunk_msg_id = await self.telegram.upload_chunk(
+                    data=data,
+                    filename=f"{file_id}_{chunk.index:04d}.chunk",
+                    reply_to=metadata_msg_id,
+                )
+
+                chunk_info = ChunkInfo(
+                    index=chunk.index,
+                    message_id=chunk_msg_id,
+                    size=len(data),
+                    hash=hash_data(data),
+                    original_hash=original_hash,
+                )
+
+                async with lock:
+                    chunk_results[chunk.index] = chunk_info
+                    uploaded_msg_ids.append(chunk_msg_id)
+                    uploaded_count += 1
+
+                    if progress_callback:
+                        progress_callback(
+                            UploadProgress(
+                                file_name=file_name,
+                                total_size=file_size,
+                                uploaded_size=int(file_size * uploaded_count / total_chunks),
+                                total_chunks=total_chunks,
+                                uploaded_chunks=uploaded_count,
+                                current_chunk=chunk.index,
+                            )
+                        )
+
+        # Producer: read chunks from disk and feed the queue
+        async def producer():
             try:
-                await asyncio.gather(*[upload_with_limit(c) for c in chunks])
-            except Exception:
-                # Cleanup on failure: delete uploaded chunks and metadata
-                logger.error(f"Upload failed for {file_name}, cleaning up...")
-                all_ids = uploaded_msg_ids + [metadata_msg_id]
-                with contextlib.suppress(Exception):
-                    await self.telegram._client.delete_messages(self.telegram._channel_id, all_ids)
-                raise
+                for chunk in iter_chunks(file_path, chunk_size):
+                    await chunk_queue.put(chunk)
+            finally:
+                # Signal all consumers done
+                await chunk_queue.put(None)
+
+        # Consumers: process chunks from the queue
+        tasks = []
+        try:
+            prod_task = asyncio.create_task(producer())
+
+            while True:
+                chunk = await chunk_queue.get()
+                if chunk is None:
+                    break
+                tasks.append(asyncio.create_task(process_and_upload(chunk)))
+
+            # Wait for all uploads to finish
+            if tasks:
+                await asyncio.gather(*tasks)
+
+            await prod_task
+        except Exception:
+            # Cleanup on failure
+            logger.error(f"Upload failed for {file_name}, cleaning up...")
+            all_ids = uploaded_msg_ids + [metadata_msg_id]
+            with contextlib.suppress(Exception):
+                await self.telegram._client.delete_messages(self.telegram._channel_id, all_ids)
+            raise
 
         # Sort chunks by index
         metadata.chunks = [chunk_results[i] for i in sorted(chunk_results.keys())]

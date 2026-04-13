@@ -44,15 +44,15 @@ class Config:
     snapshot_index_msg_id: int | None = None
 
     # Chunking
-    chunk_size: int = 100 * 1024 * 1024  # 100MB
+    chunk_size: int = 256 * 1024 * 1024  # 256MB (better for fast connections)
 
     # Processing options
     compression: bool = True
     encryption: bool = True
 
-    # Concurrency
-    parallel_uploads: int = 3
-    parallel_downloads: int = 5
+    # Concurrency (tuned for 100+ Mbps connections)
+    parallel_uploads: int = 8
+    parallel_downloads: int = 10
 
     # Retry settings
     max_retries: int = 3

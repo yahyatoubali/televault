@@ -34,10 +34,10 @@ def hash_data(data: bytes) -> str:
 
 
 def hash_file(path: str | Path) -> str:
-    """Compute BLAKE3 hash of entire file (streaming)."""
+    """Compute BLAKE3 hash of entire file (streaming, 1MB buffer)."""
     hasher = blake3.blake3()
     with open(path, "rb") as f:
-        while chunk := f.read(8192):
+        while chunk := f.read(1 << 20):  # 1MB buffer
             hasher.update(chunk)
     return hasher.hexdigest()[:32]
 
@@ -108,6 +108,7 @@ class ChunkWriter:
     Reassemble chunks into a file.
 
     Handles out-of-order chunks by writing to correct positions.
+    Keeps file handle open for performance.
     """
 
     def __init__(
@@ -117,22 +118,24 @@ class ChunkWriter:
         self.total_size = total_size
         self.chunk_size = chunk_size
         self.written_chunks: set[int] = set()
+        self._file = None
 
         # Pre-allocate file
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.output_path, "wb") as f:
             f.truncate(total_size)
+        # Reopen in read-write mode for random access (kept open for performance)
+        self._file = open(self.output_path, "r+b")  # noqa: SIM115
 
-    def write_chunk(self, chunk: Chunk) -> None:
+    def write_chunk(self, chunk: "Chunk") -> None:
         """Write a chunk to the correct position."""
         if chunk.index in self.written_chunks:
-            return  # Already written
+            return
 
         offset = chunk.index * self.chunk_size
-        with open(self.output_path, "r+b") as f:
-            f.seek(offset)
-            f.write(chunk.data)
-
+        self._file.seek(offset)
+        self._file.write(chunk.data)
+        self._file.flush()
         self.written_chunks.add(chunk.index)
 
     def is_complete(self, expected_chunks: int) -> bool:
@@ -142,6 +145,15 @@ class ChunkWriter:
     def missing_chunks(self, expected_chunks: int) -> list[int]:
         """Get list of missing chunk indices."""
         return [i for i in range(expected_chunks) if i not in self.written_chunks]
+
+    def close(self) -> None:
+        """Close the file handle."""
+        if self._file and not self._file.closed:
+            self._file.close()
+            self._file = None
+
+    def __del__(self):
+        self.close()
 
 
 class ChunkBuffer:
