@@ -150,6 +150,7 @@ class TeleVault:
         password: str | None = None,
         progress_callback: ProgressCallback | None = None,
         preserve_path: bool = False,
+        name: str | None = None,
     ) -> FileMetadata:
         """
         Upload a file to TeleVault with parallel chunk uploads.
@@ -159,6 +160,7 @@ class TeleVault:
             password: Encryption password (uses instance password if not provided)
             progress_callback: Optional progress callback
             preserve_path: If True, include full path in filename (for directory uploads)
+            name: Override filename (used by upload_stream to avoid double index save)
 
         Returns:
             FileMetadata of uploaded file
@@ -173,12 +175,12 @@ class TeleVault:
         password = password or self.password
 
         # Get file info
-        file_name = file_path.name
-        if preserve_path:
-            # Use full path relative to upload root (replace / with _ for safety)
-            # For now, just use the full path
-            file_name = str(file_path)
-            file_name = file_name.replace("/", "_")
+        if name:
+            file_name = name
+        elif preserve_path:
+            file_name = str(file_path).replace("/", "_")
+        else:
+            file_name = file_path.name
 
         file_size = file_path.stat().st_size
         file_hash = hash_file(file_path)
@@ -715,9 +717,14 @@ class TeleVault:
             data = await self.telegram.download_chunk(chunk_info.message_id)
 
             if hash_data(data) != chunk_info.hash:
-                temp_path.unlink(missing_ok=True)
-                progress_file.unlink(missing_ok=True)
-                raise ValueError(f"Chunk {chunk_info.index} hash mismatch - data corrupted")
+                logger.warning(
+                    f"Chunk {chunk_info.index} hash mismatch for {metadata.name} - "
+                    f"retry download to resume from this chunk"
+                )
+                raise ValueError(
+                    f"Chunk {chunk_info.index} hash mismatch - data corrupted. "
+                    f"Progress saved; retry to resume."
+                )
 
             if metadata.encrypted:
                 if not password:
@@ -765,12 +772,11 @@ class TeleVault:
 
         try:
             if hash_file(temp_path) != metadata.hash:
-                temp_path.unlink(missing_ok=True)
-                progress_file.unlink(missing_ok=True)
-                raise ValueError("Downloaded file hash mismatch - downloaded data is corrupted")
+                raise ValueError(
+                    "Downloaded file hash mismatch - downloaded data is corrupted. "
+                    "Partial progress saved; retry to resume."
+                )
         except ValueError:
-            temp_path.unlink(missing_ok=True)
-            progress_file.unlink(missing_ok=True)
             raise
 
         temp_path.rename(output_path)
@@ -902,26 +908,8 @@ class TeleVault:
                 tmp_path,
                 password=password,
                 progress_callback=progress_callback,
+                name=filename,
             )
-            metadata.name = filename
-
-            await self.telegram.update_metadata(metadata.message_id, metadata)
-
-            async with self._index_lock:
-                max_index_retries = 3
-                for attempt in range(max_index_retries):
-                    try:
-                        index = await self.telegram.get_index()
-                        if metadata.id not in index.files:
-                            index.add_file(metadata.id, metadata.message_id)
-                        await self.telegram.save_index(index)
-                        break
-                    except Exception as e:
-                        if attempt >= max_index_retries - 1:
-                            raise
-                        logger.warning(f"Index save retry {attempt + 1}: {e}")
-                        await asyncio.sleep(0.5 * (attempt + 1))
-
             return metadata
         finally:
             tmp_path.unlink(missing_ok=True)

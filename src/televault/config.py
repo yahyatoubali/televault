@@ -1,7 +1,9 @@
 """Configuration management for TeleVault."""
 
+import contextlib
 import json
 import os
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -57,10 +59,21 @@ class Config:
     retry_delay: float = 1.0
 
     def save(self) -> None:
-        """Save config to file."""
+        """Save config to file atomically (write temp + rename)."""
         config_path = get_config_dir() / "config.json"
-        with open(config_path, "w") as f:
-            json.dump(asdict(self), f, indent=2)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        data = json.dumps(asdict(self), indent=2)
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(tmp_fd, "w") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, config_path)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_path)
+            raise
 
     @classmethod
     def load(cls) -> "Config":

@@ -115,7 +115,7 @@ pre code{background:none;padding:0;font-size:1em}
 <div class="logo">TeleVault</div>
 <div class="tagline">Unlimited cloud storage via Telegram.<br>Encrypted. Open source. No servers.</div>
 <div class="badges">
-<span class="badge"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm.75 11.25a.75.75 0 0 1-1.5 0V6.56L5.28 8.53a.75.75 0 0 1-1.06-1.06l3.25-3.25a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1-1.06 1.06L8.75 6.56v4.69z"/></svg>v2.7.0</span>
+<span class="badge"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm.75 11.25a.75.75 0 0 1-1.5 0V6.56L5.28 8.53a.75.75 0 0 1-1.06-1.06l3.25-3.25a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1-1.06 1.06L8.75 6.56v4.69z"/></svg>v3.0.0</span>
 <span class="badge">MIT License</span>
 <span class="badge">Python 3.11+</span>
 <span class="badge">AES-256-GCM</span>
@@ -142,10 +142,11 @@ pre code{background:none;padding:0;font-size:1em}
 <div class="feature"><h3><span class="feature-icon">🔒</span> End-to-end encryption</h3><p>AES-256-GCM with scrypt key derivation. Your password never leaves your machine. Telegram only sees ciphertext.</p></div>
 <div class="feature"><h3><span class="feature-icon">⚡</span> Parallel transfers</h3><p>Upload 3 chunks, download 5 chunks simultaneously. 100 MB default chunk size.</p></div>
 <div class="feature"><h3><span class="feature-icon">🔄</span> Resumable uploads</h3><p>CRC32-protected progress files survive interruptions. Resume with <code>--resume</code>.</p></div>
+<div class="feature"><h3><span class="feature-icon">🛡️</span> Data safety</h3><p>Atomic config writes, sequential index access, cached lookups, crash-safe upload/delete/stream. Your data comes first.</p></div>
 <div class="feature"><h3><span class="feature-icon">💾</span> Git-like backups</h3><p>Incremental snapshots with retention policies. Restore to any point in time.</p></div>
 <div class="feature"><h3><span class="feature-icon">📁</span> FUSE mount</h3><p>Mount your vault as a local filesystem. On-demand chunk streaming with LRU cache.</p></div>
 <div class="feature"><h3><span class="feature-icon">🌐</span> WebDAV server</h3><p>Access files over HTTP from any device. macOS Finder, Windows Explorer, mobile apps.</p></div>
-<div class="feature"><h3><span class="feature-icon">🖥️</span> Terminal UI</h3><p>Full interactive file browser with detail panel, file type icons, and login flow.</p></div>
+<div class="feature"><h3><span class="feature-icon">🖥️</span> Terminal UI</h3><p>Full interactive file browser with detail panel, file type icons, and auth-aware loading.</p></div>
 <div class="feature"><h3><span class="feature-icon">🔀</span> Pipeable I/O</h3><p><code>cat file | tvt push -</code> · <code>tvt cat file | jq</code> · <code>tvt ls --json</code></p></div>
 <div class="feature"><h3><span class="feature-icon">⏰</span> Auto-backup</h3><p>Schedule backups with systemd timers or cron. Watch directories for live changes.</p></div>
 </div>
@@ -208,7 +209,6 @@ tvt pull photo.jpg</code></pre>
 <div class="cmd"><code>tvt setup</code><span>Configure channel (interactive)</span></div>
 <div class="cmd"><code>tvt channel</code><span>Show channel info</span></div>
 <div class="cmd"><code>tvt tui</code><span>Launch terminal UI</span></div>
-<div class="cmd"><code>tvt completion &lt;shell&gt;</code><span>Shell completion</span></div>
 <div class="cmd"><code>tvt --version</code><span>Show version</span></div>
 </div>
 </div>
@@ -290,6 +290,7 @@ ruff check src/                  # Lint</code></pre>
 <li><code>chunker.py</code> — File splitting, ChunkWriter, BLAKE3</li>
 <li><code>crypto.py</code> — AES-256-GCM, scrypt, streaming</li>
 <li><code>compress.py</code> — zstd compression</li>
+<li><code>config.py</code> — Config dataclass, atomic persistence</li>
 <li><code>fuse.py</code> — FUSE driver with on-demand streaming</li>
 <li><code>preview.py</code> — Terminal preview from headers</li>
 <li><code>tui.py</code> — Textual TUI with detail panel</li>
@@ -300,10 +301,11 @@ ruff check src/                  # Lint</code></pre>
 <ul>
 <li>All data in a private Telegram channel as pinned messages + reply chains</li>
 <li>Files chunked → hashed → compressed → encrypted → uploaded</li>
-<li>VaultIndex maps file IDs to message IDs (version-gated, 5 retries)</li>
+<li>VaultIndex maps file IDs to message IDs (version-gated, 3 retries)</li>
+<li>Cached index message IDs for O(1) lookups, asyncio.Lock for concurrency safety</li>
 <li>All CLI errors handled by <code>run_async()</code> — friendly messages only</li>
 <li>Entry points: <code>tvt</code> and <code>televault</code></li>
-<li>167 tests in <code>tests/</code></li>
+<li>168 tests in <code>tests/</code></li>
 <li>MIT license, PRs welcome</li>
 </ul>
 </div>

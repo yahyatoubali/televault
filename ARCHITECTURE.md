@@ -23,14 +23,13 @@ televault  = "televault.cli:main"
 | `chunker.py` | File splitting/merging, `ChunkWriter`, BLAKE3 hashing |
 | `crypto.py` | AES-256-GCM encryption, scrypt KDF, streaming encryptor/decryptor |
 | `compress.py` | Zstandard compression/decompression, extension-based skip logic |
-| `config.py` | `Config` dataclass, config directory resolution, persistence |
+| `config.py` | `Config` dataclass, config directory resolution, atomic persistence |
 | `retry.py` | Exponential backoff with jitter, FloodWait handling |
 | `backup.py` | `BackupEngine` -- snapshot create/restore/list/delete/prune/verify |
 | `snapshot.py` | `Snapshot`, `SnapshotFile`, `SnapshotIndex`, `RetentionPolicy` |
 | `fuse.py` | `TeleVaultFuse` -- FUSE driver with on-demand chunk streaming and LRU cache |
 | `webdav.py` | `WebDAVHandler` + `WebDAVServer` -- HTTP/WebDAV access |
 | `preview.py` | `PreviewEngine` -- terminal previews from first 1-2 chunks |
-| `completion.py` | Shell completion scripts (bash, zsh, fish, PowerShell) |
 | `watcher.py` | `FileWatcher` -- polling-based directory monitor with BLAKE2 hashing |
 | `schedule.py` | Schedule CRUD, systemd timer generation, cron entry generation |
 | `gc.py` | Orphan message detection and cleanup (dry-run default, pinned message protection) |
@@ -71,6 +70,16 @@ if message.startswith("__TV1__"):
 ```
 
 This applies to all text messages: `VaultIndex`, `FileMetadata`, `Snapshot`, and `SnapshotIndex`. Backward compatible -- uncompressed messages are read as-is.
+
+### Index Lookup Optimization
+
+Earlier versions scanned only the last 10 channel messages to find the index, which caused data loss when many chunks were uploaded. The current implementation uses a two-tier caching strategy:
+
+1. **In-memory cache** (`TelegramVault._index_msg_id`) for repeated lookups within a session
+2. **Config persistence** (`Config.index_msg_id`) for cross-session fast lookup
+3. **Full channel scan** (`limit=None`) as fallback only when no cached ID exists
+
+The `save_index` method also persists the message ID via `_save_index_msg_id()` after creating or editing the pinned index message. Same pattern applies to `snapshot_index_msg_id`.
 
 ### Message Topology
 
@@ -154,6 +163,18 @@ If the process crashes after step 2 but before step 5, the file data exists on T
 3. Delete all messages (metadata + chunks) -- errors are suppressed since the index already no longer references them
 
 If the process crashes after step 1 but before step 3, `tvt gc` will find the orphaned messages and clean them up.
+
+### Stream Upload (`tvt push -`)
+
+The `upload_stream` method writes piped data to a temp file, then delegates to `upload()` with the `name` parameter set to the desired filename. This is atomic -- the index is saved once with the correct filename, avoiding a previous bug where a second index save could fail and leave the index referencing a temp filename.
+
+### Resumable Download
+
+`download_resume` saves progress after each chunk to a `.progress` file with CRC32 integrity checking. On chunk hash mismatch, the download fails immediately but **partial progress is preserved** -- the user can retry and resume from the last successful chunk. The partial file (`.partial`) and progress file are only cleaned up on successful completion.
+
+### Concurrent Index Access
+
+All index read-modify-write operations in `TeleVault` are serialized with `asyncio.Lock` (`self._index_lock`). This prevents concurrent uploads from silently overwriting each other's file entries in the index.
 
 ### Garbage Collection
 
@@ -369,9 +390,6 @@ tvt whoami                         Show current Telegram account
 tvt logout                         Clear session
 tvt tui                            Launch interactive TUI
 
-tvt completion <shell>             Generate shell completion
-  (bash, zsh, fish, powershell)
-
 tvt backup create <path>           Create backup snapshot
   --name / -n                      Snapshot name
   --password / -p                  Encryption password
@@ -432,16 +450,19 @@ All CLI errors are user-friendly. No Python tracebacks leak to the terminal:
 The TUI (`tvt tui`) is a Textual-based file browser. It does **not** handle authentication or channel setup -- users must run `tvt login` and `tvt setup` via the CLI first.
 
 Startup flow:
-1. Show loading screen ("Connecting to Telegram...")
-2. Check for API credentials and session in `~/.config/televault/telegram.json`
-3. If not configured: show "Run: tvt login" with instructions
-4. If not logged in: show "Run: tvt login" with instructions
-5. If no channel: show "Run: tvt setup" with instructions
-6. If authenticated: transition to file browser, load files
+1. `compose()` renders the main screen immediately
+2. `on_mount` starts an async auth check via `asyncio.create_task`
+3. Status label shows connection state ("Connecting...", auth errors)
+4. If no credentials/session: shows "Run: tvt login" instructions
+5. If no channel: shows "Run: tvt setup" instructions
+6. If authenticated: dynamically mounts search input, file table, and status bar
+7. Reuses a single `TeleVault` connection instead of reconnecting per operation
 
 The file browser shows: file list (ID, Name, Size, Chunks, Encrypted), detail panel (metadata preview), sidebar (stats, actions).
 
 Key bindings: `q` quit, `r` refresh, `u` upload, `d` download, `s` search, `p` preview, `Delete` delete.
+
+Terminal cleanup: `_cleanup_terminal()` ensures the terminal is always restored, even on crashes.
 
 ---
 
@@ -484,6 +505,14 @@ All uploaded chunk messages and the metadata message are deleted. Index is not u
 
 Index saves retry up to 3 times with backoff (0.5s, 1.0s, 1.5s). Only Telegram API errors trigger retries. File data is already safe on Telegram before index save is attempted.
 
+### Sequential Index Access
+
+`asyncio.Lock` (`TeleVault._index_lock`) serializes all index read-modify-write operations in `upload()`, `upload_resume()`, and `upload_stream()`. This prevents concurrent uploads from silently overwriting each other's entries.
+
+### Login Error Handling
+
+`login()` catches only `SessionPasswordNeededError` for 2FA flow. Other sign-in errors propagate as-is -- no broad `except Exception` swallowing auth failures.
+
 ### Garbage Collection
 
 `tvt gc` scans for orphaned messages. Pinned messages (index, snapshot_index) are always protected from deletion. Default is dry-run mode; use `--force` to actually delete. `tvt gc --clean-partials` detects incomplete uploads.
@@ -497,10 +526,14 @@ Index saves retry up to 3 times with backoff (0.5s, 1.0s, 1.5s). Only Telegram A
 | Telegram server reads data | AES-256-GCM encryption; server sees only ciphertext |
 | Data corruption in transit | BLAKE3 hash at chunk and file level |
 | Wrong password decryption | GCM authentication + original_hash double check |
-| Concurrent index modification | Version counter with 3 retries on API errors |
+| Concurrent index modification | `asyncio.Lock` serializes all index read-modify-write ops |
 | Flood limits / rate limiting | Exponential backoff with FloodWait handling |
 | Accidental data deletion by gc | Dry-run by default, pinned messages always protected |
 | Large metadata exceeding Telegram limit | Automatic zlib+base64 compression with `__TV1__` prefix |
+| Index lookup misses | Cached `index_msg_id` in memory + config for O(1) fetch |
+| Config file corruption | Atomic writes (temp file + `os.replace` + `fsync`) |
+| Resume progress corruption | CRC32 checksums on progress files, partial files preserved on failure |
+| Stream upload non-atomic name change | `upload()` `name` param ensures single index save |
 
 ---
 
@@ -516,7 +549,6 @@ Index saves retry up to 3 times with backoff (0.5s, 1.0s, 1.5s). Only Telegram A
 | Log file | `~/.local/share/televault/televault.log` |
 | FUSE cache | `~/.local/share/televault/fuse_cache/` |
 | WebDAV cache | `~/.local/share/televault/webdav_cache/` |
-| Completion cache | `~/.config/televault/completion_cache.json` |
 | Watcher state | `~/.local/share/televault/watcher/watcher_state.json` |
 | systemd timers | `~/.config/systemd/user/televault-<name>.{timer,service}` |
 
@@ -527,6 +559,8 @@ On Windows: config uses `%APPDATA%`, data uses `%LOCALAPPDATA%`. On other Unix: 
 ```json
 {
   "channel_id": -1001234567890,
+  "index_msg_id": 42,
+  "snapshot_index_msg_id": 150,
   "chunk_size": 104857600,
   "compression": true,
   "encryption": true,
@@ -536,6 +570,8 @@ On Windows: config uses `%APPDATA%`, data uses `%LOCALAPPDATA%`. On other Unix: 
   "retry_delay": 1.0
 }
 ```
+
+The `index_msg_id` and `snapshot_index_msg_id` fields cache the pinned message IDs for O(1) index lookups. They are automatically populated and maintained by the application.
 
 ### Telegram Credentials (`telegram.json`)
 
@@ -548,3 +584,20 @@ On Windows: config uses `%APPDATA%`, data uses `%LOCALAPPDATA%`. On other Unix: 
 ```
 
 The `session_string` is a `StringSession` from Telethon that allows reconnection without re-authentication. It is stored after `tvt login` and reused by all subsequent commands.
+
+---
+
+## Data Safety Summary
+
+TeleVault prioritizes data safety above all else:
+
+1. **Index lookup by cached msg ID** -- O(1) direct fetch prevents the data loss bug where `iter_messages(limit=10)` could miss the pinned index
+2. **Sequential index access** -- `asyncio.Lock` prevents concurrent uploads from overwriting each other's entries
+3. **Atomic config writes** -- temp file + `os.replace` + `fsync` prevents config corruption on crash
+4. **Crash-safe deletes** -- removed from index before messages are deleted
+5. **Crash-safe uploads** -- file data is on Telegram before index save is attempted; 3 retries with backoff
+6. **Crash-safe stream** -- single index save with correct filename, no double-save window
+7. **Resume-safe downloads** -- partial files preserved on failure, CRC32-protected progress files
+8. **GC safety** -- dry-run default, pinned message protection, `--force` required
+9. **Message compression** -- automatic for metadata exceeding 4096 chars, backward compatible
+10. **Specific error handling** -- `SessionPasswordNeededError` only for 2FA, not broad `except Exception`

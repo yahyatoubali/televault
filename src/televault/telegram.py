@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from telethon import TelegramClient
-from telethon.errors import FloodWaitError
+from telethon.errors import FloodWaitError, SessionPasswordNeededError
 from telethon.sessions import StringSession
 from telethon.tl.types import (
     Channel,
@@ -167,8 +167,7 @@ class TelegramVault:
 
             try:
                 await self._client.sign_in(phone, code)
-            except Exception:
-                # 2FA required
+            except SessionPasswordNeededError:
                 password = input("Enter 2FA password: ")
                 await self._client.sign_in(password=password)
 
@@ -578,8 +577,8 @@ class TelegramVault:
             ):
                 if msg.file:
                     yield msg
-        except Exception:
-            # If iterating fails (e.g., message deleted), just return empty
+        except Exception as e:
+            logger.warning(f"Failed to iterate chunks for metadata msg {metadata_msg_id}: {e}")
             return
 
     async def delete_file(self, file_id: str) -> bool:
@@ -623,13 +622,13 @@ class TelegramVault:
         index = await self.get_index()
         files = []
 
-        for _file_id, msg_id in index.files.items():
+        for file_id, msg_id in index.files.items():
             try:
                 metadata = await self.get_metadata(msg_id)
                 metadata.message_id = msg_id
                 files.append(metadata)
-            except Exception:
-                # Skip corrupted entries
+            except Exception as e:
+                logger.warning(f"Skipping corrupted index entry {file_id} (msg {msg_id}): {e}")
                 continue
 
         return files
