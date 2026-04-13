@@ -9,7 +9,7 @@ from pathlib import Path
 
 import click
 from rich.console import Console
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from .config import Config, get_config_dir
@@ -37,6 +37,50 @@ def format_speed(bytes_per_sec: float) -> str:
             return f"{bytes_per_sec:.1f} {unit}"
         bytes_per_sec /= 1024
     return f"{bytes_per_sec:.1f} TB/s"
+
+
+class SpeedTracker:
+    """Smooth speed calculation with exponential moving average."""
+
+    def __init__(self, smooth: float = 0.3):
+        self._smooth = smooth
+        self._speed: float | None = None
+        self._last_size: int = 0
+        self._last_time: float = 0.0
+        self._start_time: float = 0.0
+        self._total_size: int = 0
+
+    def start(self, total_size: int):
+        self._start_time = time.monotonic()
+        self._last_time = self._start_time
+        self._last_size = 0
+        self._speed = None
+        self._total_size = total_size
+
+    def update(self, current_size: int) -> str:
+        now = time.monotonic()
+        dt = now - self._last_time
+        if dt < 0.15:
+            speed_str = format_speed(self._speed) if self._speed else ""
+            return speed_str
+
+        ds = current_size - self._last_size
+        instant_speed = ds / max(dt, 0.001)
+
+        if self._speed is None:
+            self._speed = instant_speed
+        else:
+            self._speed = self._smooth * instant_speed + (1 - self._smooth) * self._speed
+
+        self._last_size = current_size
+        self._last_time = now
+        return format_speed(self._speed)
+
+    @property
+    def elapsed(self) -> float:
+        if not self._start_time:
+            return 0.0
+        return time.monotonic() - self._start_time
 
 
 PHASE_LABELS = {
@@ -658,12 +702,11 @@ def push(
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
+                BarColumn(bar_width=30),
                 TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
                 TextColumn("{task.fields[speed]}"),
-                TimeRemainingColumn(),
                 console=console,
-                refresh_per_second=10,
+                refresh_per_second=4,
             ) as progress:
                 task = progress.add_task(
                     f"Hashing {file_path_obj.name}",
@@ -671,40 +714,30 @@ def push(
                     speed="",
                 )
 
-                start_time = time.monotonic()
-                last_size = 0
+                speed_tracker = SpeedTracker()
+                speed_tracker.start(file_size)
+                last_phase = "hashing"
 
                 def on_progress(p: UploadProgress):
-                    nonlocal last_size, start_time
+                    nonlocal last_phase
                     phase_label = PHASE_LABELS["uploading"].get(p.phase, p.phase)
 
-                    elapsed = time.monotonic() - start_time
-                    if p.phase == "uploading" and elapsed > 0:
-                        speed = (p.uploaded_size - last_size) / max(elapsed, 0.001)
-                        speed_str = format_speed(speed)
-                    elif p.phase in ("hashing", "metadata", "index"):
-                        speed_str = ""
-                    else:
-                        speed_str = ""
-
-                    if p.phase in ("hashing", "metadata", "index"):
-                        progress.update(
-                            task,
-                            description=f"{phase_label} {file_path_obj.name}",
-                            completed=p.percent,
-                            speed=speed_str,
-                        )
-                    else:
-                        progress.update(
-                            task,
-                            description=f"{phase_label} {file_path_obj.name}",
-                            completed=p.percent,
-                            speed=speed_str,
-                        )
-
                     if p.phase == "uploading":
-                        start_time = time.monotonic()
-                        last_size = p.uploaded_size
+                        speed_str = speed_tracker.update(p.uploaded_size)
+                    elif p.phase == "done":
+                        speed_str = ""
+                    else:
+                        speed_str = ""
+
+                    if p.phase != last_phase:
+                        last_phase = p.phase
+
+                    progress.update(
+                        task,
+                        description=f"{phase_label} {file_path_obj.name}",
+                        completed=p.percent,
+                        speed=speed_str,
+                    )
 
                 if resume:
                     metadata = await vault.upload_resume(file_path, progress_callback=on_progress)
@@ -784,12 +817,11 @@ def pull(file_id_or_name: str, output: str | None, password: str | None, resume:
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
+            BarColumn(bar_width=30),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             TextColumn("{task.fields[speed]}"),
-            TimeRemainingColumn(),
             console=console,
-            refresh_per_second=10,
+            refresh_per_second=4,
         ) as progress:
             task = progress.add_task(
                 f"Fetching {file_id_or_name}",
@@ -797,18 +829,22 @@ def pull(file_id_or_name: str, output: str | None, password: str | None, resume:
                 speed="",
             )
 
-            start_time = time.monotonic()
-            last_size = 0
+            speed_tracker = SpeedTracker()
+            file_size_known = False
 
             def on_progress(p: DownloadProgress):
-                nonlocal last_size, start_time
+                nonlocal file_size_known
+
                 phase_label = PHASE_LABELS["downloading"].get(p.phase, p.phase)
 
-                elapsed = time.monotonic() - start_time
-                if p.phase == "downloading" and elapsed > 0 and p.downloaded_size > 0:
-                    speed = p.downloaded_size / max(elapsed, 0.001)
-                    speed_str = format_speed(speed)
-                elif p.phase in ("metadata", "verifying"):
+                if p.phase == "downloading":
+                    if not file_size_known and p.total_size > 0:
+                        speed_tracker.start(p.total_size)
+                        file_size_known = True
+                    speed_str = speed_tracker.update(p.downloaded_size)
+                elif p.phase == "verifying":
+                    speed_str = "verifying..."
+                elif p.phase == "done":
                     speed_str = ""
                 else:
                     speed_str = ""
