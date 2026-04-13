@@ -375,22 +375,32 @@ class PreviewEngine:
             file_metadata = extract_image_metadata(first_bytes)
             w = file_metadata.get("width", 0)
             h = file_metadata.get("height", 0)
-            fmt = file_metadata.get("format", "Unknown")
-            preview_text = render_ascii_image(w, h, fmt, metadata.size)
+            if w and h:
+                file_metadata["dimensions"] = f"{w}x{h}"
+            file_metadata["file_size"] = _fmt_size(metadata.size)
+            if metadata.compressed:
+                file_metadata["compression"] = "Yes"
+            if metadata.encrypted:
+                file_metadata["encryption"] = "Yes"
+            preview_text = ""
 
         elif file_type == "video":
             file_metadata = extract_video_metadata(first_bytes)
-            fmt = file_metadata.get("format", "Unknown")
-            preview_text = f"Video: {fmt}\nSize: {_fmt_size(metadata.size)}"
+            file_metadata["file_size"] = _fmt_size(metadata.size)
+            if metadata.compressed:
+                file_metadata["compression"] = "Yes"
+            if metadata.encrypted:
+                file_metadata["encryption"] = "Yes"
+            preview_text = ""
 
         elif file_type == "audio":
             file_metadata = extract_audio_metadata(first_bytes)
-            fmt = file_metadata.get("format", "Unknown")
-            preview_text = f"Audio: {fmt}\nSize: {_fmt_size(metadata.size)}"
-            if "channels" in file_metadata:
-                preview_text += f"\nChannels: {file_metadata['channels']}"
-            if "sample_rate" in file_metadata:
-                preview_text += f"\nSample Rate: {file_metadata['sample_rate']} Hz"
+            file_metadata["file_size"] = _fmt_size(metadata.size)
+            if metadata.compressed:
+                file_metadata["compression"] = "Yes"
+            if metadata.encrypted:
+                file_metadata["encryption"] = "Yes"
+            preview_text = ""
 
         elif file_type == "text":
             preview_text = generate_text_preview(first_bytes, max_lines=40)

@@ -69,11 +69,6 @@ def show_api_credentials_error():
     config_path = get_config_dir() / "telegram.json"
     console.print(f"  Edit: {config_path}")
     console.print('  Add: {"api_id": 12345, "api_hash": "your_hash_here"}')
-    console.print("\n[bold]Method 3 - Use the TUI:[/bold]")
-    console.print("  Run: televault tui")
-    console.print("  The TUI will prompt you for credentials\n")
-
-    console.print("[dim]For more information, see: https://my.telegram.org[/dim]")
 
 
 def run_async(coro):
@@ -1208,7 +1203,9 @@ def verify(file_id_or_name: str, password: str | None):
 def cat(file_id_or_name: str, password: str | None):
     """Stream file content to stdout.
 
-    Useful for piping: tvt cat config.json | jq '.key'
+    For text files: outputs content directly (pipeable).
+    For images: displays inline in terminal (Kitty/iTerm2).
+    For video/audio/binary: shows error message and metadata.
 
     """
 
@@ -1224,7 +1221,98 @@ def cat(file_id_or_name: str, password: str | None):
             await vault.disconnect()
             return
 
-        import sys
+        import os
+
+        index = await vault.telegram.get_index()
+        if file_id_or_name in index.files:
+            metadata = await vault.telegram.get_metadata(index.files[file_id_or_name])
+        else:
+            files = await vault.list_files()
+            matches = [f for f in files if f.name == file_id_or_name or file_id_or_name in f.name]
+            if not matches:
+                console.print(f"[red]Error: File not found: {file_id_or_name}[/red]")
+                await vault.disconnect()
+                sys.exit(1)
+            if len(matches) > 1:
+                console.print(f"[red]Error: Multiple files match '{file_id_or_name}'[/red]")
+                await vault.disconnect()
+                sys.exit(1)
+            metadata = matches[0]
+
+        from .preview import classify_file
+
+        file_type = classify_file(metadata.name)
+
+        if file_type == "video":
+            console.print("[yellow]Cannot display video files in terminal.[/yellow]")
+            console.print(f"  File: {metadata.name}")
+            console.print(f"  Size: {format_size(metadata.size)}")
+            console.print("Use 'tvt pull' to download the file.")
+            await vault.disconnect()
+            return
+
+        if file_type == "audio":
+            console.print("[yellow]Cannot play audio files in terminal.[/yellow]")
+            console.print(f"  File: {metadata.name}")
+            console.print(f"  Size: {format_size(metadata.size)}")
+            console.print("Use 'tvt pull' to download the file.")
+            await vault.disconnect()
+            return
+
+        if file_type == "image":
+            is_kitty = bool(
+                os.environ.get("TERM") == "xterm-kitty" or os.environ.get("KITTY_WINDOW_ID")
+            )
+            is_iterm = os.environ.get("TERM_PROGRAM") == "iTerm.app"
+
+            if is_kitty or is_iterm:
+                try:
+                    import tempfile
+                    from pathlib import Path
+
+                    ext = Path(metadata.name).suffix.lower()
+                    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                        tmp_path = Path(tmp.name)
+
+                    await vault.download(
+                        file_id_or_name, output_path=str(tmp_path), password=password
+                    )
+
+                    with open(tmp_path, "rb") as f:
+                        img_data = f.read()
+
+                    if is_kitty:
+                        import base64
+
+                        b64 = base64.b64encode(img_data).decode("ascii")
+                        esc = f"\x1b_Ga=T,f=100,s={len(img_data)},{b64}\x1b\\"
+                        sys.stdout.buffer.write(esc.encode("ascii"))
+                        sys.stdout.buffer.write(b"\n")
+                        sys.stdout.buffer.flush()
+                    elif is_iterm:
+                        import base64
+
+                        b64 = base64.b64encode(img_data).decode("ascii")
+                        esc = (
+                            f"\x1b]1337;File=name={metadata.name};"
+                            f"inline=1;size={len(img_data)}:{b64}\x07"
+                        )
+                        sys.stdout.write(esc)
+                        sys.stdout.write("\n")
+                        sys.stdout.flush()
+
+                    tmp_path.unlink(missing_ok=True)
+                    await vault.disconnect()
+                    return
+                except Exception:
+                    pass
+
+            console.print("[yellow]Terminal does not support inline image display.[/yellow]")
+            console.print(f"  File: {metadata.name}")
+            console.print(f"  Size: {format_size(metadata.size)}")
+            console.print("Use 'tvt pull' to download, then open the file.")
+            await vault.disconnect()
+            return
 
         try:
             total = await vault.stream(
@@ -1232,7 +1320,8 @@ def cat(file_id_or_name: str, password: str | None):
                 output=sys.stdout.buffer,
                 password=password,
             )
-            print(f"\n[{format_size(total)} streamed]", file=sys.stderr)
+            if os.isatty(sys.stdout.fileno()):
+                print(f"\n[{format_size(total)} streamed]", file=sys.stderr)
         except FileNotFoundError:
             print(f"Error: File not found: {file_id_or_name}", file=sys.stderr)
             await vault.disconnect()
@@ -1259,10 +1348,9 @@ def preview(file_id_or_name: str, password: str | None, size: str):
     """Show a preview of a file without downloading it entirely.
 
     Detects file type and shows appropriate preview:
-    - Images: dimensions and ASCII art placeholder
-    - Videos: format and metadata
-    - Audio: format and metadata
-    - Text files: first ~40 lines
+    - Text files: first ~40 lines of content
+    - Images: dimensions, format, and metadata
+    - Video/Audio: format and metadata info
     - Other: hex dump of first 256 bytes
 
     """
@@ -1294,13 +1382,32 @@ def preview(file_id_or_name: str, password: str | None, size: str):
                 for key, value in result.metadata.items():
                     console.print(f"  {key}: {value}")
 
-            if result.preview_text:
+            if result.file_type == "video":
+                console.print()
+                console.print("[dim]Video preview is not supported in terminal.[/dim]")
+                console.print(f"[dim]Use 'tvt pull {result.name}' to download the file.[/dim]")
+            elif result.file_type == "audio":
+                console.print()
+                console.print("[dim]Audio preview is not supported in terminal.[/dim]")
+                console.print(f"[dim]Use 'tvt pull {result.name}' to download the file.[/dim]")
+            elif result.file_type == "image":
+                console.print()
+                console.print(
+                    f"[dim]Use 'tvt cat {result.name}' to display this image inline.[/dim]"
+                )
+                console.print(f"[dim]Use 'tvt pull {result.name}' to download the file.[/dim]")
+
+            if result.preview_text and result.file_type not in ("video", "audio"):
                 console.print()
                 if result.file_type == "text":
                     console.print("[dim]--- Preview ---[/dim]")
                     for line in result.preview_text.splitlines()[:40]:
                         console.print(line)
+                    total_lines = len(result.preview_text.splitlines())
+                    if total_lines > 40:
+                        console.print(f"[dim]... {total_lines - 40} more lines[/dim]")
                     console.print("[dim]--- End preview ---[/dim]")
+                    console.print(f"[dim]Use 'tvt cat {result.name}' to see the full file.[/dim]")
                 else:
                     console.print(result.preview_text)
 
@@ -1357,27 +1464,6 @@ def stat(as_json: bool):
 # find is an alias for search - Click doesn't support @main.command(alias='find'),
 # so we reference the same command function
 find = search
-
-
-@main.command()
-@click.argument("shell", type=click.Choice(["bash", "zsh", "fish", "powershell"]))
-def completion(shell: str):
-    """Generate shell completion script.
-
-    Supported shells: bash, zsh, fish, powershell
-
-    Examples:
-
-      tvt completion bash >> ~/.bashrc
-
-      tvt completion zsh > ~/.zfunc/_tvt
-
-      tvt completion fish > ~/.config/fish/completions/tvt.fish
-
-    """
-    from .completion import install_completion
-
-    console.print(install_completion(shell))
 
 
 # === Backup Commands ===
