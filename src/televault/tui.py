@@ -1,9 +1,10 @@
-"""Textual TUI for TeleVault."""
+"""Textual TUI for TeleVault - File Browser."""
 
 import asyncio
 import contextlib
 import logging
 import os
+import sys
 
 from rich.console import Console
 from textual.app import App, ComposeResult
@@ -22,8 +23,7 @@ from textual.widgets import (
 )
 
 from .cli import format_size
-from .config import Config
-from .config import get_config_dir as televault_config_dir
+from .config import Config, get_config_dir as televault_config_dir
 from .core import TeleVault
 
 logger = logging.getLogger("televault.tui")
@@ -42,29 +42,42 @@ FILE_ICONS = {
 
 
 def get_file_icon(filename: str) -> str:
-    ext = filename.lower().split(".")[-1] if "." in filename else ""
-
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
     image_exts = {"jpg", "jpeg", "png", "gif", "webp", "svg", "bmp", "heic", "heif"}
     video_exts = {"mp4", "mkv", "avi", "mov", "webm", "m4v", "wmv", "flv"}
     audio_exts = {"mp3", "wav", "ogg", "flac", "aac", "m4a", "opus"}
     archive_exts = {"zip", "tar", "gz", "bz2", "xz", "7z", "rar", "zst"}
     code_exts = {"py", "js", "ts", "go", "rs", "c", "cpp", "h", "java", "rb", "php"}
     doc_exts = {"pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "md"}
-
     if ext in image_exts:
         return FILE_ICONS["image"]
-    elif ext in video_exts:
+    if ext in video_exts:
         return FILE_ICONS["video"]
-    elif ext in audio_exts:
+    if ext in audio_exts:
         return FILE_ICONS["audio"]
-    elif ext in archive_exts:
+    if ext in archive_exts:
         return FILE_ICONS["archive"]
-    elif ext in code_exts:
+    if ext in code_exts:
         return FILE_ICONS["code"]
-    elif ext in doc_exts:
+    if ext in doc_exts:
         return FILE_ICONS["document"]
-    else:
-        return FILE_ICONS["unknown"]
+    return FILE_ICONS["unknown"]
+
+
+def _cleanup_terminal():
+    try:
+        sys.stdout.write("\033[?25h")
+        sys.stdout.write("\033[0m")
+        sys.stdout.write("\033[2J")
+        sys.stdout.write("\033[H")
+        sys.stdout.flush()
+    except Exception:
+        pass
+    try:
+        if sys.stdin.isatty():
+            os.system("stty sane 2>/dev/null || true")
+    except Exception:
+        pass
 
 
 class VaultApp(App):
@@ -74,116 +87,21 @@ class VaultApp(App):
     SUB_TITLE = "Encrypted Cloud Storage via Telegram"
 
     CSS = """
-    #main-container {
-        layout: horizontal;
-        height: 100%;
-    }
-
-    #sidebar {
-        width: 22;
-        height: 100%;
-        padding: 1 2;
-        border-right: thick $primary;
-        background: $surface;
-    }
-
-    #sidebar .title {
-        text-align: center;
-        color: $text;
-        text-style: bold;
-        margin-bottom: 1;
-    }
-
-    #sidebar .stats-box {
-        padding: 1;
-        margin-bottom: 1;
-        background: $surface-darken-1;
-        border: round $primary;
-    }
-
-    #sidebar .stats-box .title {
-        color: $accent;
-        text-style: bold;
-    }
-
-    .sidebar-button {
-        width: 100%;
-        margin-bottom: 1;
-    }
-
-    #content {
-        width: 1fr;
-        height: 100%;
-        padding: 1 2;
-    }
-
-    #content .title {
-        color: $text;
-        text-style: bold;
-        margin-bottom: 1;
-    }
-
-    #file-table {
-        height: 1fr;
-    }
-
-    #status-bar {
-        dock: bottom;
-        height: 1;
-        background: $primary;
-        color: $text;
-        padding: 0 1;
-    }
-
-    #detail-panel {
-        width: 40;
-        height: 100%;
-        padding: 1 2;
-        border-left: thick $primary;
-        background: $surface;
-        overflow-y: auto;
-    }
-
-    #detail-panel .title {
-        color: $accent;
-        text-style: bold;
-        margin-bottom: 1;
-    }
-
-    #detail-panel .field-label {
-        color: $text-muted;
-    }
-
-    #detail-panel .field-value {
-        color: $text;
-        margin-bottom: 1;
-    }
-
-    #detail-panel .preview-box {
-        background: $surface-darken-1;
-        border: round $primary;
-        padding: 1;
-        margin-top: 1;
-        max-height: 16;
-        overflow-y: auto;
-    }
-
-    #loading-container {
-        align: center middle;
-        height: 100%;
-    }
-
-    #loading-label {
-        text-align: center;
-        color: $text;
-        text-style: bold;
-        margin: 1;
-    }
-
-    #loading-hint {
-        text-align: center;
-        color: $text-muted;
-    }
+    #main-container { layout: horizontal; height: 100%; }
+    #sidebar { width: 22; height: 100%; padding: 1 2; border-right: thick $primary; background: $surface; }
+    #sidebar .title { text-align: center; color: $text; text-style: bold; margin-bottom: 1; }
+    #sidebar .stats-box { padding: 1; margin-bottom: 1; background: $surface-darken-1; border: round $primary; }
+    #sidebar .stats-box .title { color: $accent; text-style: bold; }
+    .sidebar-button { width: 100%; margin-bottom: 1; }
+    #content { width: 1fr; height: 100%; padding: 1 2; }
+    #content .title { color: $text; text-style: bold; margin-bottom: 1; }
+    #file-table { height: 1fr; }
+    #status-bar { dock: bottom; height: 1; background: $primary; color: $text; padding: 0 1; }
+    #detail-panel { width: 40; height: 100%; padding: 1 2; border-left: thick $primary; background: $surface; overflow-y: auto; }
+    #detail-panel .title { color: $accent; text-style: bold; margin-bottom: 1; }
+    .login-container { padding: 2 4; height: auto; }
+    .login-container .title { color: $accent; text-style: bold; margin-bottom: 1; }
+    .info-text { color: $text-muted; margin-bottom: 1; }
     """
 
     BINDINGS = [
@@ -198,9 +116,7 @@ class VaultApp(App):
     ]
 
     is_authenticated = reactive(False)
-    has_channel = reactive(False)
     files = reactive([])
-    _loading = reactive(True)
 
     def __init__(self):
         super().__init__()
@@ -208,6 +124,7 @@ class VaultApp(App):
         self._connected = False
         self.config = Config.load_or_create()
         self.selected_file = None
+        self._auth_checked = False
 
     async def _get_vault(self) -> TeleVault:
         if self._vault is None or not self._connected:
@@ -223,122 +140,49 @@ class VaultApp(App):
             self._vault = None
             self._connected = False
 
-    status_message = reactive("Connecting...")
-
-    def on_unmount(self) -> None:
-        if self._vault and self._connected:
-            with contextlib.suppress(Exception):
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(self._vault.disconnect())
-                else:
-                    loop.run_until_complete(self._vault.disconnect())
-            self._vault = None
-            self._connected = False
-
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
-        yield from self._compose_loading()
-        yield Footer()
-
-    def _compose_loading(self) -> ComposeResult:
-        with Container(id="loading-container"):
-            yield Label("TeleVault", id="loading-label")
-            yield Label("Connecting to Telegram...", id="loading-hint")
-
-    def watch_is_authenticated(self, authenticated: bool) -> None:
-        if authenticated and self._loading:
-            self._loading = False
-            self._clear_and_mount_main()
-
-    def watch_has_channel(self, has_channel: bool) -> None:
-        if has_channel and self.is_authenticated and self._loading:
-            self._loading = False
-            self._clear_and_mount_main()
-
-    def _clear_and_mount_main(self) -> None:
-        try:
-            for child in list(self.children):
-                if hasattr(child, "id") and child.id in ("loading-container",):
-                    child.remove()
-            for widget in self._compose_main_screen():
-                self.mount(widget)
-        except Exception as e:
-            logger.warning(f"Error switching to main screen: {e}")
-            with contextlib.suppress(Exception):
-                self._force_redraw()
-
-    def _force_redraw(self) -> None:
-        with contextlib.suppress(Exception):
-            self.screen.refresh()
-
-    def _compose_main_screen(self) -> ComposeResult:
-        with Container(id="main-container"):
+        with Horizontal(id="main-container"):
             with Vertical(id="sidebar"):
                 yield Label("📁 TeleVault", classes="title")
                 yield Label("")
-
                 with Container(classes="stats-box"):
                     yield Label("📊 Statistics", classes="title")
                     yield Label("Files: 0", id="stat-files")
                     yield Label("Total Size: 0 B", id="stat-size")
                     yield Label("Storage: -", id="stat-storage")
-
                 yield Label("")
                 yield Button("📤 Upload", id="btn-upload", classes="sidebar-button")
                 yield Button("🔍 Search", id="btn-search", classes="sidebar-button")
                 yield Button("🔄 Refresh", id="btn-refresh", classes="sidebar-button")
                 yield Button("ℹ️ Status", id="btn-status", classes="sidebar-button")
                 yield Button("👤 Whoami", id="btn-whoami", classes="sidebar-button")
-
             with Vertical(id="content"):
                 yield Label("📁 File Browser", classes="title")
-                yield Input(placeholder="Search files...", id="search-input")
-
-                table = DataTable(id="file-table")
-                table.add_columns("ID", "Name", "Size", "Chunks", "Encrypted", "Actions")
-                table.cursor_type = "row"
-                table.zebra_stripes = True
-                yield table
-
-                yield Static(
-                    "Ready - Press 'q' to quit, 'p' to preview, 'u' to upload",
-                    id="status-bar",
-                )
-
-            with Vertical(id="detail-panel"):
-                yield Label("📋 File Details", id="detail-title", classes="title")
-                yield Static("Select a file to see details", id="detail-content")
+                yield Label("Connecting to Telegram...", id="status-label")
+        yield Footer()
 
     async def on_mount(self) -> None:
         self.title = "TeleVault - Encrypted Cloud Storage"
+        asyncio.create_task(self._init_auth())
 
+    async def _init_auth(self) -> None:
         try:
             config_path = televault_config_dir() / "telegram.json"
-            api_configured = bool(
-                os.environ.get("TELEGRAM_API_ID") and os.environ.get("TELEGRAM_API_HASH")
-            )
-
-            if not api_configured and config_path.exists():
+            api_ok = bool(os.environ.get("TELEGRAM_API_ID") and os.environ.get("TELEGRAM_API_HASH"))
+            if not api_ok and config_path.exists():
                 try:
                     import json
 
                     with open(config_path) as f:
                         data = json.load(f)
                     if data.get("api_id") and data.get("api_hash"):
-                        api_configured = True
+                        api_ok = True
                 except Exception:
                     pass
 
-            if not api_configured:
-                self.is_authenticated = False
-                self.has_channel = False
-                self._loading = False
-                self.status_message = "Not configured"
-                self._update_loading_text(
-                    "⚠ Not configured",
-                    "Run: tvt login  |  Press 'q' to quit",
-                )
+            if not api_ok:
+                self._update_status("⚠ Not configured. Run: tvt login")
                 return
 
             session_string = None
@@ -353,91 +197,67 @@ class VaultApp(App):
                     pass
 
             if not session_string:
-                self.is_authenticated = False
-                self._loading = False
-                self.status_message = "Not logged in"
-                self._update_loading_text(
-                    "⚠ Not logged in",
-                    "Run: tvt login  |  Press 'q' to quit",
-                )
+                self._update_status("⚠ Not logged in. Run: tvt login")
                 return
 
             if self.config.channel_id is None:
-                self.has_channel = False
-                self._loading = False
-                self.status_message = "No channel"
-                self._update_loading_text(
-                    "⚠ No channel configured",
-                    "Run: tvt setup  |  Press 'q' to quit",
-                )
+                self._update_status("⚠ No channel. Run: tvt setup")
                 return
 
-            await self._check_auth()
-        except Exception as e:
-            logger.error(f"on_mount error: {e}", exc_info=True)
-            self._loading = False
-            self.status_message = f"Error: {e}"
-            self._update_loading_text(
-                "⚠ Error",
-                f"{str(e)[:60]}  |  Press 'q' to quit",
-            )
+            self._update_status("Connecting...")
 
-    def _update_loading_text(self, title: str, hint: str) -> None:
-        try:
-            loading_label = self.query_one("#loading-label", Label)
-            loading_hint = self.query_one("#loading-hint", Label)
-            loading_label.update(title)
-            loading_hint.update(hint)
-        except Exception:
-            pass
-
-    async def _check_auth(self) -> None:
-        try:
-            self._update_loading_text("Connecting...", "Authenticating with Telegram...")
             vault = await self._get_vault()
+            if not await vault.is_authenticated():
+                await self._release_vault()
+                self._update_status("⚠ Auth failed. Run: tvt login")
+                return
 
-            if await vault.is_authenticated():
-                self.is_authenticated = True
-                self.has_channel = True
-                self._loading = False
-                with contextlib.suppress(Exception):
-                    self._clear_and_mount_main()
-                await self._load_files()
-            else:
-                await self._release_vault()
-                self.is_authenticated = False
-                self._loading = False
-                self.status_message = "Not logged in"
-                self._update_loading_text(
-                    "⚠ Not logged in",
-                    "Run: tvt login  |  Press 'q' to quit",
-                )
-        except Exception as e:
-            logger.error(f"Auth check failed: {e}", exc_info=True)
-            with contextlib.suppress(Exception):
-                await self._release_vault()
-            self.is_authenticated = False
-            self._loading = False
-            self.status_message = "Connection error"
-            self._update_loading_text(
-                "⚠ Connection error",
-                f"{str(e)[:50]}  |  Run: tvt login  |  Press 'q' to quit",
+            await vault.telegram.set_channel(self.config.channel_id)
+            self.is_authenticated = True
+            self._auth_checked = True
+
+            status_label = self.query_one("#status-label", Label)
+            status_label.remove()
+            search_input = Input(placeholder="Search files...", id="search-input")
+            table = DataTable(id="file-table")
+            table.add_columns("ID", "Name", "Size", "Chunks", "Encrypted", "Actions")
+            table.cursor_type = "row"
+            table.zebra_stripes = True
+            content = self.query_one("#content", Vertical)
+            content.mount(search_input)
+            content.mount(table)
+            content.mount(
+                Static("Press 'r' to refresh, 'u' to upload, 'p' to preview", id="status-bar")
             )
+
+            await self._load_files()
+        except Exception as e:
+            logger.error(f"Auth init failed: {e}", exc_info=True)
+            self._update_status(f"⚠ Error: {str(e)[:60]}")
+        finally:
+            await self._release_vault()
+
+    def _update_status(self, msg: str) -> None:
+        try:
+            label = self.query_one("#status-label", Label)
+            label.update(msg)
+        except Exception:
+            try:
+                bar = self.query_one("#status-bar", Static)
+                bar.update(msg)
+            except Exception:
+                pass
 
     async def _load_files(self) -> None:
-        if not self.is_authenticated:
+        if not self._auth_checked:
             return
-
         try:
-            self.status_message = "Loading files..."
             vault = await self._get_vault()
-
             files = await vault.list_files()
             self.files = files
 
             table = self.query_one("#file-table", DataTable)
             table.clear()
-
             for f in files:
                 table.add_row(
                     f.id[:8],
@@ -449,11 +269,9 @@ class VaultApp(App):
                 )
 
             total_size = sum(f.size for f in files)
-            try:
+            with contextlib.suppress(Exception):
                 self.query_one("#stat-files", Label).update(f"Files: {len(files)}")
-                self.query_one("#stat-size", Label).update(f"Total Size: {format_size(total_size)}")
-            except Exception:
-                pass
+                self.query_one("#stat-size", Label).update(f"Total: {format_size(total_size)}")
 
             try:
                 status = await vault.get_status()
@@ -462,229 +280,158 @@ class VaultApp(App):
             except Exception:
                 pass
 
-            self.status_message = f"Loaded {len(files)} files"
-
+            with contextlib.suppress(Exception):
+                self.query_one("#status-bar", Static).update(f"✓ {len(files)} files loaded")
         except Exception as e:
             logger.error(f"Error loading files: {e}", exc_info=True)
-            self.status_message = f"Error loading files: {str(e)[:80]}"
-            self.notify(f"Failed to load files: {str(e)[:60]}", severity="error")
+            self._update_status(f"Error: {str(e)[:60]}")
+
+    def on_unmount(self) -> None:
+        _cleanup_terminal()
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
-        button_id = event.button.id
-
-        if button_id == "btn-upload":
+        bid = event.button.id
+        if bid == "btn-upload":
             await self._do_upload()
-        elif button_id == "btn-search":
-            await self._do_search()
-        elif button_id == "btn-refresh":
-            await self._load_files()
-        elif button_id == "btn-status":
+        elif bid == "btn-search":
+            self.query_one("#search-input", Input).focus()
+        elif bid == "btn-refresh":
+            asyncio.create_task(self._load_files())
+        elif bid == "btn-status":
             await self._show_status()
-        elif button_id == "btn-whoami":
+        elif bid == "btn-whoami":
             await self._show_whoami()
 
     async def _do_upload(self) -> None:
-        if not self.is_authenticated:
-            self.notify("Not logged in. Run: tvt login", severity="error")
-            return
         self.push_screen(UploadScreen())
 
-    async def _do_search(self) -> None:
-        if not self.is_authenticated:
-            self.notify("Not logged in. Run: tvt login", severity="error")
-            return
-        self.query_one("#search-input", Input).focus()
-
     async def _show_status(self) -> None:
-        if not self.is_authenticated:
-            self.notify("Not logged in. Run: tvt login", severity="error")
+        if not self._auth_checked:
+            self.notify("Not connected yet", severity="warning")
             return
-
         try:
             vault = await self._get_vault()
             status = await vault.get_status()
-
-            channel_id = status.get("channel_id", "N/A")
-            file_count = status.get("file_count", 0)
-            total_size = status.get("total_size", 0)
-            stored_size = status.get("stored_size", 0)
-            ratio = status.get("compression_ratio", 0)
-            ratio_str = f"{ratio:.1%}" if isinstance(ratio, (int, float)) else "N/A"
-
-            message = f"""
-📊 Vault Status
-
-Channel ID: {channel_id}
-Files: {file_count}
-Total Size: {format_size(total_size)}
-Stored Size: {format_size(stored_size)}
-Compression: {ratio_str}
-            """.strip()
-
-            self.notify(message, title="Status", timeout=10)
+            msg = (
+                f"📊 Vault Status\n\n"
+                f"Channel: {status.get('channel_id', 'N/A')}\n"
+                f"Files: {status.get('file_count', 0)}\n"
+                f"Total: {format_size(status.get('total_size', 0))}\n"
+                f"Stored: {format_size(status.get('stored_size', 0))}"
+            )
+            self.notify(msg, title="Status", timeout=8)
         except Exception as e:
-            self.notify(f"Error: {str(e)}", severity="error")
+            self.notify(f"Error: {str(e)[:60]}", severity="error")
 
     async def _show_whoami(self) -> None:
-        if not self.is_authenticated:
-            self.notify("Not logged in. Run: tvt login", severity="error")
+        if not self._auth_checked:
+            self.notify("Not connected yet", severity="warning")
             return
-
         try:
             vault = await self._get_vault()
-            if not await vault.is_authenticated():
-                self.notify("Not logged in. Run: tvt login", severity="error")
-                return
             me = await vault.telegram._client.get_me()
-
             if me:
                 name = f"{me.first_name or ''} {me.last_name or ''}".strip()
-                username = f"@{me.username}" if me.username else "No username"
-
-                message = f"""
-👤 Account Info
-
-Name: {name}
-Username: {username}
-ID: {me.id}
-                """.strip()
-
-                self.notify(message, title="Whoami", timeout=10)
+                username = f"@{me.username}" if me.username else "N/A"
+                self.notify(f"👤 {name}\n{username}\nID: {me.id}", title="Whoami", timeout=8)
         except Exception as e:
-            self.notify(f"Error: {str(e)}", severity="error")
+            self.notify(f"Error: {str(e)[:60]}", severity="error")
 
     def action_refresh(self) -> None:
         asyncio.create_task(self._load_files())
 
     def action_upload(self) -> None:
-        asyncio.create_task(self._do_upload())
+        self.push_screen(UploadScreen())
 
     def action_download(self) -> None:
-        self.notify("Select a file and press Enter to download", severity="information")
+        self.notify("Select a file and press Enter", severity="information")
 
     def action_preview(self) -> None:
         if not self.files:
-            self.notify("No files to preview", severity="warning")
+            self.notify("No files", severity="warning")
             return
-
         try:
             table = self.query_one("#file-table", DataTable)
             row_index = table.cursor_row
             if 0 <= row_index < len(self.files):
-                file_meta = self.files[row_index]
-                self._update_detail_panel(file_meta)
+                self._update_detail(self.files[row_index])
             else:
-                self.notify("Select a file to preview", severity="information")
+                self.notify("Select a file", severity="information")
         except Exception:
-            self.notify("Select a file to preview", severity="information")
-
-    def _update_detail_panel(self, file_meta) -> None:
-        try:
-            detail_title = self.query_one("#detail-title", Label)
-            detail_content = self.query_one("#detail-content", Static)
-
-            icon = get_file_icon(file_meta.name)
-            from datetime import datetime
-
-            created_str = (
-                datetime.fromtimestamp(file_meta.created_at).strftime("%Y-%m-%d %H:%M")
-                if file_meta.created_at
-                else "Unknown"
-            )
-            hash_str = (
-                file_meta.hash[:16] + "..."
-                if file_meta.hash and len(file_meta.hash) > 16
-                else (file_meta.hash or "N/A")
-            )
-
-            lines = []
-            lines.append(f"{icon} {file_meta.name}")
-            lines.append("")
-            lines.append(f"[bold]ID:[/bold] {file_meta.id}")
-            lines.append(f"[bold]Size:[/bold] {format_size(file_meta.size)}")
-            lines.append(f"[bold]Hash:[/bold] {hash_str}")
-            lines.append(f"[bold]Chunks:[/bold] {file_meta.chunk_count}")
-            lines.append(f"[bold]Encrypted:[/bold] {'Yes' if file_meta.encrypted else 'No'}")
-            lines.append(f"[bold]Compressed:[/bold] {'Yes' if file_meta.compressed else 'No'}")
-            if file_meta.compressed and file_meta.compression_ratio:
-                lines.append(f"[bold]Comp. ratio:[/bold] {file_meta.compression_ratio:.1%}")
-            lines.append(f"[bold]Created:[/bold] {created_str}")
-            if file_meta.mime_type:
-                lines.append(f"[bold]MIME:[/bold] {file_meta.mime_type}")
-            if file_meta.chunks:
-                stored = sum(c.size for c in file_meta.chunks)
-                lines.append(f"[bold]Stored:[/bold] {format_size(stored)}")
-
-            detail_title.update(f"📋 {icon} {file_meta.name[:30]}")
-            detail_content.update("\n".join(lines))
-
-        except Exception as e:
-            logger.debug(f"Error updating detail panel: {e}")
+            self.notify("Select a file", severity="information")
 
     def action_delete(self) -> None:
         if not self.files:
-            self.notify("No files to delete", severity="warning")
+            self.notify("No files", severity="warning")
             return
-
         try:
             table = self.query_one("#file-table", DataTable)
             row_index = table.cursor_row
             if 0 <= row_index < len(self.files):
-                file_to_delete = self.files[row_index]
+                f = self.files[row_index]
 
                 async def do_delete():
                     try:
                         vault = await self._get_vault()
-                        deleted = await vault.delete(file_to_delete.id)
-
+                        await vault.telegram.set_channel(self.config.channel_id)
+                        deleted = await vault.delete(f.id)
                         if deleted:
-                            self.notify(f"✓ Deleted: {file_to_delete.name}")
+                            self.notify(f"✓ Deleted {f.name}")
                             await self._load_files()
                         else:
-                            self.notify(
-                                f"✗ Failed to delete: {file_to_delete.name}", severity="error"
-                            )
+                            self.notify(f"✗ Delete failed", severity="error")
                     except Exception as e:
-                        self.notify(f"Error: {str(e)}", severity="error")
+                        self.notify(f"Error: {str(e)[:60]}", severity="error")
+                    finally:
+                        await self._release_vault()
 
-                self.push_screen(
-                    ConfirmScreen(
-                        "🗑️ Confirm Delete",
-                        f"Delete '{file_to_delete.name}'? Cannot be undone.",
-                        do_delete,
-                    )
-                )
+                self.push_screen(ConfirmScreen("🗑️ Delete", f"Delete '{f.name}'?", do_delete))
             else:
-                self.notify("Select a file to delete", severity="information")
+                self.notify("Select a file", severity="information")
         except Exception:
-            self.notify("Select a file to delete", severity="information")
+            self.notify("Select a file", severity="information")
 
     def action_search(self) -> None:
-        asyncio.create_task(self._do_search())
-
-    async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if not self.files:
-            return
-
-        row_index = event.row_index
-        if 0 <= row_index < len(self.files):
-            self.selected_file = self.files[row_index]
-            self._update_detail_panel(self.selected_file)
-
-    async def _download_file(self, file_metadata) -> None:
-        self.push_screen(DownloadScreen(file_metadata))
-
-    def watch_status_message(self, message: str) -> None:
         try:
-            status_bar = self.query_one("#status-bar", Static)
-            status_bar.update(message)
+            self.query_one("#search-input", Input).focus()
         except Exception:
             pass
 
+    async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        if not self.files or event.row_index >= len(self.files):
+            return
+        self.selected_file = self.files[event.row_index]
+        self._update_detail(self.selected_file)
+
+    def _update_detail(self, fm) -> None:
+        try:
+            icon = get_file_icon(fm.name)
+            h = fm.hash[:16] + "..." if fm.hash and len(fm.hash) > 16 else (fm.hash or "N/A")
+            lines = [
+                f"{icon} {fm.name}",
+                "",
+                f"[bold]ID:[/bold] {fm.id}",
+                f"[bold]Size:[/bold] {format_size(fm.size)}",
+                f"[bold]Hash:[/bold] {h}",
+                f"[bold]Chunks:[/bold] {fm.chunk_count}",
+                f"[bold]Encrypted:[/bold] {'Yes' if fm.encrypted else 'No'}",
+                f"[bold]Compressed:[/bold] {'Yes' if fm.compressed else 'No'}",
+            ]
+            if fm.chunks:
+                stored = sum(c.size for c in fm.chunks)
+                lines.append(f"[bold]Stored:[/bold] {format_size(stored)}")
+            try:
+                detail_title = self.query_one("#detail-title", Label)
+                detail_content = self.query_one("#detail-content", Static)
+                detail_title.update(f"📋 {icon} {fm.name[:30]}")
+                detail_content.update("\n".join(lines))
+            except Exception:
+                self.notify(f"{icon} {fm.name} - {format_size(fm.size)}", timeout=4)
+        except Exception as e:
+            logger.debug(f"Detail update error: {e}")
+
 
 class UploadScreen(Screen):
-    """Screen for uploading files."""
-
     def compose(self) -> ComposeResult:
         with Container(classes="login-container"):
             yield Label("📤 Upload File", classes="title")
@@ -694,7 +441,7 @@ class UploadScreen(Screen):
             yield Label("")
             yield Label("Password (optional):", classes="info-text")
             yield Input(
-                placeholder="Leave empty to use env var", id="password-input", password=True
+                placeholder="Leave empty for no encryption", id="password-input", password=True
             )
             yield Label("")
             yield Static("", id="upload-progress")
@@ -705,51 +452,45 @@ class UploadScreen(Screen):
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-do-upload":
-            path = self.query_one("#path-input", Input).value
-            password = self.query_one("#password-input", Input).value
+            path = self.query_one("#path-input", Input).value.strip()
+            password = self.query_one("#password-input", Input).value or None
             if path:
-                await self._upload_file(path, password or None)
+                await self._upload(path, password)
         elif event.button.id == "btn-cancel":
             self.app.pop_screen()
 
-    async def _upload_file(self, path: str, password: str | None) -> None:
-        progress_label = self.query_one("#upload-progress", Static)
+    async def _upload(self, path: str, password: str | None) -> None:
+        progress = self.query_one("#upload-progress", Static)
         vault = None
         try:
             from pathlib import Path
 
-            file_path = Path(path)
-            if not file_path.exists():
+            fp = Path(path)
+            if not fp.exists():
                 self.app.notify(f"File not found: {path}", severity="error")
                 return
-
-            progress_label.update(f"Uploading {file_path.name}...")
-
+            progress.update(f"Uploading {fp.name}...")
             vault = TeleVault(password=password)
             await vault.connect()
+            await vault.telegram.set_channel(self.app.config.channel_id)
 
             def on_progress(p):
                 try:
-                    asyncio.get_running_loop()
-                    progress_label.update(
+                    progress.update(
                         f"Upload: {p.percent:.1f}% ({p.uploaded_chunks}/{p.total_chunks})"
                     )
-                except RuntimeError:
+                except Exception:
                     pass
 
             metadata = await vault.upload(path, progress_callback=on_progress)
-
-            progress_label.update(f"✓ Uploaded: {metadata.name}")
+            progress.update(f"✓ Uploaded: {metadata.name}")
             self.app.notify(f"✓ Uploaded: {metadata.name}")
-
             await asyncio.sleep(1)
             self.app.pop_screen()
-
-            await self.app._load_files()
-
+            asyncio.create_task(self.app._load_files())
         except Exception as e:
-            progress_label.update(f"Error: {str(e)}")
-            self.app.notify(f"Upload failed: {str(e)}", severity="error")
+            progress.update(f"Error: {str(e)[:80]}")
+            self.app.notify(f"Upload failed: {str(e)[:60]}", severity="error")
         finally:
             if vault:
                 with contextlib.suppress(Exception):
@@ -757,8 +498,6 @@ class UploadScreen(Screen):
 
 
 class DownloadScreen(Screen):
-    """Screen for downloading files."""
-
     def __init__(self, file_metadata):
         super().__init__()
         self.file_metadata = file_metadata
@@ -772,13 +511,11 @@ class DownloadScreen(Screen):
             yield Label("")
             yield Label("Output path (optional):", classes="info-text")
             yield Input(placeholder="Current directory", id="output-input")
-            yield Label("")
             if self.file_metadata.encrypted:
-                yield Label("Password:", classes="info-text")
-                yield Input(
-                    placeholder="Enter decryption password", id="password-input", password=True
-                )
                 yield Label("")
+                yield Label("Password:", classes="info-text")
+                yield Input(placeholder="Decryption password", id="password-input", password=True)
+            yield Label("")
             yield Static("", id="download-progress")
             yield Label("")
             with Horizontal():
@@ -787,46 +524,30 @@ class DownloadScreen(Screen):
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-do-download":
-            output = self.query_one("#output-input", Input).value
-            password_input = (
-                self.query_one("#password-input", Input) if self.file_metadata.encrypted else None
-            )
-            password = password_input.value if password_input else None
-            await self._download_file(output or None, password or None)
+            output = self.query_one("#output-input", Input).value or None
+            pwd = None
+            if self.file_metadata.encrypted:
+                pwd = self.query_one("#password-input", Input).value or None
+            await self._download(output, pwd)
         elif event.button.id == "btn-cancel":
             self.app.pop_screen()
 
-    async def _download_file(self, output: str | None, password: str | None) -> None:
-        progress_label = self.query_one("#download-progress", Static)
+    async def _download(self, output: str | None, password: str | None) -> None:
+        progress = self.query_one("#download-progress", Static)
         vault = None
         try:
-            progress_label.update(f"Downloading {self.file_metadata.name}...")
-
+            progress.update(f"Downloading {self.file_metadata.name}...")
             vault = TeleVault(password=password)
             await vault.connect()
-
-            def on_progress(p):
-                try:
-                    asyncio.get_running_loop()
-                    progress_label.update(
-                        f"Download: {p.percent:.1f}% ({p.downloaded_chunks}/{p.total_chunks})"
-                    )
-                except RuntimeError:
-                    pass
-
-            output_path = await vault.download(
-                self.file_metadata.id, output_path=output, progress_callback=on_progress
-            )
-
-            progress_label.update(f"✓ Downloaded to: {output_path}")
-            self.app.notify(f"✓ Downloaded to: {output_path}")
-
+            await vault.telegram.set_channel(self.app.config.channel_id)
+            result = await vault.download(self.file_metadata.id, output_path=output)
+            progress.update(f"✓ Saved: {result}")
+            self.app.notify(f"✓ Downloaded to: {result}")
             await asyncio.sleep(1)
             self.app.pop_screen()
-
         except Exception as e:
-            progress_label.update(f"Error: {str(e)}")
-            self.app.notify(f"Download failed: {str(e)}", severity="error")
+            progress.update(f"Error: {str(e)[:80]}")
+            self.app.notify(f"Download failed: {str(e)[:60]}", severity="error")
         finally:
             if vault:
                 with contextlib.suppress(Exception):
@@ -834,8 +555,6 @@ class DownloadScreen(Screen):
 
 
 class ConfirmScreen(Screen):
-    """Screen for confirming destructive actions."""
-
     def __init__(self, title: str, message: str, on_confirm=None):
         super().__init__()
         self.title_text = title
@@ -865,24 +584,6 @@ class ConfirmScreen(Screen):
 
 def run_tui():
     """Run the TUI application with proper terminal cleanup."""
-    import os
-    import sys
-
-    def _cleanup_terminal():
-        try:
-            sys.stdout.write("\033[?25h")
-            sys.stdout.write("\033[0m")
-            sys.stdout.write("\033[2J")
-            sys.stdout.write("\033[H")
-            sys.stdout.flush()
-        except Exception:
-            pass
-        try:
-            if sys.stdin.isatty():
-                os.system("stty sane 2>/dev/null || true")
-        except Exception:
-            pass
-
     app = VaultApp()
     try:
         app.run()
@@ -897,26 +598,3 @@ def run_tui():
         print("If the terminal looks broken, try running: reset")
     else:
         _cleanup_terminal()
-    finally:
-        try:
-            if (
-                hasattr(app, "_vault")
-                and hasattr(app, "_connected")
-                and app._vault
-                and app._connected
-            ):
-                import asyncio
-
-                try:
-                    loop = asyncio.get_event_loop()
-                    loop.run_until_complete(app._vault.disconnect())
-                except Exception:
-                    pass
-                app._vault = None
-                app._connected = False
-        except Exception:
-            pass
-
-
-if __name__ == "__main__":
-    run_tui()
