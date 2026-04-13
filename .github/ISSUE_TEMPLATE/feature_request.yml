@@ -1,0 +1,63 @@
+name: Feature Request
+description: Suggest a new feature or improvement
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting a feature! Please describe the use case clearly.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the current limitation or frustration
+      placeholder: "I'm unable to... / It's frustrating when..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How would you like this to work?
+      placeholder: "Add a `tvt diff` command that..."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of TeleVault does this affect?
+      options:
+        - CLI commands
+        - Upload/Download
+        - Encryption/Security
+        - TUI
+        - FUSE mount
+        - WebDAV server
+        - Backup/Snapshots
+        - Performance
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds or alternatives have you tried?
+      placeholder: "I currently use `tvt pull` + diff manually..."
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Any other context, mockups, or examples
+      placeholder: "Similar tools like rclone have..."
+    validations:
+      required: false

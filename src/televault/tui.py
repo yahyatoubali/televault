@@ -23,7 +23,8 @@ from textual.widgets import (
 )
 
 from .cli import format_size
-from .config import Config, get_config_dir as televault_config_dir
+from .config import Config
+from .config import get_config_dir as televault_config_dir
 from .core import TeleVault
 
 logger = logging.getLogger("televault.tui")
@@ -88,19 +89,39 @@ class VaultApp(App):
 
     CSS = """
     #main-container { layout: horizontal; height: 100%; }
-    #sidebar { width: 22; height: 100%; padding: 1 2; border-right: thick $primary; background: $surface; }
-    #sidebar .title { text-align: center; color: $text; text-style: bold; margin-bottom: 1; }
-    #sidebar .stats-box { padding: 1; margin-bottom: 1; background: $surface-darken-1; border: round $primary; }
+    #sidebar {
+        width: 22; height: 100%; padding: 1 2;
+        border-right: thick $primary; background: $surface;
+    }
+    #sidebar .title {
+        text-align: center; color: $text;
+        text-style: bold; margin-bottom: 1;
+    }
+    #sidebar .stats-box {
+        padding: 1; margin-bottom: 1;
+        background: $surface-darken-1; border: round $primary;
+    }
     #sidebar .stats-box .title { color: $accent; text-style: bold; }
     .sidebar-button { width: 100%; margin-bottom: 1; }
     #content { width: 1fr; height: 100%; padding: 1 2; }
     #content .title { color: $text; text-style: bold; margin-bottom: 1; }
     #file-table { height: 1fr; }
-    #status-bar { dock: bottom; height: 1; background: $primary; color: $text; padding: 0 1; }
-    #detail-panel { width: 40; height: 100%; padding: 1 2; border-left: thick $primary; background: $surface; overflow-y: auto; }
-    #detail-panel .title { color: $accent; text-style: bold; margin-bottom: 1; }
+    #status-bar {
+        dock: bottom; height: 1;
+        background: $primary; color: $text; padding: 0 1;
+    }
+    #detail-panel {
+        width: 40; height: 100%; padding: 1 2;
+        border-left: thick $primary; background: $surface;
+        overflow-y: auto;
+    }
+    #detail-panel .title {
+        color: $accent; text-style: bold; margin-bottom: 1;
+    }
     .login-container { padding: 2 4; height: auto; }
-    .login-container .title { color: $accent; text-style: bold; margin-bottom: 1; }
+    .login-container .title {
+        color: $accent; text-style: bold; margin-bottom: 1;
+    }
     .info-text { color: $text-muted; margin-bottom: 1; }
     """
 
@@ -126,19 +147,26 @@ class VaultApp(App):
         self.selected_file = None
         self._auth_checked = False
 
-    async def _get_vault(self) -> TeleVault:
-        if self._vault is None or not self._connected:
+    async def _get_vault(self) -> TeleVault | None:
+        if self._vault is not None and self._connected:
+            return self._vault
+        try:
             self._vault = TeleVault()
             await self._vault.connect()
-            self._connected = True
-        return self._vault
-
-    async def _release_vault(self) -> None:
-        if self._vault and self._connected:
-            with contextlib.suppress(Exception):
+            if not await self._vault.is_authenticated():
                 await self._vault.disconnect()
+                self._vault = None
+                self._connected = False
+                return None
+            if self.config.channel_id:
+                await self._vault.telegram.set_channel(self.config.channel_id)
+            self._connected = True
+            return self._vault
+        except Exception as e:
+            logger.error(f"Failed to connect vault: {e}", exc_info=True)
             self._vault = None
             self._connected = False
+            return None
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -165,6 +193,14 @@ class VaultApp(App):
     async def on_mount(self) -> None:
         self.title = "TeleVault - Encrypted Cloud Storage"
         asyncio.create_task(self._init_auth())
+
+    async def on_unmount(self) -> None:
+        if self._vault and self._connected:
+            with contextlib.suppress(Exception):
+                await self._vault.disconnect()
+            self._vault = None
+            self._connected = False
+        _cleanup_terminal()
 
     async def _init_auth(self) -> None:
         try:
@@ -207,12 +243,10 @@ class VaultApp(App):
             self._update_status("Connecting...")
 
             vault = await self._get_vault()
-            if not await vault.is_authenticated():
-                await self._release_vault()
+            if vault is None:
                 self._update_status("⚠ Auth failed. Run: tvt login")
                 return
 
-            await vault.telegram.set_channel(self.config.channel_id)
             self.is_authenticated = True
             self._auth_checked = True
 
@@ -234,8 +268,6 @@ class VaultApp(App):
         except Exception as e:
             logger.error(f"Auth init failed: {e}", exc_info=True)
             self._update_status(f"⚠ Error: {str(e)[:60]}")
-        finally:
-            await self._release_vault()
 
     def _update_status(self, msg: str) -> None:
         try:
@@ -253,6 +285,9 @@ class VaultApp(App):
             return
         try:
             vault = await self._get_vault()
+            if vault is None:
+                self._update_status("⚠ Connection lost. Restart TUI.")
+                return
             files = await vault.list_files()
             self.files = files
 
@@ -286,9 +321,6 @@ class VaultApp(App):
             logger.error(f"Error loading files: {e}", exc_info=True)
             self._update_status(f"Error: {str(e)[:60]}")
 
-    def on_unmount(self) -> None:
-        _cleanup_terminal()
-
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id
         if bid == "btn-upload":
@@ -309,8 +341,11 @@ class VaultApp(App):
         if not self._auth_checked:
             self.notify("Not connected yet", severity="warning")
             return
+        vault = await self._get_vault()
+        if vault is None:
+            self.notify("Connection lost. Restart TUI.", severity="error")
+            return
         try:
-            vault = await self._get_vault()
             status = await vault.get_status()
             msg = (
                 f"📊 Vault Status\n\n"
@@ -327,8 +362,11 @@ class VaultApp(App):
         if not self._auth_checked:
             self.notify("Not connected yet", severity="warning")
             return
+        vault = await self._get_vault()
+        if vault is None:
+            self.notify("Connection lost. Restart TUI.", severity="error")
+            return
         try:
-            vault = await self._get_vault()
             me = await vault.telegram._client.get_me()
             if me:
                 name = f"{me.first_name or ''} {me.last_name or ''}".strip()
@@ -371,19 +409,19 @@ class VaultApp(App):
                 f = self.files[row_index]
 
                 async def do_delete():
+                    vault = await self._get_vault()
+                    if vault is None:
+                        self.notify("Connection lost", severity="error")
+                        return
                     try:
-                        vault = await self._get_vault()
-                        await vault.telegram.set_channel(self.config.channel_id)
                         deleted = await vault.delete(f.id)
                         if deleted:
                             self.notify(f"✓ Deleted {f.name}")
                             await self._load_files()
                         else:
-                            self.notify(f"✗ Delete failed", severity="error")
+                            self.notify("Delete failed", severity="error")
                     except Exception as e:
                         self.notify(f"Error: {str(e)[:60]}", severity="error")
-                    finally:
-                        await self._release_vault()
 
                 self.push_screen(ConfirmScreen("🗑️ Delete", f"Delete '{f.name}'?", do_delete))
             else:
@@ -392,10 +430,8 @@ class VaultApp(App):
             self.notify("Select a file", severity="information")
 
     def action_search(self) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self.query_one("#search-input", Input).focus()
-        except Exception:
-            pass
 
     async def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
         if not self.files or event.row_index >= len(self.files):
@@ -461,7 +497,6 @@ class UploadScreen(Screen):
 
     async def _upload(self, path: str, password: str | None) -> None:
         progress = self.query_one("#upload-progress", Static)
-        vault = None
         try:
             from pathlib import Path
 
@@ -470,19 +505,18 @@ class UploadScreen(Screen):
                 self.app.notify(f"File not found: {path}", severity="error")
                 return
             progress.update(f"Uploading {fp.name}...")
-            vault = TeleVault(password=password)
-            await vault.connect()
-            await vault.telegram.set_channel(self.app.config.channel_id)
+            vault = await self.app._get_vault()
+            if vault is None:
+                self.app.notify("Connection lost. Restart TUI.", severity="error")
+                return
 
             def on_progress(p):
-                try:
+                with contextlib.suppress(Exception):
                     progress.update(
                         f"Upload: {p.percent:.1f}% ({p.uploaded_chunks}/{p.total_chunks})"
                     )
-                except Exception:
-                    pass
 
-            metadata = await vault.upload(path, progress_callback=on_progress)
+            metadata = await vault.upload(path, password=password, progress_callback=on_progress)
             progress.update(f"✓ Uploaded: {metadata.name}")
             self.app.notify(f"✓ Uploaded: {metadata.name}")
             await asyncio.sleep(1)
@@ -491,10 +525,6 @@ class UploadScreen(Screen):
         except Exception as e:
             progress.update(f"Error: {str(e)[:80]}")
             self.app.notify(f"Upload failed: {str(e)[:60]}", severity="error")
-        finally:
-            if vault:
-                with contextlib.suppress(Exception):
-                    await vault.disconnect()
 
 
 class DownloadScreen(Screen):
@@ -534,13 +564,15 @@ class DownloadScreen(Screen):
 
     async def _download(self, output: str | None, password: str | None) -> None:
         progress = self.query_one("#download-progress", Static)
-        vault = None
         try:
             progress.update(f"Downloading {self.file_metadata.name}...")
-            vault = TeleVault(password=password)
-            await vault.connect()
-            await vault.telegram.set_channel(self.app.config.channel_id)
-            result = await vault.download(self.file_metadata.id, output_path=output)
+            vault = await self.app._get_vault()
+            if vault is None:
+                self.app.notify("Connection lost. Restart TUI.", severity="error")
+                return
+            result = await vault.download(
+                self.file_metadata.id, output_path=output, password=password
+            )
             progress.update(f"✓ Saved: {result}")
             self.app.notify(f"✓ Downloaded to: {result}")
             await asyncio.sleep(1)
@@ -548,10 +580,6 @@ class DownloadScreen(Screen):
         except Exception as e:
             progress.update(f"Error: {str(e)[:80]}")
             self.app.notify(f"Download failed: {str(e)[:60]}", severity="error")
-        finally:
-            if vault:
-                with contextlib.suppress(Exception):
-                    await vault.disconnect()
 
 
 class ConfirmScreen(Screen):
