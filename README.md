@@ -59,7 +59,7 @@ TeleVault turns a **private Telegram channel** into encrypted, unlimited cloud s
 - **Git-like backups** — Incremental snapshots with retention policies.
 - **FUSE mount** — Mount your vault as a local filesystem with on-demand streaming.
 - **WebDAV server** — Access files over HTTP from any device.
-- **Terminal UI** — Full interactive file browser with detail panel.
+- **Terminal UI (beta)** — Interactive file browser with detail panel.
 - **Piping** — `cat file | tvt push -`, `tvt cat file | jq`, `tvt ls --json`.
 - **Auto-backup** — Schedules, systemd timers, file watching.
 - **Garbage collection** — Find and remove orphaned messages (dry-run by default).
@@ -137,7 +137,7 @@ tvt whoami                    # Show account info
 tvt login                     # Authenticate
 tvt setup                     # Configure channel (interactive)
 tvt channel                   # Show channel info
-tvt tui                       # Launch terminal UI
+tvt tui                       # Launch terminal UI (beta)
 ```
 
 ### Pipeable I/O

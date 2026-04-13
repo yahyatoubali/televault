@@ -1033,7 +1033,15 @@ def whoami():
 
 @main.command()
 def tui():
-    """Launch the interactive TUI."""
+    """Launch the interactive TUI (BETA).
+
+    The TUI is experimental and may have stability issues.
+    For reliable operations, use the CLI commands directly:
+    tvt push, tvt pull, tvt ls, tvt rm, etc.
+    """
+    console.print(
+        "[yellow]⚠ TUI is in BETA — for best reliability use CLI commands directly[/yellow]"
+    )
     try:
         from .tui import run_tui
 
@@ -1044,6 +1052,15 @@ def tui():
             console.print("[dim]Install it with: pip install televault[/dim]")
         else:
             console.print(f"[red]Error: {e}[/red]")
+        sys.exit(1)
+    except Exception as e:
+        try:
+            sys.stdout.write("\033[?25h\033[0m\033[2J\033[H")
+            sys.stdout.flush()
+        except Exception:
+            pass
+        console.print(f"[red]TUI error: {e}[/red]")
+        console.print("[dim]If the terminal looks broken, run: reset[/dim]")
         sys.exit(1)
 
 

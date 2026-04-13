@@ -445,7 +445,9 @@ All CLI errors are user-friendly. No Python tracebacks leak to the terminal:
 
 ---
 
-## TUI
+## TUI (Beta)
+
+> **Note**: The TUI is in beta. For reliable operations, use CLI commands directly (`tvt push`, `tvt pull`, `tvt ls`, etc.).
 
 The TUI (`tvt tui`) is a Textual-based file browser. It does **not** handle authentication or channel setup -- users must run `tvt login` and `tvt setup` via the CLI first.
 
@@ -456,7 +458,7 @@ Startup flow:
 4. If no credentials/session: shows "Run: tvt login" instructions
 5. If no channel: shows "Run: tvt setup" instructions
 6. If authenticated: dynamically mounts search input, file table, and status bar
-7. Reuses a single `TeleVault` connection instead of reconnecting per operation
+7. Reuses a single `TeleVault` connection for the entire session
 
 The file browser shows: file list (ID, Name, Size, Chunks, Encrypted), detail panel (metadata preview), sidebar (stats, actions).
 
