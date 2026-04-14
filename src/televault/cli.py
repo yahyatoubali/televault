@@ -21,6 +21,8 @@ console = Console()
 
 def format_size(size: int) -> str:
     """Format bytes as human readable."""
+    if size < 0:
+        return "0 B"
     for unit in ["B", "KB", "MB", "GB", "TB"]:
         if size < 1024:
             return f"{size:.1f} {unit}"
@@ -83,16 +85,26 @@ class SpeedTracker:
         return time.monotonic() - self._start_time
 
 
+PHASE_ICONS = {
+    "hashing": "🔍",
+    "metadata": "📨",
+    "uploading": "⬆️ ",
+    "downloading": "⬇️ ",
+    "verifying": "🔍",
+    "index": "💾",
+    "done": "✅",
+}
+
 PHASE_LABELS = {
     "uploading": {
         "hashing": "Hashing",
-        "metadata": "Sending metadata",
+        "metadata": "Metadata",
         "uploading": "Uploading",
-        "index": "Saving index",
+        "index": "Index",
         "done": "Done",
     },
     "downloading": {
-        "metadata": "Fetching metadata",
+        "metadata": "Metadata",
         "downloading": "Downloading",
         "verifying": "Verifying",
         "done": "Done",
@@ -702,16 +714,17 @@ def push(
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
-                BarColumn(bar_width=30),
+                BarColumn(bar_width=25),
                 TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-                TextColumn("{task.fields[speed]}"),
+                TextColumn("{task.fields[detail]}"),
                 console=console,
                 refresh_per_second=4,
+                transient=True,
             ) as progress:
                 task = progress.add_task(
-                    f"Hashing {file_path_obj.name}",
+                    f"🔍 Hashing {file_path_obj.name}",
                     total=100,
-                    speed="",
+                    detail="",
                 )
 
                 speed_tracker = SpeedTracker()
@@ -720,23 +733,29 @@ def push(
 
                 def on_progress(p: UploadProgress):
                     nonlocal last_phase
+                    icon = PHASE_ICONS.get(p.phase, "⏳")
                     phase_label = PHASE_LABELS["uploading"].get(p.phase, p.phase)
 
                     if p.phase == "uploading":
                         speed_str = speed_tracker.update(p.uploaded_size)
+                        chunk_info = f"{p.uploaded_chunks}/{p.total_chunks} chunks"
+                        if speed_str:
+                            detail = f"{chunk_info}  {speed_str}"
+                        else:
+                            detail = chunk_info
                     elif p.phase == "done":
-                        speed_str = ""
+                        detail = format_size(p.total_size)
                     else:
-                        speed_str = ""
+                        detail = ""
 
                     if p.phase != last_phase:
                         last_phase = p.phase
 
                     progress.update(
                         task,
-                        description=f"{phase_label} {file_path_obj.name}",
+                        description=f"{icon} {phase_label} {file_path_obj.name}",
                         completed=p.percent,
-                        speed=speed_str,
+                        detail=detail,
                     )
 
                 if resume:
@@ -817,17 +836,51 @@ def pull(file_id_or_name: str, output: str | None, password: str | None, resume:
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
-            BarColumn(bar_width=30),
+            BarColumn(bar_width=25),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-            TextColumn("{task.fields[speed]}"),
+            TextColumn("{task.fields[detail]}"),
             console=console,
             refresh_per_second=4,
+            transient=True,
         ) as progress:
             task = progress.add_task(
-                f"Fetching {file_id_or_name}",
+                f"🔍 Fetching {file_id_or_name}",
                 total=100,
-                speed="",
+                detail="",
             )
+
+            speed_tracker = SpeedTracker()
+            file_size_known = False
+
+            def on_progress(p: DownloadProgress):
+                nonlocal file_size_known
+
+                icon = PHASE_ICONS.get(p.phase, "⏳")
+                phase_label = PHASE_LABELS["downloading"].get(p.phase, p.phase)
+
+                if p.phase == "downloading":
+                    if not file_size_known and p.total_size > 0:
+                        speed_tracker.start(p.total_size)
+                        file_size_known = True
+                    speed_str = speed_tracker.update(p.downloaded_size)
+                    chunk_info = f"{p.downloaded_chunks}/{p.total_chunks} chunks"
+                    if speed_str:
+                        detail = f"{chunk_info}  {speed_str}"
+                    else:
+                        detail = chunk_info
+                elif p.phase == "verifying":
+                    detail = "checking integrity..."
+                elif p.phase == "done":
+                    detail = format_size(p.total_size)
+                else:
+                    detail = ""
+
+                progress.update(
+                    task,
+                    description=f"{icon} {phase_label} {p.file_name}",
+                    completed=p.percent,
+                    detail=detail,
+                )
 
             speed_tracker = SpeedTracker()
             file_size_known = False
