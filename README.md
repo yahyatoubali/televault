@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-3.0.0-blue?style=flat-square" alt="version">
+  <img src="https://img.shields.io/badge/version-3.2.2-blue?style=flat-square" alt="version">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license">
   <img src="https://img.shields.io/badge/python-3.11+-yellow?style=flat-square" alt="python">
   <img src="https://img.shields.io/pypi/v/televault?style=flat-square" alt="pypi">
@@ -35,6 +35,14 @@
 
 ---
 
+## System Architecture
+
+<p align="center">
+  <img src="./img/televault-system-architecture.png" alt="TeleVault System Architecture" width="800">
+</p>
+
+---
+
 ## Why TeleVault?
 
 | | TeleVault | Cloud Storage |
@@ -44,7 +52,8 @@
 | **Encryption** | AES-256-GCM client-side | Server-side or none |
 | **Trust Model** | Zero-trust (you hold the key) | Trust the provider |
 | **File Size** | Up to 2 GB per file | Varies |
-| **Speed** | Parallel chunk uploads | Single connection |
+| **Speed** | 8 parallel chunk uploads | Single connection |
+| **Low-resource** | Built-in mode for weak machines | N/A |
 
 TeleVault turns a **private Telegram channel** into encrypted, unlimited cloud storage. No local database — everything lives as pinned messages and reply chains in the channel. Your password never leaves your machine.
 
@@ -53,16 +62,19 @@ TeleVault turns a **private Telegram channel** into encrypted, unlimited cloud s
 ## Features
 
 - **End-to-end encryption** — AES-256-GCM with scrypt key derivation. Telegram only sees ciphertext.
-- **Parallel transfers** — Upload 3 chunks, download 5 chunks simultaneously.
+- **Parallel transfers** — 8 upload, 10 download concurrent chunks. 256 MB default chunk size.
 - **Resumable uploads/downloads** — CRC32-protected progress files survive interruptions.
 - **Data safety** — Atomic config writes, sequential index access (asyncio.Lock), cached index lookups, crash-safe delete/upload/stream.
+- **Low-resource mode** — `--low-resource` flag for machines with <2 GB RAM (32 MB chunks, 2 parallel ops).
+- **Progress display** — Phase icons, chunk counter, EMA-smoothed speed (e.g. `3/8 chunks  12.3 MB/s`).
 - **Git-like backups** — Incremental snapshots with retention policies.
 - **FUSE mount** — Mount your vault as a local filesystem with on-demand streaming.
 - **WebDAV server** — Access files over HTTP from any device.
 - **Terminal UI (beta)** — Interactive file browser with detail panel.
 - **Piping** — `cat file | tvt push -`, `tvt cat file | jq`, `tvt ls --json`.
 - **Auto-backup** — Schedules, systemd timers, file watching.
-- **Garbage collection** — Find and remove orphaned messages (dry-run by default).
+- **Garbage collection** — Find and remove orphaned messages (dry-run by default, auto-cleans stale index entries).
+- **Async I/O** — Non-blocking file hashing with ThreadPoolExecutor + aiofiles.
 
 ---
 
@@ -124,20 +136,20 @@ tvt channel
 ```bash
 tvt push <file>              # Upload a file (use - for stdin)
 tvt pull <file>              # Download (use -o - for stdout)
-tvt ls [--json]               # List files
-tvt cat <file>                # Stream file to stdout
-tvt preview <file>            # Preview without full download
-tvt find <query> [--json]     # Search files
-tvt info <file> [--json]       # Detailed file info
-tvt stat [--json]             # Vault statistics
-tvt rm <file>                 # Delete file
-tvt verify <file>             # Verify integrity
-tvt gc [--dry-run]            # Garbage collection
-tvt whoami                    # Show account info
-tvt login                     # Authenticate
-tvt setup                     # Configure channel (interactive)
-tvt channel                   # Show channel info
-tvt tui                       # Launch terminal UI (beta)
+tvt ls [--json]              # List files
+tvt cat <file>               # Stream file to stdout
+tvt preview <file>           # Preview without full download
+tvt find <query> [--json]    # Search files
+tvt info <file> [--json]     # Detailed file info
+tvt stat [--json]            # Vault statistics
+tvt rm <file>                # Delete file
+tvt verify <file>            # Verify integrity
+tvt gc [--force]             # Garbage collection (dry-run by default)
+tvt whoami                   # Show account info
+tvt login                    # Authenticate
+tvt setup                    # Configure channel (interactive)
+tvt channel                  # Show channel info
+tvt tui                      # Launch terminal UI (beta)
 ```
 
 ### Pipeable I/O
@@ -151,6 +163,17 @@ tvt cat config.json | jq '.database'
 tvt ls --json | jq '.[].name'
 tvt find "backup" --json | jq '.[].size'
 ```
+
+### Low-Resource Mode
+
+For machines with limited RAM or CPU (<2 GB RAM):
+
+```bash
+tvt push bigfile.zip --low-resource
+tvt pull bigfile.zip --low-resource
+```
+
+Uses 32 MB chunks, max 2 parallel operations, single-threaded hashing. Peak RAM usage ~64 MB.
 
 ### Backup & Restore
 
@@ -227,7 +250,9 @@ Your password **never** leaves your machine. Telegram servers see only encrypted
 - **Progress integrity** — CRC32 checksums on resume files detect corruption; partial files preserved on failure
 - **Crash-safe stream** — Single index save with correct filename, no double-save window
 - **Cached index lookups** — O(1) message ID fetch prevents data loss from index scans
-- **Garbage collection** — Dry-run by default, pinned messages always protected
+- **Garbage collection** — Dry-run by default, pinned messages always protected, stale entries auto-cleaned
+- **Async hashing** — File hashing runs in thread pool, never blocks the event loop
+- **Input validation** — FileMetadata, ChunkInfo, VaultIndex validate fields on deserialization
 
 ---
 
@@ -240,11 +265,13 @@ Your password **never** leaves your machine. Telegram servers see only encrypted
   "channel_id": -1003652003243,
   "index_msg_id": 42,
   "snapshot_index_msg_id": 150,
-  "chunk_size": 104857600,
+  "chunk_size": 268435456,
   "compression": true,
   "encryption": true,
-  "parallel_uploads": 3,
-  "parallel_downloads": 5,
+  "parallel_uploads": 8,
+  "parallel_downloads": 10,
+  "use_async_io": true,
+  "low_resource_mode": false,
   "max_retries": 3,
   "retry_delay": 1.0
 }
@@ -261,15 +288,15 @@ Your password **never** leaves your machine. Telegram servers see only encrypted
 ```
 src/televault/
 ├── __init__.py        # Version
-├── cli.py             # Click CLI — command dispatch, friendly errors
+├── cli.py             # Click CLI — command dispatch, friendly errors, progress display
 ├── core.py            # TeleVault class — upload, download, list, search, stream
-├── telegram.py        # TelegramVault — MTProto client, channel ops, index
+├── telegram.py        # TelegramVault — MTProto client, channel ops, index, compression
 ├── models.py          # FileMetadata, ChunkInfo, VaultIndex, TransferProgress
-├── chunker.py         # File splitting/merging, ChunkWriter, BLAKE3
+├── chunker.py         # File splitting/merging, ChunkWriter, BLAKE3, async hashing
 ├── crypto.py          # AES-256-GCM, scrypt KDF, streaming encrypt/decrypt
 ├── compress.py        # zstd compression, extension-based skip
 ├── config.py          # Config dataclass, atomic persistence, directory resolution
-├── retry.py           # Exponential backoff, FloodWait handling
+├── retry.py           # Exponential backoff, FloodWait handling, @with_retry decorator
 ├── backup.py          # BackupEngine — snapshot CRUD, prune, verify
 ├── snapshot.py        # Snapshot, SnapshotFile, SnapshotIndex, RetentionPolicy
 ├── fuse.py            # TeleVaultFuse — on-demand streaming with LRU cache
@@ -278,8 +305,9 @@ src/televault/
 ├── watcher.py         # FileWatcher — polling, BLAKE2, exclude patterns
 ├── schedule.py        # Schedule CRUD, systemd timers, cron generation
 ├── gc.py              # Orphan message detection and cleanup
+├── utils.py           # Shared utilities (format_size, format_speed)
 ├── logging.py         # RotatingFileHandler setup
-└── tui.py             # Textual TUI — file browser, detail panel
+└── tui.py             # Textual TUI — file browser, detail panel (beta)
 
 tests/
 ├── test_chunker.py
@@ -302,17 +330,9 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed system design.
 
 ## Contributing
 
-Contributions are welcome! Here's how to get started:
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full guide.
 
-1. **Fork** the repository
-2. **Create a branch**: `git checkout -b feature/my-feature`
-3. **Install dev dependencies**: `pip install -e ".[dev,fuse,webdav,preview]"`
-4. **Run tests**: `pytest tests/ -v`
-5. **Lint**: `ruff check src/`
-6. **Commit** with clear messages
-7. **Open a Pull Request**
-
-### Development Setup
+**Quick start:**
 
 ```bash
 git clone https://github.com/YahyaToubali/televault.git
@@ -320,18 +340,12 @@ cd televault
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev,fuse,webdav,preview]"
-pytest                          # Run tests
-ruff check src/                  # Lint
+
+pytest tests/ -v          # Run 157 tests
+ruff check src/           # Lint
 ```
 
-### Key Concepts for Contributors
-
-- **Channel architecture**: All data lives in a private Telegram channel as pinned index messages + reply chains. See [ARCHITECTURE.md](./ARCHITECTURE.md).
-- **Encryption pipeline**: Files are chunked → hashed → compressed → encrypted → uploaded. The reverse on download. Each chunk has its own salt+nonce.
-- **Index system**: `VaultIndex` maps file IDs to message IDs. Version-gated with 3 retries on API errors. Cached index msg IDs for O(1) lookup.
-- **Concurrency**: `asyncio.Lock` serializes all index read-modify-write operations.
-- **Error handling**: All CLI errors go through `run_async()` which catches exceptions and shows friendly messages. No Python tracebacks leak to users.
-- **Entry points**: `tvt` and `televault` both resolve to `televault.cli:main`.
+All PRs target the `dev` branch. `main` is only updated on release.
 
 ---
 
