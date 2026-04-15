@@ -180,11 +180,14 @@ class ChunkCache:
         if chunk_indices is None:
             chunk_indices = list(range(min(3, len(self.metadata.chunks))))
 
+        tasks = []
         for idx in chunk_indices:
-            try:
-                await self.fetch_chunk(idx)
-            except Exception:
-                logger.debug(f"Prefetch failed for chunk {idx}")
+            tasks.append(self.fetch_chunk(idx))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for i, r in enumerate(results):
+            if isinstance(r, Exception):
+                logger.debug(f"Prefetch failed for chunk {chunk_indices[i]}: {r}")
 
 
 class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
@@ -257,10 +260,10 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
             )
             await self._vault.connect()
 
-    async def _refresh_index(self):
+    async def _refresh_index(self, force=False):
         await self._ensure_connected()
         now = time.time()
-        if now - self._last_refresh < 2.0:
+        if not force and now - self._last_refresh < 30.0:
             return
 
         files = await self._vault.list_files()
@@ -308,6 +311,12 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
         if path == "/":
             return self._get_stat(is_dir=True)
 
+        if path in self._path_to_id:
+            file_id = self._path_to_id[path]
+            if file_id in self._file_cache:
+                meta = self._file_cache[file_id]
+                return self._get_stat(is_dir=False, size=meta.size, mtime=meta.created_at)
+
         self._run_async(self._refresh_index())
 
         if path in self._path_to_id:
@@ -316,16 +325,12 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
                 meta = self._file_cache[file_id]
                 return self._get_stat(is_dir=False, size=meta.size, mtime=meta.created_at)
 
-        cached_file = self.cache_dir / path.lstrip("/")
-        if cached_file.exists():
-            return self._get_stat(is_dir=False, size=cached_file.stat().st_size)
-
         raise FuseOSError(2)
 
     def readdir(self, path, fh):
         entries = [".", ".."]
 
-        self._run_async(self._refresh_index())
+        self._run_async(self._refresh_index(force=True))
 
         for vault_path in self._path_to_id:
             parent = str(Path(vault_path).parent)
