@@ -1,28 +1,35 @@
-```
 # Compiled and build artifacts
 *.pyc
 __pycache__/
 *.o
 *.obj
+*.egg-info/
 
 # Dependencies
 .venv/
 venv/
-*.egg-info/
+node_modules/
 
 # Logs and temp files
 *.log
 *.tmp
 *.swp
+*.bak
 
-# Environment
+# Environment / secrets
 .env
 .env.local
-*.env.*
+.env.*.local
+credentials.json
+secrets.json
+*.pem
+*.key
 
 # Editors
 .vscode/
 .idea/
+*.sublime-*
+*~
 
 # Coverage
 .coverage
@@ -32,9 +39,28 @@ htmlcov/
 # Python cache
 .mypy_cache/
 .pytest_cache/
+.ruff_cache/
 
 # Distribution
 dist/
 build/
 target/
-```
+
+# AI / LLM tool configs (local, not for repo)
+.qwen/
+.claude/
+.cursor/
+.aider*
+.copilot/
+
+# Cloudflare / Workers (local cache)
+.wrangler/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# TeleVault local data
+*.partial
+*.progress
