@@ -94,11 +94,11 @@ class TeleVault:
         password: str | None = None,
     ):
         self.config = config or Config.load_or_create()
-        
+
         # Apply low-resource mode settings if enabled
         if self.config.low_resource_mode:
             self._apply_low_resource_settings()
-        
+
         self.telegram = TelegramVault(telegram_config)
         self.password = password
         self._connected = False
@@ -108,20 +108,18 @@ class TeleVault:
         """Apply low-resource mode optimizations."""
         # Reduce chunk size to lower memory usage
         self.config.chunk_size = self.config.low_resource_chunk_size
-        
+
         # Reduce parallelism to lower CPU and memory pressure
         self.config.parallel_uploads = min(
-            self.config.parallel_uploads, 
-            self.config.low_resource_parallelism
+            self.config.parallel_uploads, self.config.low_resource_parallelism
         )
         self.config.parallel_downloads = min(
-            self.config.parallel_downloads, 
-            self.config.low_resource_parallelism
+            self.config.parallel_downloads, self.config.low_resource_parallelism
         )
-        
+
         logger.info(
             f"Low-resource mode enabled: "
-            f"chunk_size={self.config.chunk_size // (1024*1024)}MB, "
+            f"chunk_size={self.config.chunk_size // (1024 * 1024)}MB, "
             f"parallel_uploads={self.config.parallel_uploads}, "
             f"parallel_downloads={self.config.parallel_downloads}"
         )
@@ -295,13 +293,12 @@ class TeleVault:
         if total_chunks == 0:
             total_chunks = 1  # Empty file = 1 empty chunk
 
-        # In low-resource mode, disable compression for very large files to save memory
-        if self.config.low_resource_mode and file_size > 500 * 1024 * 1024:  # 500MB
+        should_compress_file = self.config.compression and should_compress(file_name)
+        if self.config.low_resource_mode and file_size > 500 * 1024 * 1024:
             logger.info(
-                f"Low-resource mode: Disabling compression for large file ({file_size} bytes) "
-                "to reduce memory pressure"
+                "Low-resource mode: Disabling compression for large file to reduce memory pressure"
             )
-            metadata.compressed = False
+            should_compress_file = False
 
         # Create initial metadata
         metadata = FileMetadata(
@@ -310,7 +307,7 @@ class TeleVault:
             size=file_size,
             hash=file_hash,
             encrypted=self.config.encryption and password is not None,
-            compressed=self.config.compression and should_compress(file_name),
+            compressed=should_compress_file,
         )
 
         if progress_callback:
@@ -646,7 +643,7 @@ class TeleVault:
         # Download all chunks in parallel
         # In low-resource mode, process chunks sequentially to reduce memory pressure
         sorted_chunks = sorted(metadata.chunks, key=lambda c: c.index)
-        
+
         if self.config.low_resource_mode and len(sorted_chunks) > 5:
             logger.info(
                 f"Low-resource mode: Processing {len(sorted_chunks)} chunks sequentially "

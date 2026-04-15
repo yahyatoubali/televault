@@ -26,19 +26,16 @@ def _get_hash_executor() -> ThreadPoolExecutor:
     if _hash_executor is None:
         # Check for low-resource mode from config
         from .config import Config
-        
+
         try:
             config = Config.load()
-            if config.low_resource_mode:
-                max_workers = config.low_resource_hash_workers
-            else:
-                max_workers = 4
+            max_workers = config.low_resource_hash_workers if config.low_resource_mode else 4
         except Exception:
             # Default to safe low-resource settings if config can't be loaded
             max_workers = 1
-            
+
         _hash_executor = ThreadPoolExecutor(
-            max_workers=max_workers, 
+            max_workers=max_workers,
             thread_name_prefix="blake3_hasher"
         )
     return _hash_executor

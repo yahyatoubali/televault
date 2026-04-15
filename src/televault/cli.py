@@ -597,9 +597,7 @@ def push(
         # Enable low-resource mode if requested
         if low_resource:
             config.low_resource_mode = True
-            console.print(
-                "[dim]Low-resource mode enabled: reduced memory and CPU usage[/dim]\n"
-            )
+            console.print("[dim]Low-resource mode enabled: reduced memory and CPU usage[/dim]\n")
 
         if no_compress:
             config.compression = False
@@ -702,6 +700,7 @@ def push(
             console.print(f"\n[bold green]✓ Uploaded {len(files)} files[/bold green]")
         else:
             # Single file upload with progress
+            file_size = file_path_obj.stat().st_size
 
             with Progress(
                 SpinnerColumn(),
@@ -731,10 +730,7 @@ def push(
                     if p.phase == "uploading":
                         speed_str = speed_tracker.update(p.uploaded_size)
                         chunk_info = f"{p.uploaded_chunks}/{p.total_chunks} chunks"
-                        if speed_str:
-                            detail = f"{chunk_info}  {speed_str}"
-                        else:
-                            detail = chunk_info
+                        detail = f"{chunk_info}  {speed_str}" if speed_str else chunk_info
                     elif p.phase == "done":
                         detail = format_size(p.total_size)
                     else:
@@ -783,7 +779,9 @@ def push(
     is_flag=True,
     help="Enable low-resource mode for machines with limited RAM/CPU (<2GB RAM)",
 )
-def pull(file_id_or_name: str, output: str | None, password: str | None, resume: bool, low_resource: bool):
+def pull(
+    file_id_or_name: str, output: str | None, password: str | None, resume: bool, low_resource: bool
+):
     """Download a file from TeleVault.
 
     Use '-o -' to write to stdout (for piping):
@@ -794,14 +792,12 @@ def pull(file_id_or_name: str, output: str | None, password: str | None, resume:
 
     async def _pull():
         config = Config.load_or_create()
-        
+
         # Enable low-resource mode if requested
         if low_resource:
             config.low_resource_mode = True
-            console.print(
-                "[dim]Low-resource mode enabled: reduced memory and CPU usage[/dim]\n"
-            )
-        
+            console.print("[dim]Low-resource mode enabled: reduced memory and CPU usage[/dim]\n")
+
         vault = TeleVault(config=config, password=password)
         await vault.connect()
 
@@ -870,10 +866,7 @@ def pull(file_id_or_name: str, output: str | None, password: str | None, resume:
                         file_size_known = True
                     speed_str = speed_tracker.update(p.downloaded_size)
                     chunk_info = f"{p.downloaded_chunks}/{p.total_chunks} chunks"
-                    if speed_str:
-                        detail = f"{chunk_info}  {speed_str}"
-                    else:
-                        detail = chunk_info
+                    detail = f"{chunk_info}  {speed_str}" if speed_str else chunk_info
                 elif p.phase == "verifying":
                     detail = "checking integrity..."
                 elif p.phase == "done":
@@ -886,33 +879,6 @@ def pull(file_id_or_name: str, output: str | None, password: str | None, resume:
                     description=f"{icon} {phase_label} {p.file_name}",
                     completed=p.percent,
                     detail=detail,
-                )
-
-            speed_tracker = SpeedTracker()
-            file_size_known = False
-
-            def on_progress(p: DownloadProgress):
-                nonlocal file_size_known
-
-                phase_label = PHASE_LABELS["downloading"].get(p.phase, p.phase)
-
-                if p.phase == "downloading":
-                    if not file_size_known and p.total_size > 0:
-                        speed_tracker.start(p.total_size)
-                        file_size_known = True
-                    speed_str = speed_tracker.update(p.downloaded_size)
-                elif p.phase == "verifying":
-                    speed_str = "verifying..."
-                elif p.phase == "done":
-                    speed_str = ""
-                else:
-                    speed_str = ""
-
-                progress.update(
-                    task,
-                    description=f"{phase_label} {p.file_name}",
-                    completed=p.percent,
-                    speed=speed_str,
                 )
 
             try:
