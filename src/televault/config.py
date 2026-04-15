@@ -54,6 +54,15 @@ class Config:
     parallel_uploads: int = 8
     parallel_downloads: int = 10
 
+    # I/O optimization
+    use_async_io: bool = True  # Use async file I/O and threaded hashing
+
+    # Low-resource mode (CRITICAL for machines with <2GB RAM or weak CPUs)
+    low_resource_mode: bool = False  # Enable to reduce memory and CPU usage
+    low_resource_chunk_size: int = 32 * 1024 * 1024  # 32MB chunks in low-resource mode
+    low_resource_parallelism: int = 2  # Max 2 parallel operations in low-resource mode
+    low_resource_hash_workers: int = 1  # Single-threaded hashing in low-resource mode
+
     # Retry settings
     max_retries: int = 3
     retry_delay: float = 1.0

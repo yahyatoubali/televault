@@ -1,17 +1,47 @@
 """File chunking utilities for TeleVault."""
 
+import asyncio
 import os
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import aiofiles
 import blake3
 
 # Telegram limits: 2GB per file via MTProto
 # Using 100MB chunks for better parallelism and resume capability
 DEFAULT_CHUNK_SIZE = 100 * 1024 * 1024  # 100MB
 MAX_CHUNK_SIZE = 2000 * 1024 * 1024  # ~2GB (with margin)
+
+# Thread pool for CPU-bound hashing operations
+_hash_executor: ThreadPoolExecutor | None = None
+
+
+def _get_hash_executor() -> ThreadPoolExecutor:
+    """Get or create thread pool executor for hashing."""
+    global _hash_executor
+    if _hash_executor is None:
+        # Check for low-resource mode from config
+        from .config import Config
+        
+        try:
+            config = Config.load()
+            if config.low_resource_mode:
+                max_workers = config.low_resource_hash_workers
+            else:
+                max_workers = 4
+        except Exception:
+            # Default to safe low-resource settings if config can't be loaded
+            max_workers = 1
+            
+        _hash_executor = ThreadPoolExecutor(
+            max_workers=max_workers, 
+            thread_name_prefix="blake3_hasher"
+        )
+    return _hash_executor
 
 
 @dataclass
@@ -34,6 +64,12 @@ def hash_data(data: bytes) -> str:
     return blake3.blake3(data).hexdigest()[:32]  # 128-bit prefix
 
 
+async def hash_data_async(data: bytes) -> str:
+    """Compute BLAKE3 hash asynchronously using thread pool."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_get_hash_executor(), hash_data, data)
+
+
 def hash_file(path: str | Path) -> str:
     """Compute BLAKE3 hash of entire file (streaming, 1MB buffer)."""
     hasher = blake3.blake3()
@@ -41,6 +77,20 @@ def hash_file(path: str | Path) -> str:
         while chunk := f.read(1 << 20):  # 1MB buffer
             hasher.update(chunk)
     return hasher.hexdigest()[:32]
+
+
+async def hash_file_async(path: str | Path) -> str:
+    """Compute BLAKE3 hash of entire file asynchronously."""
+    loop = asyncio.get_running_loop()
+
+    def _hash_file():
+        hasher = blake3.blake3()
+        with open(path, "rb") as f:
+            while chunk := f.read(1 << 20):  # 1MB buffer
+                hasher.update(chunk)
+        return hasher.hexdigest()[:32]
+
+    return await loop.run_in_executor(_get_hash_executor(), _hash_file)
 
 
 def get_file_size(path: str | Path) -> int:
@@ -72,6 +122,37 @@ def iter_chunks(
                 index=index,
                 data=data,
                 hash=hash_data(data),
+                size=len(data),
+            )
+            index += 1
+
+
+async def iter_chunks_async(
+    file_path: str | Path,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+) -> AsyncIterator[Chunk]:
+    """
+    Split a file into chunks asynchronously.
+
+    Yields Chunk objects with index, data, hash, and size.
+    Uses aiofiles for non-blocking I/O and thread pool for hashing.
+    Memory-efficient: only one chunk in memory at a time.
+    """
+    if chunk_size > MAX_CHUNK_SIZE:
+        raise ValueError(f"Chunk size {chunk_size} exceeds max {MAX_CHUNK_SIZE}")
+
+    async with aiofiles.open(file_path, "rb") as f:
+        index = 0
+        while True:
+            data = await f.read(chunk_size)
+            if not data:
+                break
+
+            chunk_hash = await hash_data_async(data)
+            yield Chunk(
+                index=index,
+                data=data,
+                hash=chunk_hash,
                 size=len(data),
             )
             index += 1

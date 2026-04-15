@@ -9,7 +9,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from .chunker import ChunkWriter, hash_data, hash_file, iter_chunks
+from .chunker import (
+    ChunkWriter,
+    hash_data,
+    hash_data_async,
+    hash_file,
+    hash_file_async,
+    iter_chunks,
+    iter_chunks_async,
+)
 from .compress import compress_data, decompress_data, should_compress
 from .config import Config
 from .crypto import decrypt_chunk, encrypt_chunk
@@ -86,10 +94,37 @@ class TeleVault:
         password: str | None = None,
     ):
         self.config = config or Config.load_or_create()
+        
+        # Apply low-resource mode settings if enabled
+        if self.config.low_resource_mode:
+            self._apply_low_resource_settings()
+        
         self.telegram = TelegramVault(telegram_config)
         self.password = password
         self._connected = False
         self._index_lock = asyncio.Lock()
+
+    def _apply_low_resource_settings(self) -> None:
+        """Apply low-resource mode optimizations."""
+        # Reduce chunk size to lower memory usage
+        self.config.chunk_size = self.config.low_resource_chunk_size
+        
+        # Reduce parallelism to lower CPU and memory pressure
+        self.config.parallel_uploads = min(
+            self.config.parallel_uploads, 
+            self.config.low_resource_parallelism
+        )
+        self.config.parallel_downloads = min(
+            self.config.parallel_downloads, 
+            self.config.low_resource_parallelism
+        )
+        
+        logger.info(
+            f"Low-resource mode enabled: "
+            f"chunk_size={self.config.chunk_size // (1024*1024)}MB, "
+            f"parallel_uploads={self.config.parallel_uploads}, "
+            f"parallel_downloads={self.config.parallel_downloads}"
+        )
 
     async def is_authenticated(self) -> bool:
         """Check if user is authenticated with Telegram."""
@@ -202,7 +237,7 @@ class TeleVault:
             index = await self.telegram.get_index()
             files = await self.telegram.list_files()
             matches = [f for f in files if f.name == file_name]
-            
+
             if matches:
                 if if_exists == "skip":
                     if progress_callback:
@@ -250,7 +285,8 @@ class TeleVault:
                 )
             )
 
-        file_hash = hash_file(file_path)
+        # Use async hashing to avoid blocking the event loop
+        file_hash = await hash_file_async(file_path)
         file_id = generate_file_id(file_name, file_size)
 
         # Count chunks
@@ -258,6 +294,14 @@ class TeleVault:
         total_chunks = (file_size + chunk_size - 1) // chunk_size
         if total_chunks == 0:
             total_chunks = 1  # Empty file = 1 empty chunk
+
+        # In low-resource mode, disable compression for very large files to save memory
+        if self.config.low_resource_mode and file_size > 500 * 1024 * 1024:  # 500MB
+            logger.info(
+                f"Low-resource mode: Disabling compression for large file ({file_size} bytes) "
+                "to reduce memory pressure"
+            )
+            metadata.compressed = False
 
         # Create initial metadata
         metadata = FileMetadata(
@@ -302,7 +346,8 @@ class TeleVault:
                 data = chunk.data
                 # Free the raw chunk data reference early
                 chunk_data_raw = chunk.data
-                original_hash = hash_data(chunk_data_raw)
+                # Use async hashing to avoid blocking
+                original_hash = await hash_data_async(chunk_data_raw)
 
                 if metadata.compressed:
                     data = compress_data(data)
@@ -315,11 +360,13 @@ class TeleVault:
                     reply_to=metadata_msg_id,
                 )
 
+                # Hash the processed data asynchronously
+                processed_hash = await hash_data_async(data)
                 chunk_info = ChunkInfo(
                     index=chunk.index,
                     message_id=chunk_msg_id,
                     size=len(data),
-                    hash=hash_data(data),
+                    hash=processed_hash,
                     original_hash=original_hash,
                 )
 
@@ -341,10 +388,10 @@ class TeleVault:
                             )
                         )
 
-        # Producer: read chunks from disk and feed the queue
+        # Producer: read chunks from disk asynchronously and feed the queue
         async def producer():
             try:
-                for chunk in iter_chunks(file_path, chunk_size):
+                async for chunk in iter_chunks_async(file_path, chunk_size):
                     await chunk_queue.put(chunk)
             finally:
                 # Signal all consumers done
@@ -543,8 +590,8 @@ class TeleVault:
             async with semaphore:
                 data = await self.telegram.download_chunk(chunk_info.message_id)
 
-                # Verify post-processing hash (encrypted/compressed)
-                if hash_data(data) != chunk_info.hash:
+                # Verify post-processing hash (encrypted/compressed) using async hashing
+                if await hash_data_async(data) != chunk_info.hash:
                     raise ValueError(
                         f"Chunk {chunk_info.index} hash mismatch - data may be corrupted in transit"
                     )
@@ -559,12 +606,14 @@ class TeleVault:
                 if metadata.compressed:
                     data = decompress_data(data)
 
-                # Verify original hash if available
-                if chunk_info.original_hash and hash_data(data) != chunk_info.original_hash:
-                    logger.warning(
-                        f"Chunk {chunk_info.index} original hash mismatch - "
-                        f"decryption may have produced incorrect data"
-                    )
+                # Verify original hash if available using async hashing
+                if chunk_info.original_hash:
+                    computed = await hash_data_async(data)
+                    if computed != chunk_info.original_hash:
+                        logger.warning(
+                            f"Chunk {chunk_info.index} original hash mismatch - "
+                            f"decryption may have produced incorrect data"
+                        )
 
                 from .chunker import Chunk
 
@@ -595,11 +644,27 @@ class TeleVault:
                         )
 
         # Download all chunks in parallel
+        # In low-resource mode, process chunks sequentially to reduce memory pressure
         sorted_chunks = sorted(metadata.chunks, key=lambda c: c.index)
-        results = await asyncio.gather(
-            *[download_single_chunk(c) for c in sorted_chunks],
-            return_exceptions=True,
-        )
+        
+        if self.config.low_resource_mode and len(sorted_chunks) > 5:
+            logger.info(
+                f"Low-resource mode: Processing {len(sorted_chunks)} chunks sequentially "
+                "to reduce memory pressure"
+            )
+            # Process chunks one at a time instead of all at once
+            results = []
+            for chunk in sorted_chunks:
+                try:
+                    result = await download_single_chunk(chunk)
+                    results.append(result)
+                except Exception as e:
+                    results.append(e)
+        else:
+            results = await asyncio.gather(
+                *[download_single_chunk(c) for c in sorted_chunks],
+                return_exceptions=True,
+            )
 
         # Check for download errors
         for r in results:
@@ -622,7 +687,8 @@ class TeleVault:
             )
 
         try:
-            if hash_file(output_path) != metadata.hash:
+            # Use async hashing for final verification
+            if await hash_file_async(output_path) != metadata.hash:
                 raise ValueError(
                     "Downloaded file hash mismatch - downloaded data is corrupted; "
                     "try re-downloading or checking your network/Telegram storage."

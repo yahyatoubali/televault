@@ -568,6 +568,11 @@ def channel():
 @click.option("--recursive", "-r", is_flag=True, help="Upload directory recursively")
 @click.option("--resume", is_flag=True, help="Resume interrupted upload")
 @click.option("--name", "-n", help="Filename when reading from stdin (e.g., -)")
+@click.option(
+    "--low-resource",
+    is_flag=True,
+    help="Enable low-resource mode for machines with limited RAM/CPU (<2GB RAM)",
+)
 def push(
     file_path: str,
     password: str | None,
@@ -576,6 +581,7 @@ def push(
     recursive: bool,
     resume: bool,
     name: str | None,
+    low_resource: bool,
 ):
     """Upload a file or directory to TeleVault.
 
@@ -587,6 +593,13 @@ def push(
 
     async def _push():
         config = Config.load_or_create()
+
+        # Enable low-resource mode if requested
+        if low_resource:
+            config.low_resource_mode = True
+            console.print(
+                "[dim]Low-resource mode enabled: reduced memory and CPU usage[/dim]\n"
+            )
 
         if no_compress:
             config.compression = False
@@ -765,7 +778,12 @@ def push(
 @click.option("--output", "-o", type=click.Path(), help="Output path (use '-' for stdout)")
 @click.option("--password", "-p", help="Decryption password", envvar="TELEVAULT_PASSWORD")
 @click.option("--resume", is_flag=True, help="Resume interrupted download")
-def pull(file_id_or_name: str, output: str | None, password: str | None, resume: bool):
+@click.option(
+    "--low-resource",
+    is_flag=True,
+    help="Enable low-resource mode for machines with limited RAM/CPU (<2GB RAM)",
+)
+def pull(file_id_or_name: str, output: str | None, password: str | None, resume: bool, low_resource: bool):
     """Download a file from TeleVault.
 
     Use '-o -' to write to stdout (for piping):
@@ -775,7 +793,16 @@ def pull(file_id_or_name: str, output: str | None, password: str | None, resume:
     """
 
     async def _pull():
-        vault = TeleVault(password=password)
+        config = Config.load_or_create()
+        
+        # Enable low-resource mode if requested
+        if low_resource:
+            config.low_resource_mode = True
+            console.print(
+                "[dim]Low-resource mode enabled: reduced memory and CPU usage[/dim]\n"
+            )
+        
+        vault = TeleVault(config=config, password=password)
         await vault.connect()
 
         if not await check_auth(vault):
