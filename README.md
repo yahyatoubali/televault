@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-3.2.2-blue?style=flat-square" alt="version">
+  <img src="https://img.shields.io/badge/version-3.3.0-blue?style=flat-square" alt="version">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license">
   <img src="https://img.shields.io/badge/python-3.11+-yellow?style=flat-square" alt="python">
   <img src="https://img.shields.io/pypi/v/televault?style=flat-square" alt="pypi">
@@ -7,13 +7,7 @@
 </p>
 
 <h1 align="center">
-  <pre style="font-size:2.5rem;font-weight:900;letter-spacing:-0.05em;margin:0;">
-  ██╗░██████╗  
-  ██║██╔════╝  
-  ██║██║░░██╗  
-  ██║██║░░██║  
-  ██║╚█████╔╝  
-  ╚═╝░╚════╝░  </pre>
+  <img src="./img/logo.png" alt="TeleVault" width="400">
   <br>
   Unlimited cloud storage via Telegram
 </h1>
