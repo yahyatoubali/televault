@@ -1,61 +1,40 @@
-# Python
+```
+# Compiled and build artifacts
+*.pyc
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
+*.o
+*.obj
 
-# Virtual environments
+# Dependencies
 .venv/
 venv/
-ENV/
-env/
+*.egg-info/
 
-# IDE
-.idea/
-.vscode/
+# Logs and temp files
+*.log
+*.tmp
 *.swp
-*.swo
-*~
 
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-.tox/
-.nox/
-
-# Type checking
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Credentials - NEVER commit these!
+# Environment
 .env
-*.session
-*.session-journal
-credentials.json
-secrets.json
+.env.local
+*.env.*
 
-# Televault specific
-*.partial
-*.progress
+# Editors
+.vscode/
+.idea/
 
-# OS
-.DS_Store
-Thumbs.db
+# Coverage
+.coverage
+coverage/
+htmlcov/
+
+# Python cache
+.mypy_cache/
+.pytest_cache/
+
+# Distribution
+dist/
+build/
+target/
+```

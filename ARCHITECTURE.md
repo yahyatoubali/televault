@@ -16,14 +16,14 @@ televault  = "televault.cli:main"
 
 | Module | Responsibility |
 |---|---|
-| `cli.py` | Click-based CLI, command dispatch, progress display, friendly error handling |
-| `core.py` | `TeleVault` class -- upload, download, list, search, delete, resume, stream |
+| `cli.py` | Click-based CLI, command dispatch, progress display, friendly error handling, low-resource mode flags |
+| `core.py` | `TeleVault` class -- upload, download, list, search, delete, resume, stream; low-resource mode orchestration |
 | `telegram.py` | `TelegramVault` -- MTProto client wrapper, index management, message I/O, channel ops, message compression |
-| `models.py` | Data models: `FileMetadata`, `ChunkInfo`, `VaultIndex`, `TransferProgress` |
-| `chunker.py` | File splitting/merging, `ChunkWriter`, BLAKE3 hashing |
+| `models.py` | Data models: `FileMetadata`, `ChunkInfo`, `VaultIndex`, `TransferProgress`, CRC32-protected progress files |
+| `chunker.py` | File splitting/merging, `ChunkWriter`, `ChunkBuffer`, async I/O via `aiofiles`, threaded BLAKE3 hashing via `ThreadPoolExecutor` |
 | `crypto.py` | AES-256-GCM encryption, scrypt KDF, streaming encryptor/decryptor |
 | `compress.py` | Zstandard compression/decompression, extension-based skip logic |
-| `config.py` | `Config` dataclass, config directory resolution, atomic persistence |
+| `config.py` | `Config` dataclass, config directory resolution, atomic persistence, low-resource mode settings |
 | `retry.py` | Exponential backoff with jitter, FloodWait handling |
 | `backup.py` | `BackupEngine` -- snapshot create/restore/list/delete/prune/verify |
 | `snapshot.py` | `Snapshot`, `SnapshotFile`, `SnapshotIndex`, `RetentionPolicy` |
@@ -35,6 +35,7 @@ televault  = "televault.cli:main"
 | `gc.py` | Orphan message detection and cleanup (dry-run default, pinned message protection) |
 | `logging.py` | `RotatingFileHandler` setup, console + file output |
 | `tui.py` | Textual-based interactive terminal UI (file browser, auth-aware loading) |
+| `utils.py` | Utility functions |
 
 ---
 
@@ -195,10 +196,10 @@ Protection rules:
 Original File
      |
      v
-  Chunker (100 MB slices)
+  Chunker (256 MB slices; 32 MB in low-resource mode)
      |
      v
-  Per-chunk: compute original_hash via BLAKE3
+  Per-chunk: compute original_hash via BLAKE3 (threaded, non-blocking)
      |
      v
   Optional Compression (zstd level 3)
@@ -271,14 +272,16 @@ Other: `.woff` `.woff2` `.br`
 
 ### Chunk Size
 
-Default: 100 MB (`100 * 1024 * 1024`). Configurable via `config.json`. Telegram's MTProto limit is ~2 GB per file; chunks stay well within this at 100 MB.
+Default: 256 MB (`256 * 1024 * 1024`). Configurable via `config.json`. Telegram's MTProto limit is ~2 GB per file; chunks stay well within this.
+
+**Low-Resource Mode:** When enabled, chunk size is reduced to 32 MB to lower memory pressure on machines with <2GB RAM.
 
 ### Parallel Transfers
 
-| Operation | Default Concurrency | Semaphore |
-|---|---|---|
-| Upload | 3 concurrent | `asyncio.Semaphore(config.parallel_uploads)` |
-| Download | 5 concurrent | `asyncio.Semaphore(config.parallel_downloads)` |
+| Operation | Default Concurrency | Low-Resource Mode | Semaphore |
+|---|---|---|---|
+| Upload | 8 concurrent | 2 concurrent | `asyncio.Semaphore(config.parallel_uploads)` |
+| Download | 10 concurrent | 2 concurrent | `asyncio.Semaphore(config.parallel_downloads)` |
 
 ### ChunkWriter
 
@@ -328,11 +331,13 @@ tvt push <path>                    Upload file/directory
   --no-encrypt                     Disable encryption
   --recursive / -r                 Upload directory recursively
   --resume                         Resume interrupted upload
+  --low-resource                   Enable low-resource mode (<2GB RAM)
 
 tvt pull <file_id_or_name>         Download file
   --output / -o                    Output path (-o - for stdout)
   --password / -p                  Decryption password
   --resume                         Resume interrupted download
+  --low-resource                   Enable low-resource mode (<2GB RAM)
 
 tvt ls                             List files
   --json                           JSON output (pipeable)
@@ -536,6 +541,9 @@ Index saves retry up to 3 times with backoff (0.5s, 1.0s, 1.5s). Only Telegram A
 | Config file corruption | Atomic writes (temp file + `os.replace` + `fsync`) |
 | Resume progress corruption | CRC32 checksums on progress files, partial files preserved on failure |
 | Stream upload non-atomic name change | `upload()` `name` param ensures single index save |
+| High memory usage on low-RAM systems | Low-resource mode: 32MB chunks, reduced parallelism (2), single-threaded hashing |
+| CPU overload during hashing | Thread pool executor with configurable workers; single worker in low-resource mode |
+| Event loop blocking during I/O | Async file I/O via `aiofiles`; threaded hashing prevents blocking |
 
 ---
 
@@ -563,17 +571,31 @@ On Windows: config uses `%APPDATA%`, data uses `%LOCALAPPDATA%`. On other Unix: 
   "channel_id": -1001234567890,
   "index_msg_id": 42,
   "snapshot_index_msg_id": 150,
-  "chunk_size": 104857600,
+  "chunk_size": 268435456,
   "compression": true,
   "encryption": true,
-  "parallel_uploads": 3,
-  "parallel_downloads": 5,
+  "parallel_uploads": 8,
+  "parallel_downloads": 10,
+  "use_async_io": true,
+  "low_resource_mode": false,
+  "low_resource_chunk_size": 33554432,
+  "low_resource_parallelism": 2,
+  "low_resource_hash_workers": 1,
   "max_retries": 3,
   "retry_delay": 1.0
 }
 ```
 
 The `index_msg_id` and `snapshot_index_msg_id` fields cache the pinned message IDs for O(1) index lookups. They are automatically populated and maintained by the application.
+
+**Low-Resource Mode Settings:**
+- `low_resource_mode` (bool): Enable to reduce memory and CPU usage on machines with <2GB RAM or weak CPUs
+- `low_resource_chunk_size` (int): Chunk size in bytes when low-resource mode is enabled (default: 32MB)
+- `low_resource_parallelism` (int): Maximum concurrent upload/download operations in low-resource mode (default: 2)
+- `low_resource_hash_workers` (int): Number of threads for BLAKE3 hashing in low-resource mode (default: 1)
+
+**Async I/O Settings:**
+- `use_async_io` (bool): Use async file I/O and threaded hashing for better performance (default: true)
 
 ### Telegram Credentials (`telegram.json`)
 
@@ -603,3 +625,5 @@ TeleVault prioritizes data safety above all else:
 8. **GC safety** -- dry-run default, pinned message protection, `--force` required
 9. **Message compression** -- automatic for metadata exceeding 4096 chars, backward compatible
 10. **Specific error handling** -- `SessionPasswordNeededError` only for 2FA, not broad `except Exception`
+11. **Low-resource mode** -- reduces memory and CPU usage for machines with <2GB RAM or weak CPUs via smaller chunks (32MB), reduced parallelism (2 concurrent ops), and single-threaded hashing
+12. **Async I/O** -- non-blocking file reads via `aiofiles` and threaded BLAKE3 hashing prevent event loop blocking during large file operations
