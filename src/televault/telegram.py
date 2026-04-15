@@ -82,7 +82,8 @@ class TelegramConfig:
         if not api_id or not api_hash:
             raise ValueError(
                 "Telegram API credentials not found.\n"
-                "Please set environment variables:\n"
+                "Run 'tvt login' to set them up interactively.\n\n"
+                "Advanced: set environment variables:\n"
                 "  export TELEGRAM_API_ID=your_api_id\n"
                 "  export TELEGRAM_API_HASH=your_api_hash\n\n"
                 "Get your credentials at: https://my.telegram.org"

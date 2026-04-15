@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-3.3.0-blue?style=flat-square" alt="version">
+  <img src="https://img.shields.io/badge/version-3.4.0-blue?style=flat-square" alt="version">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license">
   <img src="https://img.shields.io/badge/python-3.11+-yellow?style=flat-square" alt="python">
   <img src="https://img.shields.io/pypi/v/televault?style=flat-square" alt="pypi">
@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <a href="#installation"><code>pip install televault</code></a>
+  <a href="#installation"><code>pipx install televault</code></a>
   <span>&nbsp;·&nbsp;</span>
   <a href="https://yahyatoubali.github.io/televault/">Docs</a>
   <span>&nbsp;·&nbsp;</span>
@@ -75,34 +75,28 @@ TeleVault turns a **private Telegram channel** into encrypted, unlimited cloud s
 ## Installation
 
 ```bash
-pip install televault
+pipx install televault
 
 # Optional extras
-pip install televault[fuse]       # FUSE mount support (Linux/macOS)
-pip install televault[webdav]     # WebDAV server
-pip install televault[preview]    # Image preview (Pillow)
-pip install televault[dev]        # Development tools
-pip install -e ".[dev,fuse,webdav,preview]"  # Everything
+pipx install televault[fuse]       # FUSE mount support (Linux/macOS)
+pipx install televault[webdav]     # WebDAV server
+pipx install televault[preview]    # Image preview (Pillow)
 ```
 
-Python 3.11+ is required.
+Python 3.11+ is required. [`pipx`](https://github.com/pypa/pipx) is recommended for CLI tools — it installs into an isolated environment so your system Python stays clean.
 
 ---
 
 ## Quick Start
 
 ```bash
-# 1) Get Telegram API credentials at https://my.telegram.org
-export TELEGRAM_API_ID=your_api_id
-export TELEGRAM_API_HASH=your_api_hash
-
-# 2) Login
+# 1) Login (will prompt for API credentials from https://my.telegram.org)
 tvt login
 
-# 3) Set up storage (interactive — validates channel, sends test message)
+# 2) Set up storage (interactive — validates channel, sends test message)
 tvt setup
 
-# 4) Upload
+# 3) Upload
 tvt push photo.jpg
 
 # 5) List
@@ -271,7 +265,7 @@ Your password **never** leaves your machine. Telegram servers see only encrypted
 }
 ```
 
-**Credentials**: `~/.config/televault/telegram.json` (or env vars `TELEGRAM_API_ID` / `TELEGRAM_API_HASH`)
+**Credentials**: `~/.config/televault/telegram.json` (set interactively via `tvt login`, or via env vars `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` for advanced use)
 
 **Log**: `~/.local/share/televault/televault.log`
 

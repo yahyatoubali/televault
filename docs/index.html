@@ -115,7 +115,7 @@ pre code{background:none;padding:0;font-size:1em}
 <div class="logo"><img src="img/logo.png" alt="TeleVault" style="height:clamp(3rem,8vw,5rem);vertical-align:middle"></div>
 <div class="tagline">Unlimited cloud storage via Telegram.<br>Encrypted. Open source. No servers.</div>
 <div class="badges">
-<span class="badge"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm.75 11.25a.75.75 0 0 1-1.5 0V6.56L5.28 8.53a.75.75 0 0 1-1.06-1.06l3.25-3.25a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1-1.06 1.06L8.75 6.56v4.69z"/></svg>v3.3.0</span>
+<span class="badge"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm.75 11.25a.75.75 0 0 1-1.5 0V6.56L5.28 8.53a.75.75 0 0 1-1.06-1.06l3.25-3.25a.75.75 0 0 1 1.06 0l3.25 3.25a.75.75 0 0 1-1.06 1.06L8.75 6.56v4.69z"/></svg>v3.4.0</span>
 <span class="badge">MIT License</span>
 <span class="badge">Python 3.11+</span>
 <span class="badge">AES-256-GCM</span>
@@ -155,27 +155,24 @@ pre code{background:none;padding:0;font-size:1em}
 <section id="install" class="section">
 <h2 class="section-title">Installation</h2>
 <div class="install-box">
-<h3>pip</h3>
-<pre><code>pip install televault</code></pre>
+<h3>pipx (recommended)</h3>
+<pre><code>pipx install televault</code></pre>
 <pre><code># Optional extras
-pip install televault[fuse]        # FUSE mount
-pip install televault[webdav]      # WebDAV server
-pip install televault[preview]    # Image previews</code></pre>
+pipx install televault[fuse]        # FUSE mount
+pipx install televault[webdav]      # WebDAV server
+pipx install televault[preview]    # Image previews</code></pre>
+<p style="margin-top:0.5rem;color:var(--text2);font-size:0.85rem"><a href="https://github.com/pypa/pipx" style="color:var(--accent)">pipx</a> installs CLI tools into isolated environments. Works with <code>pip</code> too.</p>
 </div>
 
 <div class="install-box" style="margin-top:1rem">
 <h3>Quick start</h3>
-<pre><code># 1) Get API credentials at https://my.telegram.org
-export TELEGRAM_API_ID=your_id
-export TELEGRAM_API_HASH=your_hash
-
-# 2) Login
+<pre><code># 1) Login (will prompt for API credentials from https://my.telegram.org)
 tvt login
 
-# 3) Setup (interactive, validates channel, sends test message)
+# 2) Setup storage channel
 tvt setup
 
-# 4) Go!
+# 3) Go!
 tvt push photo.jpg
 tvt ls
 tvt pull photo.jpg</code></pre>

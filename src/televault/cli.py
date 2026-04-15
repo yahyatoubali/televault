@@ -96,11 +96,9 @@ def check_api_credentials_cli() -> bool:
     import json
     import os
 
-    # Check environment variables
     if os.environ.get("TELEGRAM_API_ID") and os.environ.get("TELEGRAM_API_HASH"):
         return True
 
-    # Check config file
     config_path = get_config_dir() / "telegram.json"
     if config_path.exists():
         try:
@@ -114,25 +112,54 @@ def check_api_credentials_cli() -> bool:
     return False
 
 
+def prompt_api_credentials() -> bool:
+    """Prompt user for API credentials and save to config."""
+    import json
+
+    console.print("\n[bold blue]Telegram API Setup[/bold blue]")
+    console.print("You need API credentials from https://my.telegram.org")
+    console.print("[dim]1. Log in with your phone number")
+    console.print("2. Go to 'API development tools'")
+    console.print("3. Create an application")
+    console.print("4. Copy your api_id and api_hash[/dim]\n")
+
+    try:
+        api_id_str = click.prompt("  API ID", type=str)
+        api_hash = click.prompt("  API Hash", type=str)
+        api_id = int(api_id_str.strip())
+        api_hash = api_hash.strip()
+    except (ValueError, click.Abort):
+        console.print("\n[yellow]Setup cancelled.[/yellow]")
+        return False
+
+    config_path = get_config_dir() / "telegram.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    existing = {}
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                existing = json.load(f)
+        except Exception:
+            pass
+
+    existing["api_id"] = api_id
+    existing["api_hash"] = api_hash
+
+    with open(config_path, "w") as f:
+        json.dump(existing, f, indent=2)
+
+    console.print(f"\n[green]✓ Credentials saved to {config_path}[/green]")
+    return True
+
+
 def show_api_credentials_error():
     """Show error message for missing API credentials."""
     console.print("[bold red]✗ Telegram API credentials not configured![/bold red]\n")
-    console.print("You need to set up your Telegram API credentials before logging in.")
-    console.print("\n[bold]How to get your API credentials:[/bold]")
-    console.print("1. Visit: https://my.telegram.org")
-    console.print("2. Log in with your phone number")
-    console.print("3. Go to 'API development tools'")
-    console.print("4. Create a new application")
-    console.print("5. Note your 'api_id' and 'api_hash'")
-    console.print("\n[bold]Then set them up using one of these methods:[/bold]\n")
-
-    console.print("[bold]Method 1 - Environment variables (recommended):[/bold]")
+    console.print("Run [bold]tvt login[/bold] to set them up interactively, or:\n")
+    console.print("[dim]Advanced: set environment variables[/dim]")
     console.print("  export TELEGRAM_API_ID=your_api_id")
     console.print("  export TELEGRAM_API_HASH=your_api_hash")
-    console.print("\n[bold]Method 2 - Config file:[/bold]")
-    config_path = get_config_dir() / "telegram.json"
-    console.print(f"  Edit: {config_path}")
-    console.print('  Add: {"api_id": 12345, "api_hash": "your_hash_here"}')
 
 
 def run_async(coro):
@@ -261,9 +288,7 @@ def main(ctx, verbose, debug):
 def login(phone: str | None):
     """Login to Telegram."""
 
-    # Check API credentials first
-    if not check_api_credentials_cli():
-        show_api_credentials_error()
+    if not check_api_credentials_cli() and not prompt_api_credentials():
         sys.exit(1)
 
     async def _login():
@@ -1197,7 +1222,7 @@ def tui():
     except ImportError as e:
         if "textual" in str(e).lower():
             console.print("[red]Error: The TUI requires the 'textual' package.[/red]")
-            console.print("[dim]Install it with: pip install televault[/dim]")
+            console.print("[dim]Install it with: pipx install televault[/dim]")
         else:
             console.print(f"[red]Error: {e}[/red]")
         sys.exit(1)
@@ -1947,7 +1972,7 @@ def mount(
         from .fuse import mount_vault
     except ImportError:
         console.print("[red]Error: fusepy is required for FUSE mount.[/red]")
-        console.print("Install with: pip install televault[fuse]")
+        console.print("Install with: pipx install televault[fuse]")
         console.print("\nOn Linux, you may also need: sudo apt install fuse libfuse2")
         console.print("On macOS, install macFUSE from: https://macfuse.io/")
         sys.exit(1)
@@ -1995,7 +2020,7 @@ def serve(host: str, port: int, password: str | None, read_only: bool, cache_dir
         import aiohttp
     except ImportError:
         console.print("[red]Error: aiohttp is required for the WebDAV server.[/red]")
-        console.print("Install with: pip install televault[webdav]")
+        console.print("Install with: pipx install televault[webdav]")
         sys.exit(1)
 
     async def _serve():

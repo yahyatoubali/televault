@@ -209,7 +209,7 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
     ):
         if not FUSE_AVAILABLE:
             raise ImportError(
-                "fusepy is required for FUSE mount. Install with: pip install televault[fuse]"
+                "fusepy is required for FUSE mount. Install with: pipx install televault[fuse]"
             )
 
         self.config = config or Config.load_or_create()
@@ -525,7 +525,7 @@ def mount_vault(
     if not FUSE_AVAILABLE:
         print(
             "Error: fusepy is required for FUSE mount.\n"
-            "Install with: pip install televault[fuse]\n\n"
+            "Install with: pipx install televault[fuse]\n\n"
             "On Linux, you may also need: sudo apt install fuse libfuse2"
         )
         sys.exit(1)

@@ -312,7 +312,7 @@ class WebDAVServer:
             from aiohttp import web
         except ImportError:
             raise ImportError(
-                "aiohttp is required for WebDAV server. Install with: pip install aiohttp"
+                "aiohttp is required for WebDAV. Install with: pipx install televault[webdav]"
             )
 
         self._vault = TeleVault(
