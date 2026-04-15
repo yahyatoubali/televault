@@ -126,9 +126,12 @@ class TeleVault:
 
     async def is_authenticated(self) -> bool:
         """Check if user is authenticated with Telegram."""
-        if not self._connected or self.telegram._client is None:
+        if self.telegram._client is None:
             return False
-        return await self.telegram._client.is_user_authorized()
+        try:
+            return await self.telegram._client.is_user_authorized()
+        except Exception:
+            return False
 
     async def get_account_info(self) -> dict:
         """Get current account info."""
