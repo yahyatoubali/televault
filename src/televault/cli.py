@@ -15,30 +15,9 @@ from rich.table import Table
 from .config import Config, get_config_dir
 from .core import DownloadProgress, TeleVault, UploadProgress
 from .logging import setup_logging
+from .utils import format_size, format_speed
 
 console = Console()
-
-
-def format_size(size: int) -> str:
-    """Format bytes as human readable."""
-    if size < 0:
-        return "0 B"
-    for unit in ["B", "KB", "MB", "GB", "TB"]:
-        if size < 1024:
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} PB"
-
-
-def format_speed(bytes_per_sec: float) -> str:
-    """Format transfer speed as human readable."""
-    if bytes_per_sec <= 0:
-        return ""
-    for unit in ["B/s", "KB/s", "MB/s", "GB/s"]:
-        if bytes_per_sec < 1024:
-            return f"{bytes_per_sec:.1f} {unit}"
-        bytes_per_sec /= 1024
-    return f"{bytes_per_sec:.1f} TB/s"
 
 
 class SpeedTracker:
@@ -398,7 +377,7 @@ def setup(channel_id: int | None, auto: bool):
 
             cid = await vault.setup_channel(channel_id)
             console.print(f"\n[green]Channel {cid} configured successfully![/green]")
-            console.print(f"[dim]You can change it anytime with: tvt channel switch[/dim]")
+            console.print("[dim]You can change it anytime with: tvt channel switch[/dim]")
         elif auto:
             console.print("[bold]Creating new private channel...[/bold]")
             cid = await vault.setup_channel()
@@ -407,7 +386,7 @@ def setup(channel_id: int | None, auto: bool):
             info = await vault.test_channel(cid)
             if info["writable"]:
                 console.print("[green]Test message sent and verified.[/green]")
-            console.print(f"[dim]You can change it anytime with: tvt channel switch[/dim]")
+            console.print("[dim]You can change it anytime with: tvt channel switch[/dim]")
         else:
             console.print("[bold blue]TeleVault Channel Setup[/bold blue]\n")
             console.print("How would you like to set up storage?\n")
@@ -431,7 +410,7 @@ def setup(channel_id: int | None, auto: bool):
                     console.print(
                         f"[yellow]Created channel: {cid}, but could not verify write access.[/yellow]"
                     )
-                console.print(f"[dim]You can change it anytime with: tvt channel switch[/dim]")
+                console.print("[dim]You can change it anytime with: tvt channel switch[/dim]")
 
             elif choice == "2":
                 console.print("\n[bold]Use existing channel[/bold]")
@@ -551,7 +530,7 @@ def channel():
                 await vault.disconnect()
                 return
 
-            console.print(f"[bold]Current Channel[/bold]\n")
+            console.print("[bold]Current Channel[/bold]\n")
             console.print(f"  ID: [cyan]{config.channel_id}[/cyan]")
 
             console.print("\n[bold]Validating channel...[/bold]")
@@ -564,7 +543,7 @@ def channel():
                     console.print(f"  Writable: {'Yes' if info['writable'] else '[red]No[/red]'}")
                     if info.get("member_count") is not None:
                         console.print(f"  Members: {info['member_count']}")
-                    console.print(f"  Status: [green]connected[/green]")
+                    console.print("  Status: [green]connected[/green]")
                 else:
                     console.print("  Status: [red]not accessible[/red]")
                     console.print(

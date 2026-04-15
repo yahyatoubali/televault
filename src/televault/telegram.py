@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from telethon import TelegramClient
-from telethon.errors import FloodWaitError, SessionPasswordNeededError
+from telethon.errors import SessionPasswordNeededError
 from telethon.sessions import StringSession
 from telethon.tl.types import (
     Channel,
@@ -22,7 +22,7 @@ from telethon.tl.types import (
 
 from .config import Config, get_config_dir
 from .models import FileMetadata, VaultIndex
-from .retry import is_retryable
+from .retry import with_retry
 
 logger = logging.getLogger("televault.telegram")
 
@@ -391,94 +391,51 @@ class TelegramVault:
             if config.index_msg_id != msg_id:
                 config.index_msg_id = msg_id
                 config.save()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to save index msg_id: {e}")
 
     # === File Operations ===
 
+    @with_retry(max_retries=3, base_delay=1.0)
     async def upload_metadata(self, metadata: FileMetadata) -> int:
         """Upload file metadata as a text message."""
         if not self._channel_id:
             raise ValueError("No channel set")
 
         metadata_text = _compress_message(metadata.to_json())
+        msg = await self._client.send_message(
+            self._channel_id,
+            metadata_text,
+        )
+        logger.debug(f"Uploaded metadata for {metadata.id}")
+        return msg.id
 
-        for attempt in range(3):
-            try:
-                msg = await self._client.send_message(
-                    self._channel_id,
-                    metadata_text,
-                )
-                logger.debug(f"Uploaded metadata for {metadata.id}")
-                return msg.id
-            except FloodWaitError as e:
-                if e.seconds > 300:
-                    raise
-                logger.warning(f"FloodWaitError: waiting {e.seconds}s (attempt {attempt + 1})")
-                await asyncio.sleep(e.seconds + 1)
-            except Exception as e:
-                if not is_retryable(e) or attempt >= 2:
-                    raise
-                delay = 1.0 * (2**attempt)
-                logger.warning(f"Retry upload_metadata after {delay}s: {e}")
-                await asyncio.sleep(delay)
-        raise RuntimeError("Failed to upload metadata after retries")
-
+    @with_retry(max_retries=3, base_delay=1.0)
     async def get_metadata(self, message_id: int) -> FileMetadata:
         """Get file metadata from message."""
         if not self._channel_id:
             raise ValueError("No channel set")
 
-        for attempt in range(3):
-            try:
-                msg = await self._client.get_messages(self._channel_id, ids=message_id)
-                if not msg or not msg.text:
-                    raise ValueError(f"Metadata message {message_id} not found")
-                text = _decompress_message(msg.text)
-                return FileMetadata.from_json(text)
-            except FloodWaitError as e:
-                if e.seconds > 300:
-                    raise
-                logger.warning(f"FloodWaitError: waiting {e.seconds}s")
-                await asyncio.sleep(e.seconds + 1)
-            except ValueError:
-                raise
-            except Exception as e:
-                if not is_retryable(e) or attempt >= 2:
-                    raise
-                delay = 1.0 * (2**attempt)
-                logger.warning(f"Retry get_metadata after {delay}s: {e}")
-                await asyncio.sleep(delay)
-        raise RuntimeError("Failed to get metadata after retries")
+        msg = await self._client.get_messages(self._channel_id, ids=message_id)
+        if not msg or not msg.text:
+            raise ValueError(f"Metadata message {message_id} not found")
+        text = _decompress_message(msg.text)
+        return FileMetadata.from_json(text)
 
+    @with_retry(max_retries=3, base_delay=1.0)
     async def update_metadata(self, message_id: int, metadata: FileMetadata) -> None:
         """Update file metadata message."""
         if not self._channel_id:
             raise ValueError("No channel set")
 
         metadata_text = _compress_message(metadata.to_json())
+        await self._client.edit_message(
+            self._channel_id,
+            message_id,
+            metadata_text,
+        )
 
-        for attempt in range(3):
-            try:
-                await self._client.edit_message(
-                    self._channel_id,
-                    message_id,
-                    metadata_text,
-                )
-                return
-            except FloodWaitError as e:
-                if e.seconds > 300:
-                    raise
-                logger.warning(f"FloodWaitError: waiting {e.seconds}s")
-                await asyncio.sleep(e.seconds + 1)
-            except Exception as e:
-                if not is_retryable(e) or attempt >= 2:
-                    raise
-                delay = 1.0 * (2**attempt)
-                logger.warning(f"Retry update_metadata after {delay}s: {e}")
-                await asyncio.sleep(delay)
-        raise RuntimeError("Failed to update metadata after retries")
-
+    @with_retry(max_retries=3, base_delay=1.0)
     async def upload_chunk(
         self,
         data: bytes,
@@ -504,30 +461,16 @@ class TelegramVault:
         file = io.BytesIO(data)
         file.name = filename
 
-        max_retries = 3
-        for attempt in range(max_retries + 1):
-            try:
-                msg = await self._client.send_file(
-                    self._channel_id,
-                    file,
-                    reply_to=reply_to,
-                    progress_callback=progress_callback,
-                    attributes=[DocumentAttributeFilename(filename)],
-                )
-                return msg.id
-            except FloodWaitError as e:
-                if e.seconds > 300 or attempt >= 2:
-                    raise
-                logger.warning(f"FloodWaitError: waiting {e.seconds}s (attempt {attempt + 1})")
-                await asyncio.sleep(e.seconds + 1)
-            except Exception as e:
-                if not is_retryable(e) or attempt >= max_retries:
-                    raise
-                delay = 1.0 * (2**attempt)
-                logger.warning(f"Retry upload_chunk after {delay}s: {e}")
-                await asyncio.sleep(delay)
-        raise RuntimeError("Failed to upload chunk after retries")
+        msg = await self._client.send_file(
+            self._channel_id,
+            file,
+            reply_to=reply_to,
+            progress_callback=progress_callback,
+            attributes=[DocumentAttributeFilename(filename)],
+        )
+        return msg.id
 
+    @with_retry(max_retries=3, base_delay=1.0)
     async def download_chunk(
         self,
         message_id: int,
@@ -537,33 +480,16 @@ class TelegramVault:
         if not self._channel_id:
             raise ValueError("No channel set")
 
-        max_retries = 3
-        for attempt in range(max_retries + 1):
-            try:
-                msg = await self._client.get_messages(self._channel_id, ids=message_id)
-                if not msg or not msg.file:
-                    raise ValueError(f"Chunk message {message_id} not found")
+        msg = await self._client.get_messages(self._channel_id, ids=message_id)
+        if not msg or not msg.file:
+            raise ValueError(f"Chunk message {message_id} not found")
 
-                data = await self._client.download_media(
-                    msg, file=bytes, progress_callback=progress_callback
-                )
-                if data is None:
-                    raise ValueError(f"Failed to download chunk {message_id}")
-                return data
-            except FloodWaitError as e:
-                if e.seconds > 300 or attempt >= 2:
-                    raise
-                logger.warning(f"FloodWaitError: waiting {e.seconds}s (attempt {attempt + 1})")
-                await asyncio.sleep(e.seconds + 1)
-            except ValueError:
-                raise
-            except Exception as e:
-                if not is_retryable(e) or attempt >= max_retries:
-                    raise
-                delay = 1.0 * (2**attempt)
-                logger.warning(f"Retry download_chunk after {delay}s: {e}")
-                await asyncio.sleep(delay)
-        raise RuntimeError("Failed to download chunk after retries")
+        data = await self._client.download_media(
+            msg, file=bytes, progress_callback=progress_callback
+        )
+        if data is None:
+            raise ValueError(f"Failed to download chunk {message_id}")
+        return data
 
     async def iter_file_chunks(self, metadata_msg_id: int) -> AsyncIterator[Message]:
         """Iterate over chunk messages that reply to a metadata message."""

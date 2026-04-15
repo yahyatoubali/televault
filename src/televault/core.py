@@ -93,10 +93,14 @@ class TeleVault:
 
     async def is_authenticated(self) -> bool:
         """Check if user is authenticated with Telegram."""
+        if not self._connected or self.telegram._client is None:
+            return False
         return await self.telegram._client.is_user_authorized()
 
     async def get_account_info(self) -> dict:
         """Get current account info."""
+        if not self._connected or self.telegram._client is None:
+            raise RuntimeError("Not connected. Call connect() first.")
         me = await self.telegram._client.get_me()
         if me is None:
             return {}
@@ -110,10 +114,14 @@ class TeleVault:
 
     async def test_channel(self, channel_id: int) -> dict:
         """Test if a channel is accessible and writable."""
+        if not self._connected or self.telegram._client is None:
+            raise RuntimeError("Not connected. Call connect() first.")
         return await self.telegram.test_channel(channel_id)
 
     async def list_channels(self) -> list[dict]:
         """List all channels the user is a member of."""
+        if not self._connected or self.telegram._client is None:
+            raise RuntimeError("Not connected. Call connect() first.")
         return await self.telegram.list_channels()
 
     async def connect(self, skip_channel: bool = False) -> None:

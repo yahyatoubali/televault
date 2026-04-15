@@ -422,8 +422,8 @@ class BackupEngine:
                     data = json.loads(text)
                     if data.get("type") == "snapshot_index":
                         return SnapshotIndex.from_json(text)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to load snapshot index from config msg_id: {e}")
 
         async for msg in self._vault.telegram._client.iter_messages(
             channel_id, filter=None, limit=None
@@ -463,8 +463,8 @@ class BackupEngine:
                             channel_id, existing_msg_id, index_text
                         )
                         return existing_msg_id
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Failed to update snapshot index at config msg_id: {e}")
 
         async for msg in self._vault.telegram._client.iter_messages(
             channel_id, filter=None, limit=None
@@ -494,8 +494,8 @@ class BackupEngine:
             if config.snapshot_index_msg_id != msg_id:
                 config.snapshot_index_msg_id = msg_id
                 config.save()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Failed to save snapshot index msg_id: {e}")
 
 
 def _generate_snapshot_id(name: str, file_count: int) -> str:

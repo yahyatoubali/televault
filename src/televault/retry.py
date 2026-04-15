@@ -116,6 +116,30 @@ async def retry_async(
                 logger.error(f"Operation failed after {max_retries + 1} attempts: {exc}")
                 raise
 
+            # Handle FloodWaitError: always retry with appropriate delay
+            try:
+                from telethon.errors import FloodWaitError
+
+                if isinstance(exc, FloodWaitError):
+                    delay = max(exc.seconds + 1, base_delay)
+                    if exc.seconds > 300:
+                        logger.warning(
+                            f"FloodWaitError requires {exc.seconds}s wait "
+                            f"(attempt {attempt + 1}/{max_retries})"
+                        )
+                    # Limit retries for long waits
+                    if exc.seconds > 300 and attempt >= 2:
+                        logger.error(
+                            f"FloodWaitError >300s after {attempt + 1} attempts, giving up"
+                        )
+                        raise
+                    await asyncio.sleep(delay)
+                    if on_retry:
+                        on_retry(attempt, exc, delay)
+                    continue
+            except ImportError:
+                pass
+
             if not is_retryable(exc):
                 logger.error(f"Non-retryable error: {exc}")
                 raise
@@ -124,23 +148,6 @@ async def retry_async(
             delay = min(base_delay * (2**attempt), max_delay)
             if jitter:
                 delay = delay * (0.5 + random.random())
-
-            # Handle FloodWaitError specially: use its suggested wait time
-            try:
-                from telethon.errors import FloodWaitError
-
-                if isinstance(exc, FloodWaitError):
-                    delay = max(delay, exc.seconds + 1)
-                    if exc.seconds > 300:
-                        logger.warning(
-                            f"FloodWaitError requires {exc.seconds}s wait "
-                            f"(attempt {attempt + 1}/{max_retries})"
-                        )
-                    # Cap flood wait retries at 3 to avoid infinite loops
-                    if attempt >= 2:
-                        raise
-            except ImportError:
-                pass
 
             logger.warning(f"Retry {attempt + 1}/{max_retries} after {delay:.1f}s: {exc}")
 
@@ -193,22 +200,30 @@ def with_retry(
                     if attempt >= retry_max:
                         raise
 
+                    # Handle FloodWaitError specially
+                    try:
+                        from telethon.errors import FloodWaitError
+
+                        if isinstance(exc, FloodWaitError):
+                            delay = max(exc.seconds + 1, retry_base)
+                            if exc.seconds > 300:
+                                logger.warning(
+                                    f"{func.__name__}: FloodWaitError {exc.seconds}s "
+                                    f"(attempt {attempt + 1}/{retry_max})"
+                                )
+                                # Limit retries for long waits
+                                if attempt >= 2:
+                                    raise
+                            await asyncio.sleep(delay)
+                            continue
+                    except ImportError:
+                        pass
+
                     if not is_retryable(exc):
                         raise
 
                     delay = min(retry_base * (2**attempt), max_delay)
                     delay = delay * (0.5 + random.random())
-
-                    # Handle FloodWaitError
-                    try:
-                        from telethon.errors import FloodWaitError
-
-                        if isinstance(exc, FloodWaitError):
-                            delay = max(delay, exc.seconds + 1)
-                            if attempt >= 2:
-                                raise
-                    except ImportError:
-                        pass
 
                     logger.warning(
                         f"{func.__name__}: retry {attempt + 1}/{retry_max} "

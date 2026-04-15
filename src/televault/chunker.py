@@ -4,6 +4,7 @@ import os
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import blake3
 
@@ -149,10 +150,19 @@ class ChunkWriter:
     def close(self) -> None:
         """Close the file handle."""
         if self._file and not self._file.closed:
+            self._file.flush()
             self._file.close()
             self._file = None
 
-    def __del__(self):
+    def __enter__(self) -> "ChunkWriter":
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Context manager exit - ensures file handle is closed."""
+        self.close()
+
+    def __del__(self) -> None:
         self.close()
 
 

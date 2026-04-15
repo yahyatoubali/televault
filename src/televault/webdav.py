@@ -1,9 +1,7 @@
 """WebDAV server for TeleVault - access your vault over HTTP/WebDAV."""
 
 import asyncio
-import json
 import logging
-import os
 import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -13,6 +11,7 @@ from .config import Config, get_data_dir
 from .core import TeleVault
 from .models import FileMetadata
 from .telegram import TelegramConfig
+from .utils import format_size as _format_size
 
 logger = logging.getLogger("televault.webdav")
 
@@ -282,14 +281,6 @@ class WebDAVHandler:
             "headers": {"Content-Type": "application/xml", "Lock-Token": f"<{lock_token}>"},
             "body": xml.encode(),
         }
-
-
-def _format_size(size: int) -> str:
-    for unit in ["B", "KB", "MB", "GB", "TB"]:
-        if size < 1024:
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} PB"
 
 
 class WebDAVServer:
