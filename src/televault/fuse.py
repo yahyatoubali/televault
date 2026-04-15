@@ -230,6 +230,7 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
         self._open_files: dict[int, str] = {}
         self._write_buffer: dict[int, bytes] = {}
         self._last_refresh = 0.0
+        self._cache_lock = asyncio.Lock()
 
     def _run_async(self, coro):
         with self._loop_lock:

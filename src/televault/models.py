@@ -24,6 +24,13 @@ class ChunkInfo:
     def from_dict(cls, data: dict) -> "ChunkInfo":
         # Backward compat: original_hash was added later
         data.setdefault("original_hash", "")
+
+        # Validate required fields
+        required_fields = ["index", "message_id", "size", "hash"]
+        missing = [f for f in required_fields if f not in data]
+        if missing:
+            raise ValueError(f"Missing required fields in ChunkInfo: {', '.join(missing)}")
+
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
@@ -64,6 +71,25 @@ class FileMetadata:
     def from_json(cls, text: str) -> "FileMetadata":
         """Deserialize from JSON stored on Telegram."""
         data = json.loads(text)
+
+        # Validate required fields
+        required_fields = ["id", "name", "size", "hash", "chunks"]
+        missing = [f for f in required_fields if f not in data]
+        if missing:
+            raise ValueError(f"Missing required fields in FileMetadata: {', '.join(missing)}")
+
+        # Validate field types
+        if not isinstance(data["id"], str):
+            raise ValueError(f"FileMetadata.id must be a string, got {type(data['id'])}")
+        if not isinstance(data["name"], str):
+            raise ValueError(f"FileMetadata.name must be a string, got {type(data['name'])}")
+        if not isinstance(data["size"], (int, float)):
+            raise ValueError(f"FileMetadata.size must be a number, got {type(data['size'])}")
+        if not isinstance(data["hash"], str):
+            raise ValueError(f"FileMetadata.hash must be a string, got {type(data['hash'])}")
+        if not isinstance(data.get("chunks", []), list):
+            raise ValueError(f"FileMetadata.chunks must be a list, got {type(data.get('chunks'))}")
+
         data["chunks"] = [ChunkInfo.from_dict(c) for c in data.get("chunks", [])]
         return cls(**data)
 
@@ -102,6 +128,11 @@ class VaultIndex:
     @classmethod
     def from_json(cls, text: str) -> "VaultIndex":
         data = json.loads(text)
+
+        # Validate required structure
+        if not isinstance(data.get("files", {}), dict):
+            raise ValueError(f"VaultIndex.files must be a dict, got {type(data.get('files'))}")
+
         # Only take known fields, ignore extras
         return cls(
             version=data.get("version", 1),

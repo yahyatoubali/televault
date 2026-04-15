@@ -11,6 +11,7 @@ from .core import TeleVault
 from .crypto import decrypt_chunk
 from .models import FileMetadata
 from .telegram import TelegramConfig
+from .utils import format_size as _fmt_size
 
 logger = logging.getLogger("televault.preview")
 
@@ -439,11 +440,3 @@ class PreviewEngine:
             data = decompress_data(data)
 
         return data[:max_bytes]
-
-
-def _fmt_size(size: int) -> str:
-    for unit in ["B", "KB", "MB", "GB", "TB"]:
-        if size < 1024:
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} PB"
