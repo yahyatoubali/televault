@@ -266,15 +266,38 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
         if not force and now - self._last_refresh < 30.0:
             return
 
-        files = await self._vault.list_files()
+        index = await self._vault.telegram.get_index()
+
+        new_ids = set(index.files.keys())
+        unknown_ids = [fid for fid in new_ids if fid not in self._file_cache]
+
+        if unknown_ids:
+            tasks = []
+            for file_id in unknown_ids:
+                msg_id = index.files[file_id]
+                tasks.append(self._vault.telegram.get_metadata(msg_id))
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
         async with self._cache_lock:
-            self._file_cache.clear()
-            self._path_to_id.clear()
-            self._id_to_path.clear()
-            for f in files:
-                self._file_cache[f.id] = f
-                self._path_to_id[f"/{f.name}"] = f.id
-                self._id_to_path[f.id] = f"/{f.name}"
+            if unknown_ids:
+                for i, file_id in enumerate(unknown_ids):
+                    r = results[i]
+                    if isinstance(r, Exception):
+                        continue
+                    meta = r
+                    meta.message_id = index.files[file_id]
+                    self._file_cache[file_id] = meta
+                    self._path_to_id[f"/{meta.name}"] = file_id
+                    self._id_to_path[file_id] = f"/{meta.name}"
+
+            removed = set(self._file_cache.keys()) - new_ids
+            for fid in removed:
+                meta = self._file_cache.pop(fid)
+                path = self._id_to_path.pop(fid, None)
+                if path:
+                    self._path_to_id.pop(path, None)
+                self._chunk_caches.pop(fid, None)
+
             self._last_refresh = now
 
     async def _get_chunk_cache(self, file_id: str) -> ChunkCache:
@@ -515,6 +538,14 @@ def mount_vault(
         read_only=read_only,
         cache_size_mb=cache_size_mb,
     )
+
+    print("Connecting to vault and preloading file index...")
+    try:
+        fuse_ops._run_async(fuse_ops._refresh_index(force=True))
+        file_count = len(fuse_ops._file_cache)
+        print(f"  Loaded {file_count} file{'s' if file_count != 1 else ''} from vault")
+    except Exception as e:
+        print(f"  Warning: preload failed ({e}), files will load on first access")
 
     fuse_opts = {"ro" if read_only else "rw": True}
     if allow_other:
