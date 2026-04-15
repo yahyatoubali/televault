@@ -547,6 +547,7 @@ class TelegramVault:
         """List all files in the vault."""
         index = await self.get_index()
         files = []
+        stale_ids = []
 
         for file_id, msg_id in index.files.items():
             try:
@@ -554,8 +555,17 @@ class TelegramVault:
                 metadata.message_id = msg_id
                 files.append(metadata)
             except Exception as e:
-                logger.warning(f"Skipping corrupted index entry {file_id} (msg {msg_id}): {e}")
-                continue
+                logger.debug(f"Skipping corrupted index entry {file_id} (msg {msg_id}): {e}")
+                stale_ids.append(file_id)
+
+        if stale_ids:
+            logger.debug(f"Cleaning {len(stale_ids)} stale index entries: {stale_ids}")
+            for fid in stale_ids:
+                del index.files[fid]
+            try:
+                await self.save_index(index)
+            except Exception:
+                logger.debug("Failed to clean stale entries from index")
 
         return files
 
