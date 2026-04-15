@@ -161,6 +161,7 @@ class TeleVault:
         progress_callback: ProgressCallback | None = None,
         preserve_path: bool = False,
         name: str | None = None,
+        if_exists: str = "version",  # "version", "replace", "skip"
     ) -> FileMetadata:
         """
         Upload a file to TeleVault with parallel chunk uploads.
@@ -171,6 +172,10 @@ class TeleVault:
             progress_callback: Optional progress callback
             preserve_path: If True, include full path in filename (for directory uploads)
             name: Override filename (used by upload_stream to avoid double index save)
+            if_exists: Behavior when file with same name exists:
+                      - "version": Append version number (default)
+                      - "replace": Replace existing file
+                      - "skip": Skip upload
 
         Returns:
             FileMetadata of uploaded file
@@ -192,7 +197,45 @@ class TeleVault:
         else:
             file_name = file_path.name
 
+        # Check for duplicate file names
+        if if_exists != "version" and not name:
+            index = await self.telegram.get_index()
+            files = await self.telegram.list_files()
+            matches = [f for f in files if f.name == file_name]
+            
+            if matches:
+                if if_exists == "skip":
+                    if progress_callback:
+                        progress_callback(
+                            UploadProgress(
+                                file_name=file_name,
+                                total_size=0,
+                                uploaded_size=0,
+                                total_chunks=0,
+                                uploaded_chunks=0,
+                                current_chunk=0,
+                                phase="done",
+                            )
+                        )
+                    return matches[0]
+                elif if_exists == "replace":
+                    # Delete existing file first
+                    await self.delete(matches[0].id)
+
         file_size = file_path.stat().st_size
+
+        # Auto-version duplicate file names
+        if if_exists == "version" and not name:
+            original_name = file_name
+            version = 1
+            files = await self.telegram.list_files()
+            while any(f.name == file_name for f in files):
+                name_parts = original_name.rsplit(".", 1)
+                if len(name_parts) == 2:
+                    file_name = f"{name_parts[0]}_v{version}.{name_parts[1]}"
+                else:
+                    file_name = f"{original_name}_v{version}"
+                version += 1
 
         if progress_callback:
             progress_callback(
@@ -393,6 +436,7 @@ class TeleVault:
         output_path: str | Path | None = None,
         password: str | None = None,
         progress_callback: ProgressCallback | None = None,
+        if_exists: str = "overwrite",  # "overwrite", "skip", "rename"
     ) -> Path:
         """
         Download a file from TeleVault.
@@ -402,6 +446,10 @@ class TeleVault:
             output_path: Output path (uses original filename in current dir if not provided)
             password: Decryption password
             progress_callback: Optional progress callback
+            if_exists: Behavior when output file exists:
+                      - "overwrite": Overwrite existing file (default)
+                      - "skip": Skip download, return existing path
+                      - "rename": Append suffix to avoid conflict
 
         Returns:
             Path to downloaded file
@@ -449,6 +497,18 @@ class TeleVault:
 
         # Determine output path
         output_path = Path(output_path) if output_path else Path.cwd() / metadata.name
+
+        # Handle existing files
+        if output_path.exists():
+            if if_exists == "skip":
+                return output_path
+            elif if_exists == "rename":
+                base = output_path.stem
+                ext = output_path.suffix
+                suffix = 1
+                while output_path.exists():
+                    output_path = output_path.parent / f"{base}_{suffix}{ext}"
+                    suffix += 1
 
         # Create parent directories if needed
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -615,14 +675,21 @@ class TeleVault:
         if file_id_or_name in index.files:
             return await self.telegram.delete_file(file_id_or_name)
 
-        # Search by name
+        # Search by name (case-insensitive)
         files = await self.telegram.list_files()
-        matches = [f for f in files if f.name == file_id_or_name]
+        matches = [f for f in files if f.name.lower() == file_id_or_name.lower()]
 
         if not matches:
             return False
         if len(matches) > 1:
-            raise ValueError(f"Multiple files match '{file_id_or_name}'")
+            # Return exact match if exists, otherwise error
+            exact = [f for f in matches if f.name == file_id_or_name]
+            if exact:
+                return await self.telegram.delete_file(exact[0].id)
+            raise ValueError(
+                f"Multiple files match '{file_id_or_name}' (case-insensitive): "
+                f"{[f.name for f in matches]}"
+            )
 
         return await self.telegram.delete_file(matches[0].id)
 
@@ -681,12 +748,24 @@ class TeleVault:
         existing_msg_id = None
         completed_chunks: set[int] = set()
 
+        # Match by hash first (most reliable), then by name+size (fallback)
         for metadata in await self.telegram.list_files():
-            if metadata.name == file_name and metadata.size == file_size and metadata.message_id:
-                existing_metadata = metadata
-                existing_msg_id = metadata.message_id
-                completed_chunks = {c.index for c in metadata.chunks}
-                break
+            if metadata.name == file_name and metadata.message_id:
+                # Exact match by hash (same file, possibly interrupted upload)
+                if metadata.hash == file_hash:
+                    existing_metadata = metadata
+                    existing_msg_id = metadata.message_id
+                    completed_chunks = {c.index for c in metadata.chunks}
+                    break
+                # Fallback: same name and size (might be different content)
+                elif metadata.size == file_size and not existing_metadata:
+                    logger.warning(
+                        f"Found incomplete upload '{file_name}' with same size but different hash. "
+                        f"Resuming may produce incorrect results if file content changed."
+                    )
+                    existing_metadata = metadata
+                    existing_msg_id = metadata.message_id
+                    completed_chunks = {c.index for c in metadata.chunks}
 
         if existing_metadata and existing_metadata.is_complete():
             return existing_metadata
@@ -1010,6 +1089,8 @@ class TeleVault:
     ) -> FileMetadata:
         """
         Upload data from a byte stream (e.g., stdin pipe).
+
+        Note: For large data, prefer writing to temp file first to avoid memory issues.
 
         Args:
             data: Raw bytes to upload
