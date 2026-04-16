@@ -327,7 +327,7 @@ git clone https://github.com/YahyaToubali/televault.git
 cd televault
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev,fuse,webdav,preview]"
+pipx install -e ".[dev,fuse,webdav,preview]"
 
 pytest tests/ -v          # Run 157 tests
 ruff check src/           # Lint
