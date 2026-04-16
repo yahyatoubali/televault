@@ -1,0 +1,73 @@
+site_name: TeleVault
+site_description: Unlimited encrypted cloud storage via Telegram MTProto
+site_url: https://yahyatoubali.github.io/televault/
+repo_url: https://github.com/yahyatoubali/televault
+repo_name: yahyatoubali/televault
+edit_uri: edit/dev/docs/
+
+theme:
+  name: material
+  palette:
+    scheme: slate
+    primary: custom
+    accent: custom
+  font:
+    text: Inter
+    code: JetBrains Mono
+  features:
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+  icon:
+    logo: material/shield-lock
+    repo: fontawesome/brands/github
+  favicon: img/logo.png
+
+extra_css:
+  - extra.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.keys
+  - pymdownx.caret
+  - pymdownx.mark
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Engine:
+    - Message Topology: engine.md
+    - Security Protocol: security.md
+  - Usage:
+    - Hardware Optimization: hardware.md
+    - Virtualization: virtualization.md
+  - Reference:
+    - Command Reference: commands.md
+
+extra:
+  version:
+    provider: mike
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/yahyatoubali/televault
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/televault/

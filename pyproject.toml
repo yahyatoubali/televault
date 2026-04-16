@@ -1,6 +1,6 @@
 [project]
 name = "televault"
-version = "3.4.0"
+version = "3.5.0"
 description = "Unlimited cloud storage using Telegram MTProto. No local DB - everything on Telegram."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -44,6 +44,8 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "ruff>=0.2.0",
     "mypy>=1.8.0",
+    "mkdocs>=1.5.0",
+    "mkdocs-material>=9.0.0",
 ]
 
 [project.scripts]

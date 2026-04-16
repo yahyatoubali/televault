@@ -113,6 +113,17 @@ src/televault/
 - **CLI errors** go through `run_async()` — friendly messages, no tracebacks
 - **Entry points**: `tvt` and `televault` both resolve to `televault.cli:main`
 
+## Documentation
+
+The docs site is built with MkDocs Material. To preview changes locally:
+
+```bash
+pip install -e ".[dev]" && pip install mkdocs-material
+mkdocs serve
+```
+
+Open http://localhost:8000 to see the live preview. Docs rebuild automatically on file changes.
+
 ## License
 
 By contributing, you agree that your code will be licensed under the MIT License.
