@@ -71,3 +71,6 @@ extra:
       link: https://github.com/yahyatoubali/televault
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/televault/
+    - icon: fontawesome/brands/kickstarter-k
+      link: https://ko-fi.com/yahyatoubali
+      name: Support on Ko-fi

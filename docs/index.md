@@ -69,3 +69,10 @@ cat secret.txt | tvt push - --name secret.txt
 - **[Hardware Optimization](hardware.md)** — Low-resource mode for constrained systems
 - **[Virtualization](virtualization.md)** — FUSE mount and WebDAV server setup
 - **[Command Reference](commands.md)** — Complete `tvt` command manual
+
+## Support
+
+TeleVault is free and open source. If you find it useful, consider supporting development:
+
+- [**Ko-fi**](https://ko-fi.com/yahyatoubali) — Buy me a coffee
+- [**GitHub Sponsors**](https://github.com/sponsors/yahyatoubali) — Sponsor the project

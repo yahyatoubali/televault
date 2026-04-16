@@ -4,6 +4,7 @@
   <img src="https://img.shields.io/badge/python-3.11+-yellow?style=flat-square" alt="python">
   <img src="https://img.shields.io/pypi/v/televault?style=flat-square" alt="pypi">
   <img src="https://img.shields.io/badge/encryption-AES--256--GCM-red?style=flat-square" alt="encryption">
+  <a href="https://ko-fi.com/yahyatoubali"><img src="https://img.shields.io/badge/Support%20me%20on-Ko--fi-FF5E5B?style=flat-square&logo=ko-fi" alt="ko-fi"></a>
 </p>
 
 <h1 align="center">
