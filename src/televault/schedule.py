@@ -227,6 +227,18 @@ WantedBy=timers.target
 
     incremental_arg = " --incremental" if schedule.incremental else ""
 
+    password_warning = ""
+    if password_arg:
+        password_warning = (
+            "# WARNING: Password is stored in plaintext."
+            " Consider using a credentials file instead.\n"
+        )
+
+    exec_cmd = (
+        f'ExecStart=televault backup create "{schedule.path}"'
+        f' --name "{name}"{password_arg}{incremental_arg}'
+    )
+
     service = f"""[Unit]
 Description=TeleVault backup: {name}
 After=network-online.target
@@ -234,7 +246,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=televault backup create "{schedule.path}" --name "{name}"{password_arg}{incremental_arg}
+{password_warning}{exec_cmd}
 """
 
     return f"# televault-{name}.timer\n{timer}\n# televault-{name}.service\n{service}"
@@ -277,6 +289,18 @@ RandomizedDelaySec=300
 WantedBy=timers.target
 """
 
+    password_warning = ""
+    if password_arg:
+        password_warning = (
+            "# WARNING: Password is stored in plaintext."
+            " Consider using a credentials file instead.\n"
+        )
+
+    exec_cmd = (
+        f'ExecStart=televault backup create "{schedule.path}"'
+        f' --name "{name}"{password_arg}{incremental_arg}'
+    )
+
     service_content = f"""[Unit]
 Description=TeleVault backup: {name}
 After=network-online.target
@@ -284,7 +308,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=televault backup create "{schedule.path}" --name "{name}"{password_arg}{incremental_arg}
+{password_warning}{exec_cmd}
 """
 
     timer_path = timer_dir / f"televault-{name}.timer"

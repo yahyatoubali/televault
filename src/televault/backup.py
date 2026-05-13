@@ -242,7 +242,8 @@ class BackupEngine:
             try:
                 msg = await self._vault.telegram._client.get_messages(channel_id, ids=msg_id)
                 if msg and msg.text:
-                    snapshot = Snapshot.from_json(msg.text)
+                    text = _decompress_message(msg.text)
+                    snapshot = Snapshot.from_json(text)
                     snapshot.message_id = msg_id
                     snapshots.append(snapshot)
             except Exception as e:

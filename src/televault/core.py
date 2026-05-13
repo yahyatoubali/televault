@@ -524,6 +524,12 @@ class TeleVault:
 
             metadata_msg_id = matches[0].message_id
 
+        if metadata_msg_id is None:
+            raise ValueError(
+                f"File '{file_id_or_name}' found but has no message reference. "
+                "The index may be corrupted. Try 'tvt gc --clean-partials'."
+            )
+
         # Get metadata
         if progress_callback:
             progress_callback(
