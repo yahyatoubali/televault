@@ -435,7 +435,7 @@ class PreviewEngine:
         if not metadata.chunks:
             return b""
 
-        from .chunker import hash_data
+        from .chunker import hash_data_async
 
         sorted_chunks = sorted(metadata.chunks, key=lambda c: c.index)
         first_chunk = sorted_chunks[0]
@@ -443,10 +443,10 @@ class PreviewEngine:
         data = await self._vault.telegram.download_chunk(first_chunk.message_id)
 
         # Verify chunk integrity before decryption
-        if first_chunk.hash and hash_data(data) != first_chunk.hash:
-            logger.warning(
-                f"Preview chunk hash mismatch for {metadata.name}, "
-                "data may be corrupted"
+        if first_chunk.hash and await hash_data_async(data) != first_chunk.hash:
+            raise ValueError(
+                f"Preview chunk hash mismatch for '{metadata.name}': "
+                "downloaded data is corrupted"
             )
 
         if metadata.encrypted and password:

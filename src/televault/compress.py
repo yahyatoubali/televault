@@ -79,7 +79,11 @@ def decompress_data(data: bytes, max_output_size: int = 0) -> bytes:
     try:
         return dctx.decompress(data, max_output_size=max_output_size)
     except zstd.ZstdError:
-        # Fallback for frames without content size
+        import logging
+
+        logging.getLogger("televault").debug(
+            "Zstd frame missing content size, using streaming decompressor"
+        )
         decompressor = dctx.decompressobj()
         return decompressor.decompress(data)
 
