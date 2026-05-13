@@ -190,6 +190,7 @@ class FileWatcher:
     async def watch(self, poll_interval: float = 5.0):
         """Start watching for file changes. Runs until stopped."""
         self._running = True
+        self.load_state()  # Restore previous state to avoid re-uploading known files
         logger.info(f"File watcher started (poll interval: {poll_interval}s)")
 
         all_changed = []

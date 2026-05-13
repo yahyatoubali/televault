@@ -133,43 +133,51 @@ class WebDAVHandler:
         depth = headers.get("Depth", "1")
         responses = []
 
-        responses.append(
-            {
-                "href": "/",
-                "props": {
-                    "resourcetype": "collection",
-                    "displayname": "TeleVault",
-                },
-                "status": "HTTP/1.1 200 OK",
-            }
-        )
+        if path == "/" or path == "":
+            responses.append(
+                {
+                    "href": "/",
+                    "props": {
+                        "resourcetype": "collection",
+                        "displayname": "TeleVault",
+                    },
+                    "status": "HTTP/1.1 200 OK",
+                }
+            )
 
-        if depth in ("1", "infinity"):
-            for name, meta in self._file_cache.items():
-                responses.append(
-                    {
-                        "href": f"/{name}",
-                        "props": {
-                            "resourcetype": None,
-                            "displayname": name,
-                            "getcontentlength": str(meta.size),
-                            "getlastmodified": time.strftime(
-                                "%a, %d %b %Y %H:%M:%S GMT",
-                                time.gmtime(meta.created_at),
-                            ),
-                            "getcontenttype": RESPONSE_CONTENT_TYPES.get(
-                                Path(name).suffix.lower(), "application/octet-stream"
-                            ),
-                        },
-                        "status": "HTTP/1.1 200 OK",
-                    }
-                )
+            if depth in ("1", "infinity"):
+                for name, meta in self._file_cache.items():
+                    responses.append(self._file_response(name, meta))
+        else:
+            meta = self._resolve_file(path)
+            if meta is None:
+                return {"status": 404, "headers": {}, "body": b"Not Found"}
+            responses.append(self._file_response(meta.name, meta))
 
         xml_body = make_multistatus_xml(responses)
         return {
             "status": 207,
             "headers": {"Content-Type": "application/xml; charset=utf-8"},
             "body": xml_body.encode("utf-8"),
+        }
+
+    def _file_response(self, name: str, meta: FileMetadata) -> dict:
+        """Build a WebDAV response dict for a single file."""
+        return {
+            "href": f"/{name}",
+            "props": {
+                "resourcetype": None,
+                "displayname": name,
+                "getcontentlength": str(meta.size),
+                "getlastmodified": time.strftime(
+                    "%a, %d %b %Y %H:%M:%S GMT",
+                    time.gmtime(meta.created_at),
+                ),
+                "getcontenttype": RESPONSE_CONTENT_TYPES.get(
+                    Path(name).suffix.lower(), "application/octet-stream"
+                ),
+            },
+            "status": "HTTP/1.1 200 OK",
         }
 
     async def _handle_get(self, path, headers, body):

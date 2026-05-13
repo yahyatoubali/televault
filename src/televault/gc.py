@@ -11,7 +11,9 @@ async def _collect_pinned_ids(telegram) -> set[int]:
     if not telegram._channel_id:
         return pinned_ids
 
-    async for msg in telegram._client.iter_messages(telegram._channel_id, filter=None, limit=50):
+    async for msg in telegram._client.iter_messages(
+        telegram._channel_id, filter=None, limit=None
+    ):
         if msg.pinned:
             pinned_ids.add(msg.id)
 
@@ -54,8 +56,12 @@ async def collect_garbage(telegram, dry_run: bool = False) -> dict:
 
     orphaned_messages = []
     total_orphaned_size = 0
+    scanned_count = 0
 
     async for msg in telegram._client.iter_messages(telegram._channel_id, limit=None):
+        scanned_count += 1
+        if scanned_count % 500 == 0:
+            logger.info(f"GC progress: scanned {scanned_count} messages...")
         if msg.id not in referenced_msg_ids:
             size = msg.file.size if msg.file else len(msg.text) if msg.text else 0
             total_orphaned_size += size
