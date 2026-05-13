@@ -392,7 +392,8 @@ def setup(channel_id: int | None, auto: bool):
             if info.get("username"):
                 console.print(f"  Username: @{info['username']}")
             console.print(
-                f"  Writable: {'Yes' if info['writable'] else '[red]No - you need admin rights[/red]'}"
+                "  Writable: "
+                f"{'Yes' if info['writable'] else '[red]No - you need admin rights[/red]'}"
             )
 
             if not info["writable"]:
@@ -433,7 +434,8 @@ def setup(channel_id: int | None, auto: bool):
                     console.print("[green]Test message sent and verified.[/green]")
                 else:
                     console.print(
-                        f"[yellow]Created channel: {cid}, but could not verify write access.[/yellow]"
+                        "[yellow]Created channel: "
+                        f"{cid}, but could not verify write access.[/yellow]"
                     )
                 console.print("[dim]You can change it anytime with: tvt channel switch[/dim]")
 
@@ -678,11 +680,6 @@ def push(
                 f"\n[bold green]Uploaded {name}[/bold green] ({format_size(metadata.size)})"
             )
             console.print(f"  File ID: {metadata.id}")
-
-            # Update file cache for completion
-            from .completion import save_file_cache
-
-            save_file_cache([{"id": metadata.id, "name": metadata.name, "size": metadata.size}])
 
             await vault.disconnect()
             return
@@ -1035,11 +1032,6 @@ def search(query: str, as_json: bool):
             else:
                 for f in files:
                     console.print(f"[cyan]{f.id[:8]}[/cyan] {f.name} ({format_size(f.size)})")
-
-        # Update file cache for completion
-        from .completion import save_file_cache
-
-        save_file_cache([{"id": f.id, "name": f.name, "size": f.size} for f in files])
 
         await vault.disconnect()
 
@@ -2017,7 +2009,9 @@ def serve(host: str, port: int, password: str | None, read_only: bool, cache_dir
     """Start a WebDAV server to access the vault over HTTP."""
 
     try:
-        import aiohttp
+        import importlib.util
+        if importlib.util.find_spec("aiohttp") is None:
+            raise ImportError
     except ImportError:
         console.print("[red]Error: aiohttp is required for the WebDAV server.[/red]")
         console.print("Install with: pipx install televault[webdav]")
@@ -2099,7 +2093,7 @@ def schedule_create(
     console.print("[bold]Option 2 - cron (any Unix):[/bold]")
     cron = generate_cron_entry(name, entry)
     console.print(f"  Add to crontab: {cron}")
-    console.println()
+    console.print()
     console.print("[bold]Option 3 - Run manually:[/bold]")
     console.print(f"  televault schedule run {name}")
 

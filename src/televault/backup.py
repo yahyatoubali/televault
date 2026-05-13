@@ -263,7 +263,7 @@ class BackupEngine:
         index = await self._get_snapshot_index()
 
         other_file_ids = set()
-        for sid in index.snapshot_ids:
+        for sid in index.snapshots:
             if sid == snapshot_id:
                 continue
             try:

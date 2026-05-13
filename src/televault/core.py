@@ -13,9 +13,7 @@ from .chunker import (
     ChunkWriter,
     hash_data,
     hash_data_async,
-    hash_file,
     hash_file_async,
-    iter_chunks,
     iter_chunks_async,
 )
 from .compress import compress_data, decompress_data, should_compress
@@ -581,11 +579,11 @@ class TeleVault:
 
         # Parallel download with configurable concurrency
         semaphore = asyncio.Semaphore(self.config.parallel_downloads)
-        chunk_data: dict[int, bytes] = {}
+        downloaded_count = 0
         download_lock = asyncio.Lock()
 
         async def download_single_chunk(chunk_info):
-            nonlocal downloaded_size
+            nonlocal downloaded_size, downloaded_count
 
             async with semaphore:
                 data = await self.telegram.download_chunk(chunk_info.message_id)
@@ -627,7 +625,7 @@ class TeleVault:
                         )
                     )
                     downloaded_size += len(data)
-                    chunk_data[chunk_info.index] = data
+                    downloaded_count += 1
 
                     # Progress callback
                     if progress_callback:
@@ -637,7 +635,7 @@ class TeleVault:
                                 total_size=metadata.size,
                                 downloaded_size=downloaded_size,
                                 total_chunks=total_chunks,
-                                downloaded_chunks=len(chunk_data),
+                                downloaded_chunks=downloaded_count,
                                 current_chunk=chunk_info.index,
                                 phase="downloading",
                             )
@@ -802,7 +800,7 @@ class TeleVault:
             file_name = str(file_path).replace("/", "_")
 
         file_size = file_path.stat().st_size
-        file_hash = hash_file(file_path)
+        file_hash = await hash_file_async(file_path)
         file_id = generate_file_id(file_name, file_size)
 
         chunk_size = self.config.chunk_size
@@ -862,6 +860,7 @@ class TeleVault:
                 return
 
             data = chunk.data
+            original_hash = await hash_data_async(data)
 
             if metadata.compressed:
                 data = compress_data(data)
@@ -879,7 +878,8 @@ class TeleVault:
                 index=chunk.index,
                 message_id=chunk_msg_id,
                 size=len(data),
-                hash=hash_data(data),
+                hash=await hash_data_async(data),
+                original_hash=original_hash,
             )
 
             async with lock:
@@ -905,7 +905,7 @@ class TeleVault:
             async with semaphore:
                 await upload_single_chunk(chunk)
 
-        chunks = list(iter_chunks(file_path, chunk_size))
+        chunks = [c async for c in iter_chunks_async(file_path, chunk_size)]
 
         if chunks:
             pending = [c for c in chunks if c.index not in completed_chunks]
@@ -994,7 +994,7 @@ class TeleVault:
 
             data = await self.telegram.download_chunk(chunk_info.message_id)
 
-            if hash_data(data) != chunk_info.hash:
+            if await hash_data_async(data) != chunk_info.hash:
                 logger.warning(
                     f"Chunk {chunk_info.index} hash mismatch for {metadata.name} - "
                     f"retry download to resume from this chunk"
@@ -1049,7 +1049,7 @@ class TeleVault:
                 )
 
         try:
-            if hash_file(temp_path) != metadata.hash:
+            if await hash_file_async(temp_path) != metadata.hash:
                 raise ValueError(
                     "Downloaded file hash mismatch - downloaded data is corrupted. "
                     "Partial progress saved; retry to resume."

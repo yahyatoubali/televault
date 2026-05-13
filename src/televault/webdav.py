@@ -275,7 +275,16 @@ class WebDAVHandler:
 
     async def _handle_lock(self, path, headers, body):
         lock_token = "opaquelocktoken:televault-lock"
-        xml = f'<?xml version="1.0" encoding="utf-8"?>\n<D:prop xmlns:D="DAV:">\n  <D:lockdiscovery>\n    <D:activelock>\n      <D:locktoken><D:href>{lock_token}</D:href></D:locktoken>\n    </D:activelock>\n  </D:lockdiscovery>\n</D:prop>'
+        xml = (
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            '<D:prop xmlns:D="DAV:">\n'
+            "  <D:lockdiscovery>\n"
+            "    <D:activelock>\n"
+            f"      <D:locktoken><D:href>{lock_token}</D:href></D:locktoken>\n"
+            "    </D:activelock>\n"
+            "  </D:lockdiscovery>\n"
+            "</D:prop>"
+        )
         return {
             "status": 200,
             "headers": {"Content-Type": "application/xml", "Lock-Token": f"<{lock_token}>"},
@@ -313,7 +322,7 @@ class WebDAVServer:
         except ImportError:
             raise ImportError(
                 "aiohttp is required for WebDAV. Install with: pipx install televault[webdav]"
-            )
+            ) from None
 
         self._vault = TeleVault(
             config=self.config,
@@ -349,6 +358,8 @@ class WebDAVServer:
         logger.info(f"WebDAV server running on http://{self.host}:{self.port}/")
 
     async def _handle_request(self, request):
+        from aiohttp import web
+
         if self._handler is None:
             return await self._error_response(503, "Server not ready")
 

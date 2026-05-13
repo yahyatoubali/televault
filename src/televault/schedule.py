@@ -361,4 +361,7 @@ def generate_cron_entry(name: str, schedule: ScheduleEntry) -> str:
         password_arg = f' --password "{schedule.password}"'
     incremental_arg = " --incremental" if schedule.incremental else ""
 
-    return f'{cron_expr} televault backup create "{schedule.path}" --name "{name}"{password_arg}{incremental_arg}'
+    return (
+        f'{cron_expr} televault backup create "{schedule.path}"'
+        f' --name "{name}"{password_arg}{incremental_arg}'
+    )
