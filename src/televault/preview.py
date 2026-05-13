@@ -203,7 +203,12 @@ def extract_image_metadata(data: bytes) -> dict:
     elif data[:2] == b"\xff\xd8":
         meta["format"] = "JPEG"
         i = 2
+        max_iterations = 1000
+        iterations = 0
         while i < min(len(data) - 1, 65536):
+            iterations += 1
+            if iterations > max_iterations:
+                break
             if data[i] != 0xFF:
                 break
             marker = data[i + 1]
@@ -218,6 +223,8 @@ def extract_image_metadata(data: bytes) -> dict:
                 i += 2
             elif i + 3 < len(data):
                 length = struct.unpack(">H", data[i + 2 : i + 4])[0]
+                if length < 2:
+                    break  # Malformed marker - prevent infinite loop
                 i += 2 + length
             else:
                 break
@@ -428,10 +435,19 @@ class PreviewEngine:
         if not metadata.chunks:
             return b""
 
+        from .chunker import hash_data_async
+
         sorted_chunks = sorted(metadata.chunks, key=lambda c: c.index)
         first_chunk = sorted_chunks[0]
 
         data = await self._vault.telegram.download_chunk(first_chunk.message_id)
+
+        # Verify chunk integrity before decryption
+        if first_chunk.hash and await hash_data_async(data) != first_chunk.hash:
+            raise ValueError(
+                f"Preview chunk hash mismatch for '{metadata.name}': "
+                "downloaded data is corrupted"
+            )
 
         if metadata.encrypted and password:
             data = decrypt_chunk(data, password)

@@ -95,7 +95,8 @@ class Config:
         with open(config_path) as f:
             data = json.load(f)
 
-        return cls(**data)
+        known = set(cls.__dataclass_fields__)
+        return cls(**{k: v for k, v in data.items() if k in known})
 
     @classmethod
     def load_or_create(cls) -> "Config":

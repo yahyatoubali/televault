@@ -91,7 +91,9 @@ class FileMetadata:
             raise ValueError(f"FileMetadata.chunks must be a list, got {type(data.get('chunks'))}")
 
         data["chunks"] = [ChunkInfo.from_dict(c) for c in data.get("chunks", [])]
-        return cls(**data)
+        known_fields = set(cls.__dataclass_fields__)
+        filtered = {k: v for k, v in data.items() if k in known_fields}
+        return cls(**filtered)
 
     @property
     def chunk_count(self) -> int:
@@ -178,7 +180,8 @@ class TransferProgress:
         data.setdefault("file_name", "")
         data.setdefault("total_chunks", 0)
         data.setdefault("completed_chunks", [])
-        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+        known_fields = set(cls.__dataclass_fields__)
+        return cls(**{k: v for k, v in data.items() if k in known_fields})
 
     @property
     def pending_chunks(self) -> list[int]:
