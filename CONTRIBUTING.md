@@ -1,129 +1,85 @@
 # Contributing to TeleVault
 
-Thanks for your interest in contributing! This guide will help you get started.
+Thanks for your interest in contributing! This guide covers the C++23 version on the `needspeed` branch.
 
 ## Quick Start
 
 ```bash
 git clone https://github.com/YahyaToubali/televault.git
 cd televault
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e ".[dev,fuse,webdav,preview]"
+git checkout needspeed
+
+# Install dependencies (Ubuntu 24.04)
+sudo apt install cmake g++-14 clang++-18 libtd-dev libssl-dev \
+                 libzstd-dev libblake3-dev libboost-dev libfuse3-dev
+
+# Build
+cmake -B build -DCMAKE_BUILD_TYPE=Debug -DTV_BUILD_TESTS=ON
+cmake --build build -j$(nproc)
+
+# Run tests
+ctest --test-dir build --output-on-failure
+
+# Run the binary
+./build/src/televault --help
 ```
-
-## Development Workflow
-
-1. **Fork** the repo and create a branch from `dev`:
-   ```bash
-   git checkout dev
-   git pull origin dev
-   git checkout -b feature/my-feature
-   ```
-2. **Make your changes** with tests
-3. **Run checks** before committing:
-   ```bash
-   pytest tests/ -v          # All 168 tests must pass
-   ruff check src/televault/ # Zero lint errors
-   ```
-4. **Push** and open a PR against `dev`
-
-### Branching
-
-| Branch | Purpose |
-|---|---|
-| `main` | Stable release code. Only updated via PR from `dev`. |
-| `dev` | Integration branch. All PRs target this branch. |
-| `feature/*` | Your feature branches. Fork from `dev`, PR back to `dev`. |
-| `fix/*` | Bug fix branches. Same flow as features. |
-
-**Never push directly to `main`.** All changes go through PRs.
 
 ## Code Style
 
-- **Lint**: `ruff check src/televault/` — must pass with zero errors
-- **Line length**: 100 characters max
-- **Python**: 3.11+ (type hints required for new code)
-- **No comments** unless asked or explaining non-obvious logic
-- **Follow existing patterns** in the codebase
+- **C++23** — Use `std::println`, `std::expected`, `std::span`, `std::ranges`
+- **Formatting** — Follow existing style (4-space indent, snake_case for functions, PascalCase for types)
+- **Headers** — Use `.hpp` with `#pragma once`
+- **Includes** — Group in order: own header, project headers, 3rd-party, stdlib
+- **Error handling** — Use `std::expected<T, E>` or throw `std::runtime_error`
+- **No raw pointers** — Use `std::unique_ptr` for ownership, references for non-ownership
+- **Thread safety** — Document thread safety guarantees; use `std::mutex` + `std::shared_lock` where needed
 
-## Running Tests
+## Architecture Overview
+
+```
+CLI (CLI11) → AppContext → TeleVault → TelegramClient (tdlib)
+                              ├── IndexManager (pinned message)
+                              ├── Chunker (file split + BLAKE3)
+                              ├── Compressor (zstd)
+                              └── Encryptor (AES-256-GCM)
+```
+
+All data lives in Telegram channel messages:
+- **Pinned**: VaultIndex (JSON) — maps file_id → metadata_message_id
+- **Text**: FileMetadata (JSON) — per-file info + chunk references
+- **Files**: Chunk data as document messages, replying to metadata
+
+## Testing
 
 ```bash
-# Full test suite
-pytest tests/ -v
+# Build and run all tests
+cmake -B build -DCMAKE_BUILD_TYPE=Debug -DTV_BUILD_TESTS=ON
+cmake --build build -j$(nproc)
+ctest --test-dir build --output-on-failure
 
-# Single test file
-pytest tests/test_chunker.py -v
-
-# With coverage (optional)
-pytest tests/ -v --cov=televault
+# Run specific test
+./build/tests/test_crypto
+./build/tests/test_compression
+./build/tests/test_chunker
 ```
 
-Tests use `pytest-asyncio` with `asyncio_mode = "auto"`. All tests are in `tests/` directory.
+## Commit Messages
 
-## Pull Request Checklist
+Follow conventional commits:
+- `feat:` — New feature
+- `fix:` — Bug fix
+- `refactor:` — Code change without feature/fix
+- `test:` — Adding/updating tests
+- `docs:` — Documentation
 
-Before opening a PR:
+## Pull Requests
 
-- [ ] Branch is based on `dev` (not `main`)
-- [ ] All tests pass: `pytest tests/ -v`
-- [ ] Lint passes: `ruff check src/televault/`
-- [ ] New features include tests
-- [ ] Bug fixes include a test that verifies the fix
-- [ ] No unnecessary comments or debug logging
-
-## Reporting Issues
-
-- **Bug**: Use the Bug Report template — include TeleVault version, Python version, OS, and steps to reproduce
-- **Feature**: Use the Feature Request template — describe the use case, not just the solution
-
-## Project Structure
-
-```
-src/televault/
-├── cli.py          # Click CLI — command dispatch, friendly errors
-├── core.py         # TeleVault class — upload, download, stream
-├── telegram.py     # TelegramVault — MTProto client, index, compression
-├── models.py       # FileMetadata, ChunkInfo, VaultIndex, TransferProgress
-├── chunker.py      # File splitting, ChunkWriter, BLAKE3
-├── crypto.py       # AES-256-GCM, scrypt KDF
-├── compress.py     # zstd compression, extension-based skip
-├── config.py       # Config dataclass, atomic persistence
-├── retry.py        # Exponential backoff, FloodWait handling
-├── backup.py       # BackupEngine — snapshot CRUD, prune, verify
-├── snapshot.py      # Snapshot, SnapshotFile, SnapshotIndex
-├── fuse.py         # TeleVaultFuse — on-demand streaming, LRU cache
-├── webdav.py       # WebDAV server (aiohttp)
-├── preview.py      # PreviewEngine — terminal previews from headers
-├── watcher.py      # FileWatcher — polling, BLAKE2, exclude patterns
-├── schedule.py      # Schedule CRUD, systemd timers
-├── gc.py            # Orphan message detection and cleanup
-├── logging.py       # RotatingFileHandler setup
-└── tui.py           # Textual TUI — file browser, detail panel
-```
-
-## Key Concepts
-
-- **All data** lives in a private Telegram channel as pinned messages + reply chains
-- **Files** are chunked, hashed, compressed, encrypted, then uploaded
-- **VaultIndex** maps file IDs to message IDs. Uses `asyncio.Lock` for concurrency safety.
-- **Cached index lookups** — `index_msg_id` in memory + config for O(1) fetch
-- **Atomic config writes** — temp file + `os.replace` + `fsync`
-- **CLI errors** go through `run_async()` — friendly messages, no tracebacks
-- **Entry points**: `tvt` and `televault` both resolve to `televault.cli:main`
-
-## Documentation
-
-The docs site is built with MkDocs Material. To preview changes locally:
-
-```bash
-pip install -e ".[dev]" && pip install mkdocs-material
-mkdocs serve
-```
-
-Open http://localhost:8000 to see the live preview. Docs rebuild automatically on file changes.
+1. Branch from `needspeed`
+2. Keep changes focused — one feature/fix per PR
+3. Add tests for new functionality
+4. Ensure all tests pass
+5. Update README if needed
 
 ## License
 
-By contributing, you agree that your code will be licensed under the MIT License.
+By contributing, you agree that your contributions will be licensed under the MIT License.

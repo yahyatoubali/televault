@@ -1,8 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/version-3.5.0-blue?style=flat-square" alt="version">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license">
-  <img src="https://img.shields.io/badge/python-3.11+-yellow?style=flat-square" alt="python">
-  <img src="https://img.shields.io/pypi/v/televault?style=flat-square" alt="pypi">
+  <img src="https://img.shields.io/badge/C++-23-yellow?style=flat-square" alt="cpp">
   <img src="https://img.shields.io/badge/encryption-AES--256--GCM-red?style=flat-square" alt="encryption">
   <a href="https://ko-fi.com/yahyatoubali"><img src="https://img.shields.io/badge/Support%20me%20on-Ko--fi-FF5E5B?style=flat-square&logo=ko-fi" alt="ko-fi"></a>
 </p>
@@ -19,13 +18,11 @@
 </p>
 
 <p align="center">
-  <a href="#installation"><code>pipx install televault</code></a>
-  <span>&nbsp;·&nbsp;</span>
-  <a href="https://yahyatoubali.github.io/televault/">Docs</a>
+  <a href="#building"><code>cmake -B build && cmake --build build</code></a>
   <span>&nbsp;·&nbsp;</span>
   <a href="#quick-start">Quick Start</a>
   <span>&nbsp;·&nbsp;</span>
-  <a href="./ARCHITECTURE.md">Architecture</a>
+  <a href="#project-structure">Structure</a>
 </p>
 
 ---
@@ -73,18 +70,53 @@ TeleVault turns a **private Telegram channel** into encrypted, unlimited cloud s
 
 ---
 
-## Installation
+## Building
+
+### Dependencies
+
+| Library | Purpose | Ubuntu 24.04 |
+|---|---|---|
+| **tdlib** | Telegram MTProto client | `libtd-dev` |
+| **OpenSSL** | AES-256-GCM + scrypt | `libssl-dev` |
+| **libzstd** | Compression | `libzstd-dev` |
+| **libblake3** | BLAKE3 hashing | `libblake3-dev` |
+| **Boost.Asio** | Async I/O | `libboost-dev` |
+| **libfuse3** | FUSE mount (optional) | `libfuse3-dev` |
+| **FTXUI** | TUI (optional) | FetchContent |
+| **CLI11** | CLI framework | FetchContent |
+| **nlohmann/json** | JSON | FetchContent |
+
+### Build
 
 ```bash
-pipx install televault
+# Install system dependencies (Ubuntu 24.04)
+sudo apt install cmake g++-14 libtd-dev libssl-dev libzstd-dev \
+                 libblake3-dev libboost-dev libfuse3-dev
 
-# Optional extras
-pipx install televault[fuse]       # FUSE mount support (Linux/macOS)
-pipx install televault[webdav]     # WebDAV server
-pipx install televault[preview]    # Image preview (Pillow)
+# Configure & build
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc)
+
+# Optional: disable FUSE/WebDAV/TUI if not needed
+cmake -B build -DTV_BUILD_FUSE=OFF -DTV_BUILD_WEBDAV=OFF -DTV_BUILD_TUI=OFF
+cmake --build build -j$(nproc)
+
+# Run tests
+ctest --test-dir build --output-on-failure
 ```
 
-Python 3.11+ is required. [`pipx`](https://github.com/pypa/pipx) is recommended for CLI tools — it installs into an isolated environment so your system Python stays clean.
+### Run
+
+```bash
+# The binary is at build/src/televault
+./build/src/televault login
+./build/src/televault setup
+./build/src/televault push photo.jpg
+
+# Or symlink to PATH
+ln -s "$(pwd)/build/src/televault" ~/.local/bin/tvt
+tvt ls
+```
 
 ---
 
@@ -275,66 +307,98 @@ Your password **never** leaves your machine. Telegram servers see only encrypted
 ## Project Structure
 
 ```
-src/televault/
-├── __init__.py        # Version
-├── cli.py             # Click CLI — command dispatch, friendly errors, progress display
-├── core.py            # TeleVault class — upload, download, list, search, stream
-├── telegram.py        # TelegramVault — MTProto client, channel ops, index, compression
-├── models.py          # FileMetadata, ChunkInfo, VaultIndex, TransferProgress
-├── chunker.py         # File splitting/merging, ChunkWriter, BLAKE3, async hashing
-├── crypto.py          # AES-256-GCM, scrypt KDF, streaming encrypt/decrypt
-├── compress.py        # zstd compression, extension-based skip
-├── config.py          # Config dataclass, atomic persistence, directory resolution
-├── retry.py           # Exponential backoff, FloodWait handling, @with_retry decorator
-├── backup.py          # BackupEngine — snapshot CRUD, prune, verify
-├── snapshot.py        # Snapshot, SnapshotFile, SnapshotIndex, RetentionPolicy
-├── fuse.py            # TeleVaultFuse — on-demand streaming with LRU cache
-├── webdav.py          # WebDAV server (aiohttp)
-├── preview.py         # PreviewEngine — terminal previews from headers
-├── watcher.py         # FileWatcher — polling, BLAKE2, exclude patterns
-├── schedule.py        # Schedule CRUD, systemd timers, cron generation
-├── gc.py              # Orphan message detection and cleanup
-├── utils.py           # Shared utilities (format_size, format_speed)
-├── logging.py         # RotatingFileHandler setup
-└── tui.py             # Textual TUI — file browser, detail panel (beta)
+src/
+├── main.cpp                # Entry point, CLI dispatch, signal handling
+├── cli/                    # CLI framework (CLI11)
+│   ├── cli.cpp/hpp         # 20+ commands: login, push, pull, ls, cat, info, stat, rm, ...
+│   └── progress.hpp        # SpeedTracker, ProgressBar
+├── telegram/               # Tdlib integration
+│   ├── client.cpp/hpp      # Auth, channel ops, messages, file upload/download
+│   ├── auth.cpp/hpp        # Phone → code → 2FA auth flow
+│   └── session.cpp/hpp     # Tdlib database directory management
+├── crypto/                 # AES-256-GCM via OpenSSL
+│   ├── aes256gcm.cpp/hpp   # Per-chunk encrypt/decrypt with random nonce
+│   ├── kdf.cpp/hpp         # scrypt (N=2¹⁷ r=8 p=1)
+│   └── stream.cpp/hpp      # Streaming encryptor/decryptor
+├── compress/               # zstd via libzstd
+│   ├── zstd.cpp/hpp        # Compress/decompress, extension skip list
+│   └── stream.cpp/hpp      # ZSTD_CCtx/DCtx streaming
+├── chunker/                # File splitting + BLAKE3
+│   ├── chunker.cpp/hpp     # iter_chunks sync/async
+│   ├── hash.cpp/hpp        # BLAKE3 hashing (data + file)
+│   └── writer.cpp/hpp      # Pre-allocated random-access ChunkWriter
+├── core/                   # Vault engine
+│   ├── vault.cpp/hpp       # Upload: hash→chunk→compress→encrypt→upload→index
+│   │                       # Download: fetch→decrypt→decompress→verify→write
+│   ├── index.cpp/hpp       # VaultIndex as pinned message (thread-safe)
+│   ├── transfer.cpp/hpp    # Parallel transfer manager
+│   └── app_context.cpp/hpp # App context (client + vault lifecycle)
+├── backup/                 # Snapshot engine
+│   ├── engine.cpp/hpp      # create/restore/list/delete/prune/verify
+│   └── snapshot.cpp/hpp    # Snapshot index management
+├── watcher/                # Polling file watcher
+│   └── watcher.cpp/hpp     # BLAKE2b change detection, exclusion patterns
+├── schedule/               # Backup scheduler
+│   ├── schedule.cpp/hpp    # JSON schedule CRUD
+│   └── systemd.cpp/hpp     # systemd timer/service generation
+├── preview/                # File preview
+│   └── preview.cpp/hpp     # ~90 extensions, text/hex/image preview
+├── gc/                     # Garbage collection
+│   └── gc.cpp/hpp          # Orphan detection, partial cleanup
+├── fuse/                   # FUSE (libfuse3)
+│   ├── fuse_ops.cpp/hpp    # getattr/readdir/read/open
+│   └── cache.cpp/hpp       # LRUChunkCache
+├── webdav/                 # WebDAV (Boost.Beast)
+│   ├── server.cpp/hpp      # HTTP server
+│   └── handler.cpp/hpp     # PROPFIND/GET/PUT/DELETE
+├── tui/                    # Terminal UI (FTXUI)
+│   └── tui.cpp/hpp         # File browser DataTable
+├── util/                   # Infrastructure
+│   ├── logging.cpp/hpp     # spdlog console + rotating file
+│   ├── config.cpp/hpp      # XDG-compliant config JSON
+│   ├── retry.cpp/hpp       # Exponential backoff with jitter
+│   ├── format.cpp/hpp      # format_size, format_speed
+│   └── platform.cpp/hpp    # System info, terminal detection
+├── models/                 # Data types with nlohmann/json
+│   ├── file_metadata.hpp   # FileMetadata, ChunkInfo
+│   ├── vault_index.hpp     # VaultIndex
+│   ├── snapshot.hpp        # Snapshot, RetentionPolicy
+│   ├── config.hpp          # Config, RetryConfig, TelegramConfig
+│   └── transfer_progress.hpp
+└── async/                  # Boost.Asio executor
+    └── executor.cpp/hpp    # io_context + thread pool singleton
 
 tests/
-├── test_chunker.py
-├── test_compress.py
-├── test_crypto.py
-├── test_fuse.py
-├── test_models.py
-├── test_models_v2.py
-├── test_preview.py
-├── test_retry.py
-├── test_schedule.py
-├── test_snapshot.py
-├── test_telegram_helpers.py
-└── test_webdav.py
+├── CMakeLists.txt           # GTest build
+├── test_crypto.cpp          # 6 tests: KDF, round-trip, corruption, large data, nonce
+├── test_compression.cpp     # 5 tests: round-trip, skip list, levels, streaming
+├── test_chunker.cpp         # 5 tests: hash, chunk, writer
+├── test_models.cpp          # 4 tests: serialization round-trips
+└── test_retry.cpp           # 3 tests: backoff, success, failure
 ```
-
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for detailed system design.
 
 ---
 
 ## Contributing
-
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full guide.
 
 **Quick start:**
 
 ```bash
 git clone https://github.com/YahyaToubali/televault.git
 cd televault
-python -m venv .venv
-source .venv/bin/activate
-pipx install -e ".[dev,fuse,webdav,preview]"
+git checkout needspeed
 
-pytest tests/ -v          # Run 157 tests
-ruff check src/           # Lint
+# Install dependencies (Ubuntu 24.04)
+sudo apt install cmake g++-14 clang++-18 libtd-dev libssl-dev \
+                 libzstd-dev libblake3-dev libboost-dev libfuse3-dev
+
+# Build & test
+cmake -B build -DCMAKE_BUILD_TYPE=Debug -DTV_BUILD_TESTS=ON
+cmake --build build -j$(nproc)
+ctest --test-dir build --output-on-failure
 ```
 
-All PRs target the `dev` branch. `main` is only updated on release.
+All PRs target the `needspeed` branch.
 
 ---
 

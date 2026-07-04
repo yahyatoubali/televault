@@ -43,8 +43,25 @@ htmlcov/
 
 # Distribution
 dist/
-build/
 target/
+
+# C++ / CMake build
+build*/
+cmake-build-*/
+CMakeFiles/
+compile_commands.json
+*.a
+*.so
+*.dylib
+televault
+tvt
+
+# Fetched dependency sources (local copies for fast reconfigure)
+nlohmann_json-src/
+spdlog-src/
+
+# Generated docs
+site/
 
 # AI / LLM tool configs (local, not for repo)
 .qwen/
