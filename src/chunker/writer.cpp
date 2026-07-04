@@ -14,7 +14,9 @@ ChunkWriter::ChunkWriter(const std::string& path, uint64_t expected_size)
         return;
     }
     if (expected_size > 0) {
-        ::fallocate(fd_, 0, 0, expected_size);
+        if (::fallocate(fd_, 0, 0, expected_size) != 0 && errno != EOPNOTSUPP && errno != ENOSYS) {
+            spdlog::warn("fallocate failed for {} ({}), continuing without pre-allocation", path, strerror(errno));
+        }
     }
 }
 
@@ -22,7 +24,13 @@ ChunkWriter::~ChunkWriter() { close(); }
 
 void ChunkWriter::write(int64_t, uint64_t offset, const void* data, uint64_t size) {
     if (fd_ < 0) return;
-    ::pwrite(fd_, data, size, offset);
+    auto written = ::pwrite(fd_, data, size, offset);
+    if (written < 0 || static_cast<uint64_t>(written) != size) {
+        spdlog::error("Short write to output file: wrote {} of {} bytes", written, size);
+        ::close(fd_);
+        fd_ = -1;
+        return;
+    }
     bytes_written_ += size;
 }
 

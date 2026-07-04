@@ -17,15 +17,22 @@ bool AppContext::initialize() {
         tg_client.set_api_params(config.telegram.api_id, config.telegram.api_hash);
     }
 
-    // Initialize vault with channel if configured
-    if (config.channel_id != 0) {
-        vault = std::make_unique<TeleVault>(tg_client);
-        if (!vault->initialize(config.channel_id, config.low_resource.enabled)) {
-            spdlog::warn("Vault initialization failed — run 'setup' first");
-        }
-    }
-
     initialized = true;
+    return true;
+}
+
+bool AppContext::ensure_vault() {
+    if (vault) return true;
+
+    auto& cfg = ConfigManager::instance();
+    auto config = cfg.get();
+    if (config.channel_id == 0) return false;
+
+    vault = std::make_unique<TeleVault>(tg_client);
+    if (!vault->initialize(config.channel_id, config.low_resource.enabled)) {
+        vault.reset();
+        return false;
+    }
     return true;
 }
 

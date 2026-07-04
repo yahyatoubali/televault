@@ -18,9 +18,7 @@ namespace {
 
     void signal_handler(int sig) {
         if (sig == SIGINT || sig == SIGTERM) {
-            g_shutdown.store(true);
-            spdlog::info("Shutdown requested...");
-            if (g_app_ctx) g_app_ctx->shutdown();
+            g_shutdown.store(true, std::memory_order_relaxed);
         }
     }
 }

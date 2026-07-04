@@ -12,6 +12,7 @@ public:
 
     bool load();
     void save() const;
+    void save_telegram() const;
 
     [[nodiscard]] const Config& get() const { return config_; }
     void set(const Config& cfg) { config_ = cfg; }

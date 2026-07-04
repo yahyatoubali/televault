@@ -12,6 +12,7 @@ struct AppContext {
     bool initialized{};
 
     bool initialize();
+    bool ensure_vault();
     void shutdown();
 };
 

@@ -16,7 +16,7 @@ static constexpr std::array incompressible_exts = {
     ".mp4", ".mkv", ".avi", ".mov", ".webm",
     ".mp3", ".m4a", ".ogg", ".opus", ".flac", ".wav",
     ".pdf", ".docx", ".xlsx", ".pptx",
-    ".png", ".webp",
+    ".webp",
 };
 
 bool should_compress(std::string_view filename) {
@@ -28,7 +28,7 @@ bool should_compress(std::string_view filename) {
     std::string lower_ext;
     lower_ext.resize(ext.size());
     std::transform(ext.begin(), ext.end(), lower_ext.begin(),
-                   [](char c) { return static_cast<char>(std::tolower(c)); });
+                   [](unsigned char c) { return static_cast<char>(std::tolower(static_cast<unsigned char>(c))); });
 
     return std::ranges::none_of(incompressible_exts, [&](const char* ie) {
         return lower_ext == ie;

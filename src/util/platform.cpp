@@ -16,7 +16,7 @@ SystemInfo get_system_info() {
 
 bool is_low_resource_system() {
     auto info = get_system_info();
-    return info.total_ram < 2L * 1024 * 1024 * 1024 || info.cpu_count <= 2;
+    return info.total_ram < 2LL * 1024 * 1024 * 1024 || info.cpu_count <= 2;
 }
 
 std::optional<std::string> detect_terminal() {

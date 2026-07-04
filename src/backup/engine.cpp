@@ -192,7 +192,14 @@ public:
                     0});
             }
 
-            auto output = std::filesystem::path(output_dir) / sf.name;
+            // Sanitize path: prevent directory traversal (CWE-22)
+            std::filesystem::path sanitized = std::filesystem::path(sf.name).relative_path();
+            auto output = std::filesystem::weakly_canonical(
+                std::filesystem::absolute(output_dir) / sanitized);
+            if (output.string().find(std::filesystem::absolute(output_dir).string()) != 0) {
+                spdlog::error("Path traversal detected in snapshot: {}", sf.name);
+                continue;
+            }
             std::filesystem::create_directories(output.parent_path());
 
             if (!sf.incremental) {

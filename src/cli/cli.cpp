@@ -40,7 +40,10 @@ namespace {
             return;
         }
 
-        if (!sm.has_api_credentials()) {
+        if (sm.has_api_credentials()) {
+            // Already have credentials from config — push to client
+            ctx.tg_client.set_api_params(sm.api_id(), sm.api_hash());
+        } else {
             std::print("Enter API ID (from my.telegram.org): ");
             std::string api_id_str;
             std::getline(std::cin, api_id_str);
@@ -159,10 +162,7 @@ namespace {
 
     // ── File operations ──────────────────────────────────────────────
     void ensure_vault(AppContext& ctx) {
-        if (!ctx.vault) {
-            ctx.initialize();
-        }
-        if (!ctx.vault) {
+        if (!ctx.ensure_vault()) {
             throw std::runtime_error("Vault not initialized. Run 'setup' first.");
         }
     }
@@ -219,7 +219,16 @@ namespace {
 
     void cmd_cat(AppContext& ctx, const std::string& path) {
         ensure_vault(ctx);
-        ctx.vault->cat(path);
+        VaultOptions opts;
+        auto& cfg = ConfigManager::instance().get();
+        // Password not stored in config — user must provide via env or we prompt
+        if (cfg.encryption) {
+            std::print("Enter encryption password: ");
+            std::getline(std::cin, opts.password);
+        }
+        if (!ctx.vault->cat(path, opts)) {
+            print_error("Failed to cat file");
+        }
     }
 
     void cmd_find(AppContext& ctx, const std::string& query, bool json_output) {

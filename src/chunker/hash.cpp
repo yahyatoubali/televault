@@ -42,11 +42,14 @@ std::string hash_file(const std::string& path) {
     blake3_hasher_init(&hasher);
 
     std::array<char, 65536> buf{};
-    while (file) {
+    while (true) {
         file.read(buf.data(), buf.size());
         auto count = file.gcount();
         if (count > 0) {
             blake3_hasher_update(&hasher, buf.data(), static_cast<size_t>(count));
+        }
+        if (file.fail() && !file.eof()) {
+            throw std::runtime_error("Read error while hashing: " + path);
         }
         if (count < static_cast<std::streamsize>(buf.size())) break;
     }

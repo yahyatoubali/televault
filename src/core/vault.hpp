@@ -57,7 +57,7 @@ public:
     bool push(const std::string& local_path, const VaultOptions& opts, ProgressCallback cb = {});
     bool pull(const std::string& vault_path, const std::string& output_path,
               const VaultOptions& opts, ProgressCallback cb = {});
-    bool cat(const std::string& vault_path, ProgressCallback cb = {});
+    bool cat(const std::string& vault_path, const VaultOptions& opts = {}, ProgressCallback cb = {});
 
     // Listing & querying
     [[nodiscard]] std::vector<FileEntry> list_files() const;

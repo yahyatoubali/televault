@@ -31,20 +31,38 @@ std::vector<uint8_t> encrypt_chunk(std::span<const uint8_t> data, std::span<cons
     std::vector<uint8_t> ct(data.size() + 16); // extra room for GCM overhead
     int len = 0, ct_len = 0;
 
-    EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr);
-    EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, NONCE_SIZE, nullptr);
-    EVP_EncryptInit_ex(ctx, nullptr, nullptr, key.data(), nonce.data());
+    if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        throw std::runtime_error("Failed to init cipher");
+    }
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, NONCE_SIZE, nullptr) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        throw std::runtime_error("Failed to set IV length");
+    }
+    if (EVP_EncryptInit_ex(ctx, nullptr, nullptr, key.data(), nonce.data()) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        throw std::runtime_error("Failed to init key/nonce");
+    }
 
-    EVP_EncryptUpdate(ctx, ct.data(), &len, data.data(), static_cast<int>(data.size()));
+    if (EVP_EncryptUpdate(ctx, ct.data(), &len, data.data(), static_cast<int>(data.size())) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        throw std::runtime_error("Encryption failed");
+    }
     ct_len = len;
 
-    EVP_EncryptFinal_ex(ctx, ct.data() + ct_len, &len);
+    if (EVP_EncryptFinal_ex(ctx, ct.data() + ct_len, &len) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        throw std::runtime_error("Encryption finalization failed");
+    }
     ct_len += len;
     ct.resize(ct_len);
 
     // Get authentication tag
     std::vector<uint8_t> tag(TAG_SIZE);
-    EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, TAG_SIZE, tag.data());
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, TAG_SIZE, tag.data()) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        throw std::runtime_error("Failed to get auth tag");
+    }
     EVP_CIPHER_CTX_free(ctx);
 
     // Format: [nonce:12][ciphertext:...][tag:16]
@@ -75,15 +93,30 @@ std::vector<uint8_t> decrypt_chunk(std::span<const uint8_t> ciphertext, std::spa
     std::vector<uint8_t> pt(ct.size());
     int len = 0, pt_len = 0;
 
-    EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr);
-    EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, NONCE_SIZE, nullptr);
-    EVP_DecryptInit_ex(ctx, nullptr, nullptr, key.data(), nonce.data());
+    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        throw std::runtime_error("Failed to init cipher");
+    }
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, NONCE_SIZE, nullptr) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        throw std::runtime_error("Failed to set IV length");
+    }
+    if (EVP_DecryptInit_ex(ctx, nullptr, nullptr, key.data(), nonce.data()) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        throw std::runtime_error("Failed to init key/nonce");
+    }
 
-    EVP_DecryptUpdate(ctx, pt.data(), &len, ct.data(), static_cast<int>(ct.size()));
+    if (EVP_DecryptUpdate(ctx, pt.data(), &len, ct.data(), static_cast<int>(ct.size())) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        throw std::runtime_error("Decryption update failed");
+    }
     pt_len = len;
 
-    EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, TAG_SIZE,
-                        const_cast<uint8_t*>(tag.data()));
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, TAG_SIZE,
+                            const_cast<uint8_t*>(tag.data())) != 1) {
+        EVP_CIPHER_CTX_free(ctx);
+        throw std::runtime_error("Failed to set auth tag");
+    }
 
     int ret = EVP_DecryptFinal_ex(ctx, pt.data() + pt_len, &len);
     EVP_CIPHER_CTX_free(ctx);

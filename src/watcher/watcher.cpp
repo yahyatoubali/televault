@@ -13,13 +13,15 @@ namespace tv {
 class FileWatcher::Impl {
 public:
     std::string directory_;
+    mutable std::mutex exclusions_mutex_;
     std::vector<std::string> exclusions_{".git", "__pycache__", "node_modules"};
-    std::unordered_map<std::string, WatchedFile> state_;
     std::thread poll_thread_;
     std::atomic<bool> running_{false};
     ChangeCallback callback_;
+    std::unordered_map<std::string, WatchedFile> state_;
 
     bool is_excluded(const std::string& path) const {
+        std::lock_guard<std::mutex> lock(exclusions_mutex_);
         for (auto& pat : exclusions_) {
             if (path.find(pat) != std::string::npos) return true;
         }
@@ -106,6 +108,7 @@ void FileWatcher::stop() {
 }
 
 void FileWatcher::set_exclusions(const std::vector<std::string>& patterns) {
+    std::lock_guard lock(impl_->exclusions_mutex_);
     impl_->exclusions_ = patterns;
 }
 

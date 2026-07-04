@@ -122,7 +122,7 @@ public:
     }
 
     bool is_authorized() const {
-        return auth_state_ == AuthState::Ready;
+        return auth_state_.load(std::memory_order_acquire) == AuthState::Ready;
     }
 
     // ── Authentication ──────────────────────────────────────────────
@@ -425,6 +425,9 @@ public:
 
     // ── File operations ─────────────────────────────────────────────
     bool download_file(int32_t file_id, FileProgressCallback cb) const {
+        // Store the progress callback for handle_file_update in the client thread
+        const_cast<Impl*>(this)->file_progress_cb_ = cb;
+
         auto download = make_object<tda::downloadFile>();
         download->file_id_ = file_id;
         download->priority_ = 32;
@@ -572,43 +575,41 @@ private:
 
     // ── Auth state machine ──────────────────────────────────────────
     void handle_auth_state(ObjectPtr state) {
+        AuthState new_state;
         switch (state->get_id()) {
             case tda::authorizationStateWaitTdlibParameters::ID:
-                // Already sent in connect(); wait for next state
-                break;
+                return; // Already sent in connect(); wait for next state
 
             case tda::authorizationStateWaitPhoneNumber::ID:
-                auth_state_ = AuthState::WaitPhone;
-                cv_.notify_all();
+                new_state = AuthState::WaitPhone;
                 break;
 
             case tda::authorizationStateWaitCode::ID:
-                auth_state_ = AuthState::WaitCode;
-                cv_.notify_all();
+                new_state = AuthState::WaitCode;
                 break;
 
             case tda::authorizationStateWaitPassword::ID:
-                auth_state_ = AuthState::WaitPassword;
-                cv_.notify_all();
+                new_state = AuthState::WaitPassword;
                 break;
 
             case tda::authorizationStateReady::ID:
-                auth_state_ = AuthState::Ready;
-                cv_.notify_all();
+                new_state = AuthState::Ready;
                 break;
 
             case tda::authorizationStateClosed::ID:
-                auth_state_ = AuthState::None;
+            case tda::authorizationStateLoggingOut::ID:
+                new_state = AuthState::None;
                 ready_ = false;
                 break;
 
-            case tda::authorizationStateLoggingOut::ID:
-                auth_state_ = AuthState::None;
-                break;
-
             default:
-                break;
+                return;
         }
+        {
+            std::lock_guard lock(mutex_);
+            auth_state_ = new_state;
+        }
+        cv_.notify_all();
     }
 
     void send_phone() {
@@ -622,6 +623,7 @@ private:
 
         auto set_phone = make_object<tda::setAuthenticationPhoneNumber>();
         set_phone->phone_number_ = phone;
+        auth_state_.store(AuthState::None, std::memory_order_release);
         send_query_async(std::move(set_phone));
     }
 
@@ -652,7 +654,7 @@ private:
     std::atomic<bool> running_{false};
     bool ready_{};
 
-    AuthState auth_state_{AuthState::None};
+    std::atomic<AuthState> auth_state_{AuthState::None};
     AuthCodeCallback code_cb_;
     AuthPasswordCallback pw_cb_;
     FileProgressCallback file_progress_cb_;

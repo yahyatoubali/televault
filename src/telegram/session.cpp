@@ -52,6 +52,7 @@ bool SessionManager::save_api_credentials(int32_t api_id, const std::string& api
     config.telegram.phone = phone;
     cfg.set(config);
     cfg.save();
+    cfg.save_telegram();
     return true;
 }
 

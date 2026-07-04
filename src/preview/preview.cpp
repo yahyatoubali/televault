@@ -90,7 +90,7 @@ public:
         auto ext = filename.substr(pos);
         std::string lower;
         lower.resize(ext.size());
-        std::ranges::transform(ext, lower.begin(), [](char c) {
+        std::ranges::transform(ext, lower.begin(), [](unsigned char c) {
             return static_cast<char>(std::tolower(c));
         });
 
@@ -105,7 +105,7 @@ public:
         auto ext = filename.substr(pos);
         std::string lower;
         lower.resize(ext.size());
-        std::ranges::transform(ext, lower.begin(), [](char c) {
+        std::ranges::transform(ext, lower.begin(), [](unsigned char c) {
             return static_cast<char>(std::tolower(c));
         });
 
@@ -203,8 +203,8 @@ private:
 
             out << " |";
             for (std::streamsize j = 0; j < remaining; ++j) {
-                auto c = buf[i + j];
-                out << (std::isprint(c) ? c : '.');
+                auto c = static_cast<unsigned char>(buf[i + j]);
+                out << (std::isprint(c) ? static_cast<char>(c) : '.');
             }
             out << "|\n";
         }

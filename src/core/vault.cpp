@@ -16,6 +16,7 @@
 #include <random>
 #include <array>
 #include <chrono>
+#include "../compress/zstd.hpp"
 #include <span>
 #include <algorithm>
 #include <iostream>
@@ -161,10 +162,13 @@ public:
             }
 
             auto tmp = std::filesystem::temp_directory_path() /
-                std::format("tv_{}_{}", meta.id, pc.index);
+                std::format("tv_{}_{}_{}", meta.id, pc.index, std::rand());
             {
                 std::ofstream f(tmp, std::ios::binary);
-                f.write(reinterpret_cast<const char*>(pc.data.data()), pc.data.size());
+                if (!f.write(reinterpret_cast<const char*>(pc.data.data()), pc.data.size())) {
+                    spdlog::error("Failed to write temp file: {}", tmp.string());
+                    return false;
+                }
             }
 
             auto send_result = tg.send_file_with_id(channel_id_, tmp.string(), meta_msg_id);
@@ -218,10 +222,14 @@ public:
         if (cb) cb({0, meta->size, "Downloading...", 0});
 
         // Pre-allocate output file
-        {
+        if (meta->size > 0) {
             std::ofstream f(output, std::ios::binary);
             f.seekp(meta->size - 1);
             f.put(0);
+            if (!f) {
+                spdlog::error("Failed to pre-allocate output file: {}", output);
+                return false;
+            }
         }
 
         uint64_t total = 0;
@@ -299,9 +307,23 @@ public:
         return true;
     }
 
-    bool cat(const std::string& vault_path, ProgressCallback cb) {
+    bool cat(const std::string& vault_path, const VaultOptions& opts, ProgressCallback cb) {
         auto meta = find_metadata(vault_path);
         if (!meta) return false;
+
+        if (meta->encrypted && opts.password.empty()) {
+            spdlog::error("File is encrypted — password required for cat");
+            return false;
+        }
+
+        bool have_key = false;
+        std::array<uint8_t, 32> master_key{};
+        if (meta->encrypted && !opts.password.empty()) {
+            auto salt_str = "televault" + std::to_string(channel_id_);
+            auto salt = std::vector<uint8_t>(salt_str.begin(), salt_str.end());
+            master_key = derive_key(opts.password, salt);
+            have_key = true;
+        }
 
         for (auto& ci : meta->chunks) {
             if (!tg.download_file_by_message(channel_id_, ci.message_id)) break;
@@ -311,11 +333,27 @@ public:
             if (!finfo || finfo->local_path.empty()) break;
 
             std::ifstream f(finfo->local_path, std::ios::binary);
-            std::vector<char> buf(65536);
-            while (f.read(buf.data(), buf.size())) {
-                std::cout.write(buf.data(), f.gcount());
+            if (!f) break;
+
+            std::vector<uint8_t> file_data((std::istreambuf_iterator<char>(f)),
+                                            std::istreambuf_iterator<char>());
+
+            auto data = file_data;
+            if (meta->encrypted && have_key) {
+                auto decrypted = decrypt_chunk(data, master_key);
+                if (decrypted.empty()) {
+                    spdlog::error("Decryption failed for chunk {}", ci.index);
+                    return false;
+                }
+                data = std::move(decrypted);
             }
-            if (f.gcount() > 0) std::cout.write(buf.data(), f.gcount());
+
+            auto decompressed = decompress_data(data);
+            std::cout.write(reinterpret_cast<const char*>(decompressed.data()), decompressed.size());
+            if (!std::cout) {
+                spdlog::error("Write to stdout failed");
+                return false;
+            }
         }
         return true;
     }
@@ -432,8 +470,8 @@ bool TeleVault::pull(const std::string& path, const std::string& output,
     return impl_->pull(path, output, opts, std::move(cb));
 }
 
-bool TeleVault::cat(const std::string& path, ProgressCallback cb) {
-    return impl_->cat(path, std::move(cb));
+bool TeleVault::cat(const std::string& path, const VaultOptions& opts, ProgressCallback cb) {
+    return impl_->cat(path, opts, std::move(cb));
 }
 
 std::vector<FileEntry> TeleVault::list_files() const {

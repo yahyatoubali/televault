@@ -116,8 +116,17 @@ target_link_libraries(tv_core PUBLIC
 )
 
 if(TV_BUILD_TDLIB)
-    target_link_libraries(tv_core PUBLIC Td::tdclient)
     target_include_directories(tv_core PUBLIC ${Boost_INCLUDE_DIRS})
+    # Link tdlib in correct order for static linking (reverse dep graph)
+    target_link_libraries(tv_core PUBLIC
+        Td::tdclient
+        Td::tdcore
+        Td::tdapi
+        Td::tdnet
+        Td::tddb
+        Td::tdactor
+        Td::tdutils
+        Td::tdsqlite)
 endif()
 
 if(TV_BUILD_FUSE)
@@ -131,6 +140,21 @@ endif()
 # ── Main binary ────────────────────────────────────────────────────────
 add_executable(televault)
 target_link_libraries(televault PRIVATE tv_core)
+
+if(TV_BUILD_TDLIB)
+    # Use --whole-archive to force all tdlib objects into the binary
+    target_link_options(televault PRIVATE
+        "LINKER:--whole-archive"
+        "LINKER:$<TARGET_LINKER_FILE:Td::tdclient>"
+        "LINKER:$<TARGET_LINKER_FILE:Td::tdcore>"
+        "LINKER:$<TARGET_LINKER_FILE:Td::tdapi>"
+        "LINKER:$<TARGET_LINKER_FILE:Td::tdnet>"
+        "LINKER:$<TARGET_LINKER_FILE:Td::tddb>"
+        "LINKER:$<TARGET_LINKER_FILE:Td::tdactor>"
+        "LINKER:$<TARGET_LINKER_FILE:Td::tdutils>"
+        "LINKER:$<TARGET_LINKER_FILE:Td::tdsqlite>"
+        "LINKER:--no-whole-archive")
+endif()
 
 # ── Alias ──────────────────────────────────────────────────────────────
 add_executable(tvt ALIAS televault)

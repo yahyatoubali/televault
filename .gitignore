@@ -81,3 +81,4 @@ desktop.ini
 # TeleVault local data
 *.partial
 *.progress
+a.out
