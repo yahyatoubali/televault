@@ -60,12 +60,12 @@ public:
 
         client_ = std::make_unique<::td::Client>();
 
-        // Set Tdlib parameters
-        send_query_async(make_object<tda::setLogVerbosityLevel>(0));
-        send_query_async(make_object<tda::setLogStream>(
-            make_object<tda::logStreamFile>(db_dir_ + "/tdlib.log", 1 << 24, false)));
+        // Set up tdlib logging synchronously via execute()
+        ::td::Client::execute({0, make_object<tda::setLogVerbosityLevel>(0)});
+        ::td::Client::execute({0, make_object<tda::setLogStream>(
+            make_object<tda::logStreamFile>(db_dir_ + "/tdlib.log", 1 << 24, false))});
 
-        // Start client thread
+        // Start client thread FIRST before any sends
         running_ = true;
         client_thread_ = std::thread([this] { client_loop(); });
 
@@ -87,15 +87,28 @@ public:
         params_obj->ignore_file_names_ = false;
         auto params = make_object<tda::setTdlibParameters>(std::move(params_obj));
 
-        send_query_async(std::move(params));
+        // Send parameters asynchronously
+        auto result_future = send_query_async(std::move(params));
 
         // Wait for client ready
         {
             std::unique_lock lock(mutex_);
-            if (!cv_.wait_for(lock, std::chrono::seconds(30), [this] {
-                return auth_state_ >= AuthState::WaitCode;
+            if (!cv_.wait_for(lock, std::chrono::seconds(60), [this] {
+                return auth_state_ >= AuthState::WaitPhone;
             })) {
-                spdlog::error("Timed out waiting for Tdlib client to initialize");
+                // Check if setTdlibParameters returned an error
+                if (result_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+                    auto result = result_future.get();
+                    if (result && result->get_id() == tda::error::ID) {
+                        auto& err = static_cast<tda::error&>(*result);
+                        spdlog::error("setTdlibParameters failed: {} (code {})", err.message_, err.code_);
+                    } else {
+                        spdlog::error("setTdlibParameters returned unexpected result");
+                    }
+                } else {
+                    spdlog::error("Timed out waiting for Tdlib client to initialize (auth_state={})",
+                        static_cast<int>(auth_state_.load()));
+                }
                 return false;
             }
         }
@@ -573,12 +586,19 @@ private:
         }
     }
 
-    // ── Auth state machine ──────────────────────────────────────────
     void handle_auth_state(ObjectPtr state) {
+        spdlog::debug("Auth state update: type_id={}", state->get_id());
         AuthState new_state;
         switch (state->get_id()) {
             case tda::authorizationStateWaitTdlibParameters::ID:
-                return; // Already sent in connect(); wait for next state
+                spdlog::debug("Got WaitTdlibParameters, state unchanged");
+                cv_.notify_all();
+                return;
+
+            case tda::authorizationStateWaitEncryptionKey::ID:
+                spdlog::debug("Got WaitEncryptionKey, providing empty key");
+                send_query_async(make_object<tda::checkDatabaseEncryptionKey>());
+                return;
 
             case tda::authorizationStateWaitPhoneNumber::ID:
                 new_state = AuthState::WaitPhone;
@@ -603,6 +623,7 @@ private:
                 break;
 
             default:
+                spdlog::warn("Unhandled auth state type_id={}", state->get_id());
                 return;
         }
         {

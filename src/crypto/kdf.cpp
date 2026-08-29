@@ -9,15 +9,16 @@ namespace tv {
 static constexpr uint64_t SCRYPT_N = 1 << 17;  // 131072
 static constexpr uint32_t SCRYPT_R = 8;
 static constexpr uint32_t SCRYPT_P = 1;
+static constexpr uint64_t SCRYPT_MAXMEM = 256ULL * 1024 * 1024; // 256 MB
 
 std::array<uint8_t, 32> derive_key(std::string_view password, std::span<const uint8_t> salt) {
     std::array<uint8_t, 32> key{};
 
     int rc = EVP_PBE_scrypt(
-        password.data(), static_cast<int>(password.size()),
-        salt.data(), static_cast<int>(salt.size()),
+        password.data(), password.size(),
+        salt.data(), salt.size(),
         SCRYPT_N, SCRYPT_R, SCRYPT_P,
-        0, // max_mem (0 = auto)
+        SCRYPT_MAXMEM,
         key.data(), key.size()
     );
 

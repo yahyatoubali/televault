@@ -55,6 +55,7 @@ endif()
 if(TV_BUILD_WEBDAV OR TV_BUILD_TDLIB)
     find_path(Boost_INCLUDE_DIRS boost/version.hpp
         HINTS
+            $ENV{HOME}/.local/include
             /usr/include
             /usr/local/include
             ${CMAKE_PREFIX_PATH}/include

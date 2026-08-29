@@ -1,4 +1,4 @@
-# ── All tests link against the core object library ─────────────────────
+# ── All tests link against the core static library ─────────────────────
 function(add_tv_test NAME)
     add_executable(${NAME} ${NAME}.cpp)
     target_include_directories(${NAME} PRIVATE ${CMAKE_SOURCE_DIR}/src)

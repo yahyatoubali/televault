@@ -28,7 +28,7 @@ pkg_check_modules(BLAKE3 REQUIRED IMPORTED_TARGET libblake3)
 include(FetchContent)
 include(cmake/FetchDependencies.cmake)
 
-# ── Compiler warnings ──────────────────────────────────────────────────
+# ── Compiler warnings and flags ─────────────────────────────────────────
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra -Wpedantic -Werror=return-type)
     add_compile_options(-Wno-unused-parameter)

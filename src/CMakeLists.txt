@@ -1,5 +1,5 @@
+# ── Core library (Independent of Telegram / Tdlib) ─────────────────────
 set(CORE_SOURCES
-    main.cpp
     util/logging.cpp
     util/config.cpp
     util/retry.cpp
@@ -13,15 +13,9 @@ set(CORE_SOURCES
     chunker/chunker.cpp
     chunker/hash.cpp
     chunker/writer.cpp
-    cli/cli.cpp
     preview/preview.cpp
     gc/gc.cpp
 )
-
-# Stubs for missing tdlib functions
-if(NOT TV_BUILD_TDLIB)
-    list(APPEND CORE_SOURCES stubs.cpp)
-endif()
 
 set(CORE_HEADERS
     util/logging.hpp
@@ -37,8 +31,6 @@ set(CORE_HEADERS
     chunker/chunker.hpp
     chunker/hash.hpp
     chunker/writer.hpp
-    cli/cli.hpp
-    cli/progress.hpp
     preview/preview.hpp
     gc/gc.hpp
     models/file_metadata.hpp
@@ -48,9 +40,34 @@ set(CORE_HEADERS
     models/transfer_progress.hpp
 )
 
-# ── Tdlib-dependent sources ────────────────────────────────────────────
+add_library(tv_core STATIC ${CORE_SOURCES} ${CORE_HEADERS})
+target_include_directories(tv_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(tv_core PUBLIC TELEVAULT_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(tv_core PUBLIC $<$<BOOL:${TV_BUILD_TDLIB}>:TV_BUILD_TDLIB>)
+
+target_link_libraries(tv_core PUBLIC
+    CLI11::CLI11
+    nlohmann_json::nlohmann_json
+    spdlog::spdlog
+    OpenSSL::SSL
+    OpenSSL::Crypto
+    PkgConfig::ZSTD
+    PkgConfig::BLAKE3
+    pthread
+)
+
+# ── Application & Services Layer ───────────────────────────────────────
+set(APP_SOURCES
+    cli/cli.cpp
+)
+
+set(APP_HEADERS
+    cli/cli.hpp
+    cli/progress.hpp
+)
+
 if(TV_BUILD_TDLIB)
-    list(APPEND CORE_SOURCES
+    list(APPEND APP_SOURCES
         telegram/client.cpp
         telegram/auth.cpp
         telegram/session.cpp
@@ -64,7 +81,7 @@ if(TV_BUILD_TDLIB)
         schedule/schedule.cpp
         schedule/systemd.cpp
     )
-    list(APPEND CORE_HEADERS
+    list(APPEND APP_HEADERS
         telegram/client.hpp
         telegram/auth.hpp
         telegram/session.hpp
@@ -78,47 +95,37 @@ if(TV_BUILD_TDLIB)
         schedule/schedule.hpp
         schedule/systemd.hpp
     )
+else()
+    list(APPEND APP_SOURCES stubs.cpp)
 endif()
 
-# ── Optional features ──────────────────────────────────────────────────
 if(TV_BUILD_FUSE)
-    list(APPEND CORE_SOURCES fuse/fuse_ops.cpp fuse/cache.cpp)
-    list(APPEND CORE_HEADERS fuse/fuse_ops.hpp fuse/cache.hpp)
+    list(APPEND APP_SOURCES fuse/fuse_ops.cpp fuse/cache.cpp)
+    list(APPEND APP_HEADERS fuse/fuse_ops.hpp fuse/cache.hpp)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(FUSE3 REQUIRED IMPORTED_TARGET fuse3)
 endif()
 
 if(TV_BUILD_WEBDAV)
-    list(APPEND CORE_SOURCES webdav/server.cpp webdav/handler.cpp)
-    list(APPEND CORE_HEADERS webdav/server.hpp webdav/handler.hpp)
+    list(APPEND APP_SOURCES webdav/server.cpp webdav/handler.cpp)
+    list(APPEND APP_HEADERS webdav/server.hpp webdav/handler.hpp)
 endif()
 
 if(TV_BUILD_TUI)
-    list(APPEND CORE_SOURCES tui/tui.cpp)
-    list(APPEND CORE_HEADERS tui/tui.hpp)
+    list(APPEND APP_SOURCES tui/tui.cpp)
+    list(APPEND APP_HEADERS tui/tui.hpp)
 endif()
 
-# ── Core library (shared among tests and main binary) ──────────────────
-add_library(tv_core OBJECT ${CORE_SOURCES} ${CORE_HEADERS})
-target_include_directories(tv_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_definitions(tv_core PRIVATE TELEVAULT_VERSION="${PROJECT_VERSION}")
-target_compile_definitions(tv_core PRIVATE $<$<BOOL:${TV_BUILD_TDLIB}>:TV_BUILD_TDLIB>)
-
-target_link_libraries(tv_core PUBLIC
-    CLI11::CLI11
-    nlohmann_json::nlohmann_json
-    spdlog::spdlog
-    OpenSSL::SSL
-    OpenSSL::Crypto
-    PkgConfig::ZSTD
-    PkgConfig::BLAKE3
-    pthread
-)
+add_library(tv_app STATIC ${APP_SOURCES} ${APP_HEADERS})
+target_include_directories(tv_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(tv_app PUBLIC TELEVAULT_VERSION="${PROJECT_VERSION}")
+target_compile_definitions(tv_app PUBLIC $<$<BOOL:${TV_BUILD_TDLIB}>:TV_BUILD_TDLIB>)
+target_link_libraries(tv_app PUBLIC tv_core)
 
 if(TV_BUILD_TDLIB)
-    target_include_directories(tv_core PUBLIC ${Boost_INCLUDE_DIRS})
-    # Link tdlib in correct order for static linking (reverse dep graph)
-    target_link_libraries(tv_core PUBLIC
+    target_include_directories(tv_app PUBLIC ${Boost_INCLUDE_DIRS})
+    target_link_libraries(tv_app PUBLIC
+        "-Wl,--start-group"
         Td::tdclient
         Td::tdcore
         Td::tdapi
@@ -126,35 +133,26 @@ if(TV_BUILD_TDLIB)
         Td::tddb
         Td::tdactor
         Td::tdutils
-        Td::tdsqlite)
+        Td::tdsqlite
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        "-Wl,--end-group"
+        ${CMAKE_DL_LIBS}
+        z
+    )
 endif()
 
 if(TV_BUILD_FUSE)
-    target_link_libraries(tv_core PUBLIC PkgConfig::FUSE3)
+    target_link_libraries(tv_app PUBLIC PkgConfig::FUSE3)
 endif()
 
 if(TV_BUILD_TUI)
-    target_link_libraries(tv_core PUBLIC ftxui::screen ftxui::dom ftxui::component)
+    target_link_libraries(tv_app PUBLIC ftxui::screen ftxui::dom ftxui::component)
 endif()
 
 # ── Main binary ────────────────────────────────────────────────────────
-add_executable(televault)
-target_link_libraries(televault PRIVATE tv_core)
-
-if(TV_BUILD_TDLIB)
-    # Use --whole-archive to force all tdlib objects into the binary
-    target_link_options(televault PRIVATE
-        "LINKER:--whole-archive"
-        "LINKER:$<TARGET_LINKER_FILE:Td::tdclient>"
-        "LINKER:$<TARGET_LINKER_FILE:Td::tdcore>"
-        "LINKER:$<TARGET_LINKER_FILE:Td::tdapi>"
-        "LINKER:$<TARGET_LINKER_FILE:Td::tdnet>"
-        "LINKER:$<TARGET_LINKER_FILE:Td::tddb>"
-        "LINKER:$<TARGET_LINKER_FILE:Td::tdactor>"
-        "LINKER:$<TARGET_LINKER_FILE:Td::tdutils>"
-        "LINKER:$<TARGET_LINKER_FILE:Td::tdsqlite>"
-        "LINKER:--no-whole-archive")
-endif()
+add_executable(televault main.cpp)
+target_link_libraries(televault PRIVATE tv_app)
 
 # ── Alias ──────────────────────────────────────────────────────────────
 add_executable(tvt ALIAS televault)
