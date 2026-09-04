@@ -7,6 +7,8 @@
 #include <optional>
 #include <cstdint>
 #include <span>
+#include <mutex>
+#include <atomic>
 
 namespace tv {
 

@@ -39,8 +39,9 @@ bool ConfigManager::load() {
                 // Backward compat: convert flat retry fields to nested
                 if (!j.contains("retry") && j.contains("max_retries")) {
                     nlohmann::json r;
-                    r["max_retries"] = j.value("max_retries", 5);
-                    r["base_delay_ms"] = static_cast<int>(j.value("retry_delay", 1.0) * 1000);
+                    r["max_retries"] = (!j["max_retries"].is_null()) ? j["max_retries"].get<int>() : 5;
+                    double rd = (j.contains("retry_delay") && !j["retry_delay"].is_null()) ? j["retry_delay"].get<double>() : 1.0;
+                    r["base_delay_ms"] = static_cast<int>(rd * 1000);
                     r["max_delay_ms"] = r["base_delay_ms"];
                     r["jitter_factor"] = 0.1;
                     j["retry"] = std::move(r);
@@ -48,11 +49,12 @@ bool ConfigManager::load() {
                 // Backward compat: convert flat low_resource fields to nested
                 if (!j.contains("low_resource") && j.contains("low_resource_mode")) {
                     nlohmann::json lr;
-                    lr["enabled"] = j.value("low_resource_mode", false);
-                    lr["chunk_size"] = j.value("low_resource_chunk_size", 33554432);
-                    lr["parallel_uploads"] = j.value("low_resource_parallelism", 2);
-                    lr["parallel_downloads"] = j.value("low_resource_parallelism", 2);
-                    lr["hasher_threads"] = j.value("low_resource_hash_workers", 1);
+                    lr["enabled"] = (!j["low_resource_mode"].is_null()) ? j["low_resource_mode"].get<bool>() : false;
+                    lr["chunk_size"] = (j.contains("low_resource_chunk_size") && !j["low_resource_chunk_size"].is_null()) ? j["low_resource_chunk_size"].get<uint64_t>() : 33554432;
+                    int par = (j.contains("low_resource_parallelism") && !j["low_resource_parallelism"].is_null()) ? j["low_resource_parallelism"].get<int>() : 2;
+                    lr["parallel_uploads"] = par;
+                    lr["parallel_downloads"] = par;
+                    lr["hasher_threads"] = (j.contains("low_resource_hash_workers") && !j["low_resource_hash_workers"].is_null()) ? j["low_resource_hash_workers"].get<int>() : 1;
                     lr["sequential_download"] = true;
                     lr["max_no_compress_size"] = 524288000;
                     j["low_resource"] = std::move(lr);
@@ -84,8 +86,8 @@ bool ConfigManager::load() {
             try {
                 nlohmann::json j;
                 tg_f >> j;
-                if (j.contains("api_id")) config_.telegram.api_id = j["api_id"];
-                if (j.contains("api_hash")) config_.telegram.api_hash = j["api_hash"].get<std::string>();
+                if (j.contains("api_id") && !j["api_id"].is_null()) config_.telegram.api_id = j["api_id"].get<int32_t>();
+                if (j.contains("api_hash") && !j["api_hash"].is_null()) config_.telegram.api_hash = j["api_hash"].get<std::string>();
             } catch (...) {}
         }
     }

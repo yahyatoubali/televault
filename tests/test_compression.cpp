@@ -3,6 +3,8 @@
 #include <span>
 #include <cstdint>
 #include <string>
+#include <filesystem>
+#include <fstream>
 
 #include "compress/zstd.hpp"
 #include "compress/stream.hpp"
@@ -41,6 +43,17 @@ TEST(CompressionTest, ShouldCompress) {
     EXPECT_FALSE(should_compress("archive.zip"));
     EXPECT_FALSE(should_compress("video.mp4"));
     EXPECT_FALSE(should_compress("music.mp3"));
+    EXPECT_FALSE(should_compress("photo.heic"));
+    EXPECT_FALSE(should_compress("archive.tar.gz"));
+    EXPECT_FALSE(should_compress("archive.tgz"));
+    EXPECT_FALSE(should_compress("archive.xz"));
+    EXPECT_FALSE(should_compress("document.pdf"));
+    EXPECT_FALSE(should_compress("word.docx"));
+    EXPECT_TRUE(should_compress("uncompressed.bmp"));
+    EXPECT_TRUE(should_compress("recording.wav"));
+    EXPECT_TRUE(is_compressible("script.py"));
+    EXPECT_FALSE(is_compressible("path/to/archive.zip"));
+    EXPECT_FALSE(should_compress("IMAGE.JPG"));
 }
 
 TEST(CompressionTest, CompressionLevels) {
@@ -83,7 +96,65 @@ TEST(CompressionTest, StreamingCompression) {
     EXPECT_EQ(decompressed, data);
 }
 
+TEST(CompressionTest, StreamingCompressorProperties) {
+    StreamingCompressor comp(3);
+    std::vector<uint8_t> data(20000, 'C');
+    auto part1 = comp.compress(std::span<const uint8_t>(data.data(), 10000));
+    auto flushed = comp.flush();
+    auto part2 = comp.compress(std::span<const uint8_t>(data.data() + 10000, 10000));
+    auto finalized = comp.finalize();
+
+    EXPECT_EQ(comp.total_in(), 20000);
+    EXPECT_GT(comp.total_out(), 0);
+    EXPECT_LT(comp.ratio(), 0.1);
+}
+
+TEST(CompressionTest, DecompressUnknownContentSize) {
+    StreamingCompressor comp(3);
+    std::vector<uint8_t> data(50000, 'D');
+    auto chunk = comp.compress(data);
+    auto end = comp.finalize();
+    chunk.insert(chunk.end(), end.begin(), end.end());
+
+    auto decompressed = decompress_data(chunk);
+    EXPECT_EQ(decompressed, data);
+}
+
 TEST(CompressionTest, EstimateCompressedSize) {
-    auto bound = estimate_compressed_size(1000);
-    EXPECT_GE(bound, 1000);
+    EXPECT_EQ(estimate_compressed_size(1000, "file.txt"), 200);
+    EXPECT_EQ(estimate_compressed_size(1000, "script.py"), 250);
+    EXPECT_EQ(estimate_compressed_size(1000, "main.cpp"), 250);
+    EXPECT_EQ(estimate_compressed_size(1000, "archive.tar"), 600);
+    EXPECT_EQ(estimate_compressed_size(1000, "archive.zip"), 1000);
+    EXPECT_EQ(estimate_compressed_size(1000, "unknown.bin"), 500);
+    EXPECT_EQ(estimate_compressed_size(1000), 500);
+    EXPECT_GE(compress_bound(1000), 1000);
+}
+
+TEST(CompressionTest, CompressDecompressFileRoundtrip) {
+    auto tmp_dir = std::filesystem::temp_directory_path();
+    auto in_file = tmp_dir / "televault_test_in.txt";
+    auto cmp_file = tmp_dir / "televault_test_cmp.zst";
+    auto out_file = tmp_dir / "televault_test_out.txt";
+
+    std::ofstream fout(in_file);
+    for (int i = 0; i < 1000; ++i) {
+        fout << "Line " << i << ": TeleVault compression file test payload repeated\n";
+    }
+    fout.close();
+
+    double ratio = compress_file(in_file, cmp_file);
+    EXPECT_LT(ratio, 0.25);
+
+    decompress_file(cmp_file, out_file);
+
+    std::ifstream f_orig(in_file, std::ios::binary);
+    std::ifstream f_dec(out_file, std::ios::binary);
+    std::string orig_str((std::istreambuf_iterator<char>(f_orig)), std::istreambuf_iterator<char>());
+    std::string dec_str((std::istreambuf_iterator<char>(f_dec)), std::istreambuf_iterator<char>());
+    EXPECT_EQ(orig_str, dec_str);
+
+    std::filesystem::remove(in_file);
+    std::filesystem::remove(cmp_file);
+    std::filesystem::remove(out_file);
 }

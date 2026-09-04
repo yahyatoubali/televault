@@ -68,6 +68,7 @@ std::string SessionManager::resolve_data_dir() { return {}; }
 // ── AppContext stubs ──────────────────────────────────────────────────
 
 bool AppContext::initialize() { return false; }
+bool AppContext::ensure_vault() { return false; }
 void AppContext::shutdown() {}
 
 // ── TeleVault stubs ───────────────────────────────────────────────────
@@ -77,7 +78,7 @@ TeleVault::~TeleVault() = default;
 bool TeleVault::initialize(int64_t, bool) { return false; }
 bool TeleVault::push(const std::string&, const VaultOptions&, ProgressCallback) { return false; }
 bool TeleVault::pull(const std::string&, const std::string&, const VaultOptions&, ProgressCallback) { return false; }
-bool TeleVault::cat(const std::string&, ProgressCallback) { return false; }
+bool TeleVault::cat(const std::string&, const VaultOptions&, ProgressCallback) { return false; }
 std::vector<FileEntry> TeleVault::list_files() const { return {}; }
 std::vector<FileEntry> TeleVault::find_files(const std::string&) const { return {}; }
 std::optional<FileMetadata> TeleVault::get_file_info(const std::string&) const { return std::nullopt; }

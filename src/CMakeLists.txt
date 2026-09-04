@@ -1,5 +1,6 @@
 # ── Core library (Independent of Telegram / Tdlib) ─────────────────────
 set(CORE_SOURCES
+    async/executor.cpp
     util/logging.cpp
     util/config.cpp
     util/retry.cpp
@@ -18,6 +19,7 @@ set(CORE_SOURCES
 )
 
 set(CORE_HEADERS
+    async/executor.hpp
     util/logging.hpp
     util/config.hpp
     util/retry.hpp
@@ -41,7 +43,7 @@ set(CORE_HEADERS
 )
 
 add_library(tv_core STATIC ${CORE_SOURCES} ${CORE_HEADERS})
-target_include_directories(tv_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(tv_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${Boost_INCLUDE_DIRS})
 target_compile_definitions(tv_core PUBLIC TELEVAULT_VERSION="${PROJECT_VERSION}")
 target_compile_definitions(tv_core PUBLIC $<$<BOOL:${TV_BUILD_TDLIB}>:TV_BUILD_TDLIB>)
 
@@ -59,6 +61,7 @@ target_link_libraries(tv_core PUBLIC
 # ── Application & Services Layer ───────────────────────────────────────
 set(APP_SOURCES
     cli/cli.cpp
+    cli/progress.cpp
 )
 
 set(APP_HEADERS

@@ -64,6 +64,7 @@ spdlog-src/
 site/
 
 # AI / LLM tool configs (local, not for repo)
+.agents/
 .qwen/
 .claude/
 .cursor/

@@ -2,10 +2,14 @@
 #include <vector>
 #include <span>
 #include <cstdint>
+#include <array>
+#include <string>
+#include <openssl/evp.h>
 
 // Include the actual crypto implementation
 #include "crypto/aes256gcm.hpp"
 #include "crypto/kdf.hpp"
+#include "crypto/stream.hpp"
 
 using namespace tv;
 
@@ -32,8 +36,8 @@ TEST(CryptoTest, EncryptDecryptRoundTrip) {
 
     auto ciphertext = encrypt_chunk(plaintext, key);
 
-    // Ciphertext should be nonce(12) + encrypted + tag(16)
-    EXPECT_GT(ciphertext.size(), plaintext.size() + 12);
+    // Ciphertext should be salt(16) + nonce(12) + encrypted + tag(16) = plaintext + 44
+    EXPECT_EQ(ciphertext.size(), plaintext.size() + 44);
     EXPECT_NE(ciphertext, plaintext); // should be different
 
     auto decrypted = decrypt_chunk(ciphertext, key);
@@ -80,10 +84,136 @@ TEST(CryptoTest, UniqueNoncePerEncryption) {
     auto ct1 = encrypt_chunk(plaintext, key);
     auto ct2 = encrypt_chunk(plaintext, key);
 
-    // Nonces should differ (only first 12 bytes)
+    // Nonces should differ (bytes 16..27) and salts should differ (bytes 0..15)
     bool nonces_differ = false;
-    for (int i = 0; i < 12; ++i) {
+    for (size_t i = 16; i < 28; ++i) {
         if (ct1[i] != ct2[i]) { nonces_differ = true; break; }
     }
     EXPECT_TRUE(nonces_differ);
+}
+
+TEST(CryptoTest, WireFormat44BytesAndZeroLength) {
+    std::vector<uint8_t> key(32, 0xEE);
+    std::vector<uint8_t> empty;
+    auto ct = encrypt_chunk(empty, key);
+    EXPECT_EQ(ct.size(), 44);
+    auto pt = decrypt_chunk(ct, key);
+    EXPECT_TRUE(pt.empty());
+}
+
+TEST(CryptoTest, EncryptionHeaderSerialization) {
+    auto hdr = EncryptionHeader::generate();
+    auto bytes = hdr.to_bytes();
+    EXPECT_EQ(bytes.size(), EncryptionHeader::SIZE);
+    auto parsed = EncryptionHeader::from_bytes(bytes);
+    EXPECT_EQ(parsed.salt, hdr.salt);
+    EXPECT_EQ(parsed.nonce, hdr.nonce);
+}
+
+TEST(CryptoTest, DualWireFormatLegacySupport) {
+    std::vector<uint8_t> key(32, 0x55);
+    std::vector<uint8_t> plaintext = {'L', 'e', 'g', 'a', 'c', 'y', '!'};
+    
+    // Manually construct legacy 28-byte chunk: [nonce:12][ct][tag:16]
+    std::array<uint8_t, 12> legacy_nonce{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+    
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    ASSERT_NE(ctx, nullptr);
+    EXPECT_EQ(EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr), 1);
+    EXPECT_EQ(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, 12, nullptr), 1);
+    EXPECT_EQ(EVP_EncryptInit_ex(ctx, nullptr, nullptr, key.data(), legacy_nonce.data()), 1);
+    
+    std::vector<uint8_t> ct(plaintext.size() + 16);
+    int len = 0, ct_len = 0;
+    EXPECT_EQ(EVP_EncryptUpdate(ctx, ct.data(), &len, plaintext.data(), static_cast<int>(plaintext.size())), 1);
+    ct_len = len;
+    EXPECT_EQ(EVP_EncryptFinal_ex(ctx, ct.data() + ct_len, &len), 1);
+    ct_len += len;
+    ct.resize(ct_len);
+    
+    std::array<uint8_t, 16> tag{};
+    EXPECT_EQ(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, 16, tag.data()), 1);
+    EVP_CIPHER_CTX_free(ctx);
+    
+    std::vector<uint8_t> legacy_payload;
+    legacy_payload.insert(legacy_payload.end(), legacy_nonce.begin(), legacy_nonce.end());
+    legacy_payload.insert(legacy_payload.end(), ct.begin(), ct.end());
+    legacy_payload.insert(legacy_payload.end(), tag.begin(), tag.end());
+    
+    EXPECT_EQ(legacy_payload.size(), plaintext.size() + 28);
+    
+    auto decrypted = decrypt_chunk(legacy_payload, key);
+    EXPECT_EQ(decrypted, plaintext);
+}
+
+TEST(CryptoTest, StreamingEncryptDecryptRoundTrip) {
+    std::vector<uint8_t> key(32, 0x77);
+    std::array<uint8_t, 12> base_nonce{10, 11, 12, 13, 14, 15, 16, 17, 0, 0, 0, 0};
+    
+    StreamingEncryptor enc(key, base_nonce);
+    StreamingDecryptor dec(key, base_nonce);
+    
+    std::vector<uint8_t> b1 = {'B', 'l', 'o', 'c', 'k', '1'};
+    std::vector<uint8_t> b2 = {'B', 'l', 'o', 'c', 'k', '2', '!'};
+    
+    auto eb1 = enc.process(b1);
+    auto eb2 = enc.process(b2);
+    
+    EXPECT_EQ(eb1.size(), b1.size() + 16);
+    EXPECT_EQ(eb2.size(), b2.size() + 16);
+    
+    auto db1 = dec.process(eb1);
+    auto db2 = dec.process(eb2);
+    EXPECT_EQ(db1, b1);
+    EXPECT_EQ(db2, b2);
+}
+
+TEST(CryptoTest, StreamingOutOfOrderRejection) {
+    std::vector<uint8_t> key(32, 0x88);
+    std::array<uint8_t, 12> base_nonce{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+    
+    StreamingEncryptor enc(key, base_nonce);
+    StreamingDecryptor dec(key, base_nonce);
+    
+    auto eb0 = enc.process(std::vector<uint8_t>{'A', 'A'});
+    auto eb1 = enc.process(std::vector<uint8_t>{'B', 'B'});
+    
+    // Attempting to decrypt eb1 when expecting block 0 must throw
+    EXPECT_THROW(dec.process(eb1), std::runtime_error);
+}
+
+TEST(CryptoTest, PBKDF2KeyDerivationParity) {
+    std::string pass = "password";
+    std::vector<uint8_t> salt = {'s', 'a', 'l', 't', '1', '2', '3', '4', '5', '6', '7', '8'};
+    auto key = derive_key_pbkdf2(pass, salt, 100000);
+    EXPECT_EQ(key.size(), 32);
+    
+    // Expected hex: 73E81BDF8A029687E80A3766F2E19D4D1057D4CC3385842BE82A6904E559DA5E
+    EXPECT_EQ(key[0], 0x73);
+    EXPECT_EQ(key[1], 0xE8);
+    EXPECT_EQ(key[31], 0x5E);
+}
+
+TEST(CryptoTest, Argon2idKeyDerivationParity) {
+    std::string pass = "password";
+    std::vector<uint8_t> salt = {'s', 'a', 'l', 't', '1', '2', '3', '4', '5', '6', '7', '8'};
+    auto key = derive_key_argon2id(pass, salt, 1, 65536, 1);
+    EXPECT_EQ(key.size(), 32);
+    // Expected hex: 449428F91BF4B8E574B5CC77696718723C97523ACF4B051B7B9372C60EC4DD9D
+    EXPECT_EQ(key[0], 0x44);
+    EXPECT_EQ(key[1], 0x94);
+    EXPECT_EQ(key[31], 0x9D);
+}
+
+TEST(CryptoTest, PasswordBasedEncryptDecrypt) {
+    std::string pass = "vault_master_pass";
+    std::vector<uint8_t> plaintext = {'S', 'e', 'c', 'r', 'e', 't', '!'};
+    
+    auto ct = encrypt_chunk(plaintext, pass);
+    EXPECT_EQ(ct.size(), plaintext.size() + 44);
+    
+    auto pt = decrypt_chunk(ct, pass);
+    EXPECT_EQ(pt, plaintext);
+    
+    EXPECT_THROW(decrypt_chunk(ct, "wrong_pass"), std::runtime_error);
 }

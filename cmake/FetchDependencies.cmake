@@ -50,22 +50,20 @@ if(TV_BUILD_TUI)
     )
 endif()
 
-# ── Boost (Asio + Beast — header-only, needed for WebDAV/tdlib) ───────
+# ── Boost (Asio + Beast — header-only, needed for async/WebDAV/tdlib) ──
 # Manually find Boost headers since FindBoost module is removed in CMake 4
-if(TV_BUILD_WEBDAV OR TV_BUILD_TDLIB)
-    find_path(Boost_INCLUDE_DIRS boost/version.hpp
-        HINTS
-            $ENV{HOME}/.local/include
-            /usr/include
-            /usr/local/include
-            ${CMAKE_PREFIX_PATH}/include
-            ${BOOST_ROOT}/include
-    )
-    if(Boost_INCLUDE_DIRS)
-        message(STATUS "Found Boost headers: ${Boost_INCLUDE_DIRS}")
-    else()
-        message(FATAL_ERROR "Boost headers not found — install boost or set BOOST_ROOT")
-    endif()
+find_path(Boost_INCLUDE_DIRS boost/asio.hpp
+    HINTS
+        $ENV{HOME}/.local/include
+        /usr/include
+        /usr/local/include
+        ${CMAKE_PREFIX_PATH}/include
+        ${BOOST_ROOT}/include
+)
+if(Boost_INCLUDE_DIRS)
+    message(STATUS "Found Boost headers: ${Boost_INCLUDE_DIRS}")
+else()
+    message(FATAL_ERROR "Boost headers not found — install boost or set BOOST_ROOT")
 endif()
 
 # ── Make available ─────────────────────────────────────────────────────

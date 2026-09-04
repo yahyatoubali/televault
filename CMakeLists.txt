@@ -17,6 +17,7 @@ option(TV_BUILD_WEBDAV "Build WebDAV support" OFF)
 option(TV_BUILD_TUI   "Build TUI support"   OFF)
 option(TV_BUILD_TESTS "Build tests"         ON)
 option(TV_LOW_RESOURCE "Low-resource defaults" OFF)
+option(TV_ENABLE_SANITIZERS "Enable AddressSanitizer (ASan) and UndefinedBehaviorSanitizer (UBSan)" OFF)
 
 # ── System dependencies ───────────────────────────────────────────────
 find_package(OpenSSL REQUIRED)
@@ -28,10 +29,61 @@ pkg_check_modules(BLAKE3 REQUIRED IMPORTED_TARGET libblake3)
 include(FetchContent)
 include(cmake/FetchDependencies.cmake)
 
-# ── Compiler warnings and flags ─────────────────────────────────────────
+# ── Default build type ─────────────────────────────────────────────────
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Choose the type of build." FORCE)
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
+endif()
+
+# ── Position-independent code ──────────────────────────────────────────
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# ── Compiler warnings, hardening, and sanitizers ────────────────────────
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(-Wall -Wextra -Wpedantic -Werror=return-type)
-    add_compile_options(-Wno-unused-parameter)
+    # Base warnings
+    add_compile_options(
+        -Wall
+        -Wextra
+        -Wpedantic
+        -Werror=return-type
+        -Wno-unused-parameter
+    )
+
+    # Security Hardening: Stack protector & PIE
+    add_compile_options(
+        -fstack-protector-strong
+        -fPIE
+    )
+
+    # Security Hardening: Glibc Fortify Source (only for optimized builds)
+    add_compile_definitions(
+        $<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>,$<CONFIG:MinSizeRel>>:_FORTIFY_SOURCE=2>
+    )
+
+    # Security Hardening: Linker Full RELRO, NX Stack, PIE
+    if(NOT APPLE AND NOT WIN32)
+        add_link_options(
+            -pie
+            -Wl,-z,relro,-z,now
+            -Wl,-z,noexecstack
+        )
+    endif()
+
+    # Dynamic Sanitizers (AddressSanitizer + UndefinedBehaviorSanitizer)
+    if(TV_ENABLE_SANITIZERS)
+        message(STATUS "TeleVault: AddressSanitizer and UndefinedBehaviorSanitizer enabled")
+        message(STATUS "TeleVault: Disabling vptr sanitizer (-fno-sanitize=vptr) due to TDLib -fno-rtti")
+        add_compile_options(
+            -fsanitize=address,undefined
+            -fno-sanitize=vptr
+            -fno-omit-frame-pointer
+            -g
+        )
+        add_link_options(
+            -fsanitize=address,undefined
+            -fno-sanitize=vptr
+        )
+    endif()
 endif()
 
 # ── Sources ────────────────────────────────────────────────────────────
