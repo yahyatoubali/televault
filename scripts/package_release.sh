@@ -7,7 +7,7 @@ cd "$ROOT_DIR"
 
 VERSION="${1:-3.5.0}"
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-ARCH="$(uname -m)"
+ARCH="${2:-$(uname -m)}"
 
 case "$ARCH" in
     x86_64|amd64) ARCH="x86_64" ;;
@@ -20,23 +20,32 @@ DIST_DIR="$ROOT_DIR/dist"
 STAGE_DIR="$ROOT_DIR/build/stage/televault-v${VERSION}-${OS}-${ARCH}"
 ARCHIVE_NAME="televault-v${VERSION}-${OS}-${ARCH}.tar.gz"
 
-echo "==> Building TeleVault v${VERSION} for ${OS}-${ARCH}..."
+BINARY_PATH="${3:-$ROOT_DIR/build/src/televault}"
+SKIP_BUILD="${SKIP_BUILD:-0}"
 
-mkdir -p "$ROOT_DIR/build"
-cd "$ROOT_DIR/build"
-cmake .. \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DTV_BUILD_TDLIB=ON \
-    -DTV_BUILD_TESTS=ON \
-    -DTV_BUILD_FUSE=OFF \
-    -DTV_BUILD_WEBDAV=OFF \
-    -DTV_BUILD_TUI=OFF
+if [ "$SKIP_BUILD" != "1" ] && [ ! -f "$BINARY_PATH" ]; then
+    echo "==> Building TeleVault v${VERSION} for ${OS}-${ARCH}..."
+    mkdir -p "$ROOT_DIR/build"
+    cd "$ROOT_DIR/build"
+    cmake .. \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DTV_BUILD_TDLIB=ON \
+        -DTV_BUILD_TESTS=ON \
+        -DTV_BUILD_FUSE=OFF \
+        -DTV_BUILD_WEBDAV=OFF \
+        -DTV_BUILD_TUI=OFF
 
-cmake --build . --target televault -j"$(nproc)"
+    cmake --build . --target televault -j"$(nproc)"
+fi
 
-echo "==> Packaging release archive..."
+if [ ! -f "$BINARY_PATH" ]; then
+    echo "Error: Binary not found at $BINARY_PATH" >&2
+    exit 1
+fi
+
+echo "==> Packaging release archive for ${OS}-${ARCH}..."
 mkdir -p "$DIST_DIR" "$STAGE_DIR"
-cp "$ROOT_DIR/build/src/televault" "$STAGE_DIR/"
+cp "$BINARY_PATH" "$STAGE_DIR/televault"
 strip "$STAGE_DIR/televault" 2>/dev/null || true
 ln -sf televault "$STAGE_DIR/tvt"
 cp "$ROOT_DIR/README.md" "$STAGE_DIR/" 2>/dev/null || true

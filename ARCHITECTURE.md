@@ -170,3 +170,16 @@ Instead of pulling multi-gigabyte files to preview content:
 - Detects created, modified, or moved files with exclusion pattern filtering.
 - Automatically pushes modified files to the Telegram vault.
 - Controlled by an atomic stop flag and clean `SIGINT` / `SIGTERM` signal handlers to ensure zero corrupted uploads or orphan state on interruption.
+
+---
+
+## 7. Multi-Architecture & Cross-Platform Support
+
+TeleVault's core engine is written in portable standard ISO C++23:
+- **Zero Architecture-Specific Assembly**: Avoids unportable inline assembly; leverages compiler intrinsics and vector extensions where supported.
+- **Endian Independence**: Network and index protocols enforce explicit little-endian byte ordering for chunk headers and Blake3 / AES authentication primitives.
+- **Target Architectures**:
+  - `x86_64` (`amd64`): Modern Intel and AMD 64-bit platforms.
+  - `aarch64` (`arm64`): 64-bit ARM platforms including Apple Silicon (via Linux), Raspberry Pi 4/5, and cloud ARM servers (AWS Graviton, Ampere Altra).
+- **Automated Multi-Arch CI/CD**: GitHub Actions workflow builds and packages native binaries for both `x86_64` and `aarch64` on native runner hardware.
+

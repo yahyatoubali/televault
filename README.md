@@ -46,14 +46,19 @@ TeleVault turns a **private Telegram channel** into an encrypted, unlimited clou
 
 ---
 
-## Quick Install (Pre-built Binary)
+## Quick Install (Pre-built Binaries)
 
-Download the latest pre-compiled Linux x86_64 release from [GitHub Releases](https://github.com/yahyatoubali/televault/releases/latest):
+TeleVault provides pre-compiled native binaries for **x86_64** (`amd64`) and **aarch64** (`arm64`, Raspberry Pi 4/5, Apple Silicon Linux, AWS Graviton) from [GitHub Releases](https://github.com/yahyatoubali/televault/releases/latest):
 
 ```bash
+# Auto-detect your CPU architecture (x86_64 or aarch64)
+ARCH=$(uname -m)
+[ "$ARCH" = "arm64" ] && ARCH="aarch64"
+
 # Download and unpack
-tar -xzf televault-v3.5.0-linux-x86_64.tar.gz
-cd televault-v3.5.0-linux-x86_64
+curl -sLO "https://github.com/yahyatoubali/televault/releases/latest/download/televault-v3.5.0-linux-${ARCH}.tar.gz"
+tar -xzf "televault-v3.5.0-linux-${ARCH}.tar.gz"
+cd "televault-v3.5.0-linux-${ARCH}"
 
 # Install to system PATH
 sudo cp televault /usr/local/bin/televault

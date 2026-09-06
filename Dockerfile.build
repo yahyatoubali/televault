@@ -1,0 +1,27 @@
+# Multi-architecture build image for TeleVault
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends \
+        build-essential \
+        g++-14 \
+        cmake \
+        git \
+        pkg-config \
+        libssl-dev \
+        libzstd-dev \
+        libblake3-dev \
+        libboost-dev \
+        libfuse3-dev \
+        ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# Set default compiler
+ENV CXX=g++-14
+ENV CC=gcc-14
+
+ENTRYPOINT ["/bin/bash"]
