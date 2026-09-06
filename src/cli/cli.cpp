@@ -7,11 +7,20 @@
 #include "../core/vault.hpp"
 #include "../util/config.hpp"
 #include "../util/format.hpp"
+#include "../preview/preview.hpp"
+#include "../backup/engine.hpp"
+#include "../watcher/watcher.hpp"
 
 #include <iostream>
 #include <print>
 #include <format>
 #include <string>
+#include <fstream>
+#include <csignal>
+#include <thread>
+#include <chrono>
+#include <atomic>
+#include <filesystem>
 #include <spdlog/spdlog.h>
 
 namespace tv {
@@ -401,10 +410,245 @@ namespace {
     }
 
     // ── Preview ───────────────────────────────────────────────────────
-    void cmd_preview(AppContext& ctx, const std::string& path) {
-        ctx.initialize();
-        print_info("Preview: " + path);
-        // Preview implementation goes here
+    void cmd_preview(AppContext& ctx, const std::string& path, const std::string& password) {
+        // 1. If path is a local file, preview directly
+        if (std::filesystem::exists(path) && std::filesystem::is_regular_file(path)) {
+            PreviewEngine engine;
+            auto res = engine.preview(path);
+            std::println("\033[1;34m=== Preview: {} ===\033[0m", path);
+            std::println("Size:      {} ({} bytes)", format_size(std::filesystem::file_size(path)), std::filesystem::file_size(path));
+            std::println("MIME type: {}", res.mime_type);
+            std::println("----------------------------------------");
+            std::println("{}", res.text_preview);
+            return;
+        }
+
+        // 2. Otherwise preview from vault
+        ensure_vault(ctx);
+        auto meta = ctx.vault->get_file_info(path);
+        if (!meta) {
+            print_error("File not found in vault: " + path);
+            return;
+        }
+
+        VaultOptions opts;
+        opts.encrypted = meta->encrypted;
+        if (opts.encrypted) {
+            opts.password = resolve_password(password);
+            if (opts.password.empty()) {
+                print_error("Password required to preview encrypted file");
+                return;
+            }
+        }
+        opts.compressed = meta->compressed;
+
+        auto chunk0_data = ctx.vault->read_first_chunk(path, opts);
+        if (!chunk0_data || chunk0_data->empty()) {
+            print_error("Failed to fetch chunk for preview");
+            return;
+        }
+
+        auto tmp = std::filesystem::temp_directory_path() /
+            std::format("tvt_prev_{}_{}", meta->id, std::rand());
+        {
+            std::ofstream f(tmp, std::ios::binary);
+            f.write(reinterpret_cast<const char*>(chunk0_data->data()), chunk0_data->size());
+        }
+
+        PreviewEngine engine;
+        auto res = engine.preview(tmp.string(), meta->name);
+        std::filesystem::remove(tmp);
+
+        std::println("\033[1;34m=== Preview: {} ===\033[0m", meta->name);
+        std::println("Size:      {} ({} bytes)", format_size(meta->size), meta->size);
+        std::println("MIME type: {}", res.mime_type);
+        std::println("Encrypted: {}", meta->encrypted ? "yes" : "no");
+        std::println("Compressed:{}", meta->compressed ? "yes" : "no");
+        std::println("----------------------------------------");
+        std::println("{}", res.text_preview);
+    }
+
+    // ── Backup ────────────────────────────────────────────────────────
+    void cmd_backup_create(AppContext& ctx, const std::vector<std::string>& paths,
+                           const std::string& name, const std::string& password, bool incremental) {
+        ensure_vault(ctx);
+        if (paths.empty()) {
+            print_error("At least one path must be specified for backup");
+            return;
+        }
+        auto& cfg = ConfigManager::instance().get();
+        std::string pass = password;
+        if (cfg.encryption && pass.empty()) {
+            pass = resolve_password("");
+            if (pass.empty()) {
+                print_error("Password cannot be empty when encryption is enabled");
+                return;
+            }
+        }
+
+        BackupEngine engine(*ctx.vault, ctx.tg_client);
+        std::string snap_name = name.empty() ? std::format("backup_{}", std::filesystem::path(paths[0]).filename().string()) : name;
+        print_info("Creating snapshot: " + snap_name);
+
+        ProgressBar bar;
+        bool ok = engine.create_snapshot(snap_name, paths, pass, incremental,
+            [&bar](const ProgressInfo& p) {
+                bar.update(p.current, p.total, p.stage);
+            });
+        bar.finish();
+        if (ok) {
+            print_success("Snapshot created successfully!");
+        } else {
+            print_error("Failed to create snapshot");
+        }
+    }
+
+    void cmd_backup_list(AppContext& ctx) {
+        ensure_vault(ctx);
+        BackupEngine engine(*ctx.vault, ctx.tg_client);
+        auto snapshots = engine.list_snapshots();
+        if (snapshots.empty()) {
+            std::println("No snapshots found in vault.");
+            return;
+        }
+
+        std::println("{:<16} {:<24} {:<8} {:<12} {:<16}",
+                     "Snapshot ID", "Name", "Files", "Size", "Created");
+        std::println("---------------- ------------------------ -------- ------------ ----------------");
+        for (const auto& s : snapshots) {
+            auto t = std::chrono::system_clock::to_time_t(s.created_at);
+            std::tm tm_buf{};
+            localtime_r(&t, &tm_buf);
+            char date_str[32];
+            std::strftime(date_str, sizeof(date_str), "%Y-%m-%d %H:%M", &tm_buf);
+            std::println("{:<16} {:<24} {:<8} {:<12} {:<16}",
+                         s.id, s.name, s.file_count, format_size(s.total_size), date_str);
+        }
+        std::println("\nTotal: {} snapshot(s)", snapshots.size());
+    }
+
+    void cmd_backup_restore(AppContext& ctx, const std::string& snapshot_id,
+                            const std::string& output_dir, const std::string& password) {
+        ensure_vault(ctx);
+        auto& cfg = ConfigManager::instance().get();
+        std::string pass = password;
+        if (cfg.encryption && pass.empty()) {
+            pass = resolve_password("");
+            if (pass.empty()) {
+                print_error("Password cannot be empty when encryption is enabled");
+                return;
+            }
+        }
+
+        BackupEngine engine(*ctx.vault, ctx.tg_client);
+        print_info(std::format("Restoring snapshot {} to {}...", snapshot_id, output_dir));
+        ProgressBar bar;
+        bool ok = engine.restore_snapshot(snapshot_id, output_dir, pass,
+            [&bar](const ProgressInfo& p) {
+                bar.update(p.current, p.total, p.stage);
+            });
+        bar.finish();
+        if (ok) {
+            print_success("Snapshot restored successfully to: " + output_dir);
+        } else {
+            print_error("Failed to restore snapshot: " + snapshot_id);
+        }
+    }
+
+    void cmd_backup_prune(AppContext& ctx, int daily, int weekly, int monthly) {
+        ensure_vault(ctx);
+        BackupEngine engine(*ctx.vault, ctx.tg_client);
+        RetentionPolicy pol;
+        pol.daily = daily;
+        pol.weekly = weekly;
+        pol.monthly = monthly;
+        if (engine.prune_snapshots(pol)) {
+            print_success("Snapshots pruned according to retention policy.");
+        } else {
+            print_error("Failed to prune snapshots");
+        }
+    }
+
+    void cmd_backup_delete(AppContext& ctx, const std::string& snapshot_id) {
+        ensure_vault(ctx);
+        BackupEngine engine(*ctx.vault, ctx.tg_client);
+        if (engine.delete_snapshot(snapshot_id)) {
+            print_success("Snapshot deleted: " + snapshot_id);
+        } else {
+            print_error("Failed to delete snapshot: " + snapshot_id);
+        }
+    }
+
+    // ── Watch ─────────────────────────────────────────────────────────
+    static std::atomic<bool> g_stop_watching{false};
+
+    void watch_sig_handler(int sig) {
+        if (sig == SIGINT || sig == SIGTERM) {
+            g_stop_watching.store(true, std::memory_order_relaxed);
+        }
+    }
+
+    void cmd_watch(AppContext& ctx, const std::string& dir, const std::string& password,
+                   const std::vector<std::string>& exclusions) {
+        ensure_vault(ctx);
+        if (!std::filesystem::exists(dir) || !std::filesystem::is_directory(dir)) {
+            print_error("Directory does not exist or is not a directory: " + dir);
+            return;
+        }
+
+        auto& cfg = ConfigManager::instance().get();
+        VaultOptions opts;
+        opts.encrypted = cfg.encryption;
+        if (opts.encrypted) {
+            opts.password = resolve_password(password);
+            if (opts.password.empty()) {
+                print_error("Password cannot be empty when encryption is enabled");
+                return;
+            }
+        }
+        opts.compressed = cfg.compression;
+
+        g_stop_watching.store(false);
+        auto prev_handler = std::signal(SIGINT, watch_sig_handler);
+
+        std::println("\033[1;36m[televault] Watching directory: {}\033[0m", std::filesystem::absolute(dir).string());
+        std::println("Press Ctrl+C to stop watching.");
+
+        FileWatcher watcher(dir);
+        if (!exclusions.empty()) {
+            watcher.set_exclusions(exclusions);
+        }
+
+        std::mutex push_mutex;
+        watcher.start([&ctx, &opts, &push_mutex](const std::vector<std::string>& changed) {
+            std::lock_guard lock(push_mutex);
+            for (const auto& path : changed) {
+                if (path.starts_with("[DELETED] ")) {
+                    std::println("\033[33m~ File deleted locally:\033[0m {}", path.substr(10));
+                    continue;
+                }
+                std::println("\033[36m⚡ Change detected:\033[0m {}", path);
+                ProgressBar bar;
+                bool ok = ctx.vault->push(path, opts, [&bar](const ProgressInfo& p) {
+                    bar.update(p.current, p.total, p.stage);
+                });
+                bar.finish();
+                if (ok) {
+                    std::println("\033[32m✓ Synced to vault:\033[0m {}", path);
+                } else {
+                    std::println("\033[31m✗ Sync failed:\033[0m {}", path);
+                }
+            }
+        });
+
+        while (!g_stop_watching.load(std::memory_order_relaxed)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+
+        print_info("Stopping watcher...");
+        watcher.stop();
+        std::signal(SIGINT, prev_handler);
+        print_success("Watcher stopped cleanly.");
     }
 
     // ── Advanced commands (stubs) ─────────────────────────────────────
@@ -416,16 +660,8 @@ namespace {
         print_info("WebDAV server — not yet implemented");
     }
 
-    void cmd_backup(AppContext& ctx, CLI::App* app) {
-        print_info("Backup commands — not yet fully implemented");
-    }
-
     void cmd_schedule(AppContext& ctx) {
         print_info("Schedule commands — not yet fully implemented");
-    }
-
-    void cmd_watch(AppContext& ctx) {
-        print_info("Watch command — not yet fully implemented");
     }
 
 } // anonymous namespace
@@ -564,10 +800,15 @@ void build_cli(CLI::App& app, AppContext& ctx) {
     tui->callback([&ctx]() { cmd_tui(ctx); });
 
     // ── Preview ───────────────────────────────────────────────────────
-    auto preview_path = std::make_shared<std::string>();
+    struct PreviewArgs {
+        std::string path;
+        std::string password;
+    };
+    auto prev_args = std::make_shared<PreviewArgs>();
     auto* preview = app.add_subcommand("preview", "Preview a file");
-    preview->add_option("path", *preview_path, "File path in vault")->required();
-    preview->callback([&ctx, preview_path]() { cmd_preview(ctx, *preview_path); });
+    preview->add_option("path", prev_args->path, "File path in vault or local file")->required();
+    preview->add_option("-p,--password", prev_args->password, "Decryption password (or set TELEVAULT_PASSWORD)");
+    preview->callback([&ctx, prev_args]() { cmd_preview(ctx, prev_args->path, prev_args->password); });
 
     // ── Advanced subcommands ──────────────────────────────────────────
     auto* mount = app.add_subcommand("mount", "Mount FUSE filesystem");
@@ -577,13 +818,80 @@ void build_cli(CLI::App& app, AppContext& ctx) {
     serve->callback([&ctx]() { cmd_serve(ctx); });
 
     auto* backup = app.add_subcommand("backup", "Snapshot backup management");
-    backup->callback([&ctx, backup]() { cmd_backup(ctx, backup); });
+    backup->require_subcommand(1);
+
+    struct BackupCreateArgs {
+        std::vector<std::string> paths;
+        std::string name;
+        std::string password;
+        bool incremental{};
+    };
+    auto bc_args = std::make_shared<BackupCreateArgs>();
+    auto* bk_create = backup->add_subcommand("create", "Create a new snapshot");
+    bk_create->add_option("paths", bc_args->paths, "Paths to include in snapshot")->required();
+    bk_create->add_option("-n,--name", bc_args->name, "Snapshot name");
+    bk_create->add_option("-p,--password", bc_args->password, "Encryption password (or set TELEVAULT_PASSWORD)");
+    bk_create->add_flag("--incremental", bc_args->incremental, "Incremental snapshot");
+    bk_create->callback([&ctx, bc_args]() {
+        cmd_backup_create(ctx, bc_args->paths, bc_args->name, bc_args->password, bc_args->incremental);
+    });
+
+    auto* bk_list = backup->add_subcommand("list", "List snapshots");
+    bk_list->callback([&ctx]() { cmd_backup_list(ctx); });
+
+    struct BackupRestoreArgs {
+        std::string id;
+        std::string output = ".";
+        std::string password;
+    };
+    auto br_args = std::make_shared<BackupRestoreArgs>();
+    auto* bk_restore = backup->add_subcommand("restore", "Restore a snapshot");
+    bk_restore->add_option("id", br_args->id, "Snapshot ID")->required();
+    bk_restore->add_option("-o,--output", br_args->output, "Output directory (default: current directory)");
+    bk_restore->add_option("-p,--password", br_args->password, "Decryption password (or set TELEVAULT_PASSWORD)");
+    bk_restore->callback([&ctx, br_args]() {
+        cmd_backup_restore(ctx, br_args->id, br_args->output, br_args->password);
+    });
+
+    struct BackupPruneArgs {
+        int daily{7};
+        int weekly{4};
+        int monthly{6};
+    };
+    auto bp_args = std::make_shared<BackupPruneArgs>();
+    auto* bk_prune = backup->add_subcommand("prune", "Prune old snapshots according to retention policy");
+    bk_prune->add_option("--keep-daily", bp_args->daily, "Keep daily snapshots (default: 7)");
+    bk_prune->add_option("--keep-weekly", bp_args->weekly, "Keep weekly snapshots (default: 4)");
+    bk_prune->add_option("--keep-monthly", bp_args->monthly, "Keep monthly snapshots (default: 6)");
+    bk_prune->callback([&ctx, bp_args]() {
+        cmd_backup_prune(ctx, bp_args->daily, bp_args->weekly, bp_args->monthly);
+    });
+
+    struct BackupDeleteArgs {
+        std::string id;
+    };
+    auto bd_args = std::make_shared<BackupDeleteArgs>();
+    auto* bk_del = backup->add_subcommand("delete", "Delete a snapshot");
+    bk_del->alias("rm");
+    bk_del->add_option("id", bd_args->id, "Snapshot ID")->required();
+    bk_del->callback([&ctx, bd_args]() { cmd_backup_delete(ctx, bd_args->id); });
 
     auto* schedule = app.add_subcommand("schedule", "Backup scheduling");
     schedule->callback([&ctx]() { cmd_schedule(ctx); });
 
+    struct WatchArgs {
+        std::string dir;
+        std::string password;
+        std::vector<std::string> exclusions;
+    };
+    auto watch_args = std::make_shared<WatchArgs>();
     auto* watch = app.add_subcommand("watch", "Watch directory for changes");
-    watch->callback([&ctx]() { cmd_watch(ctx); });
+    watch->add_option("dir", watch_args->dir, "Directory to watch")->required();
+    watch->add_option("-p,--password", watch_args->password, "Encryption password (or set TELEVAULT_PASSWORD)");
+    watch->add_option("--exclude", watch_args->exclusions, "Patterns to exclude from watching");
+    watch->callback([&ctx, watch_args]() {
+        cmd_watch(ctx, watch_args->dir, watch_args->password, watch_args->exclusions);
+    });
 }
 
 } // namespace tv

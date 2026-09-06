@@ -25,28 +25,62 @@ public:
     // ── Snapshot index management ──────────────────────────────────
     SnapshotIndex load_index() const {
         auto chat_id = get_channel_id();
-        auto pinned = tg.get_pinned_message_id(chat_id);
-        if (pinned == 0) return {};
+        auto& cfg = ConfigManager::instance().get();
+        int64_t msg_id = cfg.snapshot_index_msg_id;
 
-        auto msg = tg.get_message(chat_id, pinned);
-        if (msg.text.empty()) return {};
-
-        try {
-            return nlohmann::json::parse(msg.text).get<SnapshotIndex>();
-        } catch (...) {
-            return {};
+        if (msg_id != 0) {
+            auto msg = tg.get_message(chat_id, msg_id);
+            if (!msg.text.empty()) {
+                try {
+                    auto j = nlohmann::json::parse(msg.text);
+                    if (j.value("type", "") == "snapshot_index") {
+                        return j.get<SnapshotIndex>();
+                    }
+                } catch (...) {}
+            }
         }
+
+        // Search recent history for snapshot_index if not in config
+        auto history = tg.get_chat_history(chat_id, 0, 50);
+        for (const auto& m : history) {
+            if (m.text.empty()) continue;
+            try {
+                auto j = nlohmann::json::parse(m.text);
+                if (j.value("type", "") == "snapshot_index") {
+                    auto cfg_copy = ConfigManager::instance().get();
+                    cfg_copy.snapshot_index_msg_id = m.id;
+                    ConfigManager::instance().set(cfg_copy);
+                    ConfigManager::instance().save();
+                    return j.get<SnapshotIndex>();
+                }
+            } catch (...) {}
+        }
+
+        return {};
     }
 
     bool save_index(const SnapshotIndex& idx) {
         auto chat_id = get_channel_id();
         auto json_str = nlohmann::json(idx).dump();
-        auto pinned = tg.get_pinned_message_id(chat_id);
-        if (pinned == 0) {
-            auto new_id = tg.send_text(chat_id, json_str);
-            return new_id > 0 && tg.pin_message(chat_id, new_id);
+        auto& cfg = ConfigManager::instance().get();
+        int64_t msg_id = cfg.snapshot_index_msg_id;
+
+        bool saved = false;
+        if (msg_id != 0) {
+            saved = tg.edit_message(chat_id, msg_id, json_str);
         }
-        return tg.edit_message(chat_id, pinned, json_str);
+        if (!saved) {
+            auto new_id = tg.send_text(chat_id, json_str);
+            if (new_id > 0) {
+                auto cfg_copy = ConfigManager::instance().get();
+                cfg_copy.snapshot_index_msg_id = new_id;
+                ConfigManager::instance().set(cfg_copy);
+                ConfigManager::instance().save();
+                return true;
+            }
+            return false;
+        }
+        return true;
     }
 
     // ── Snapshot CRUD ──────────────────────────────────────────────
@@ -90,7 +124,8 @@ public:
                          ProgressCallback cb)
     {
         Snapshot snap;
-        snap.id = std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+        snap.id = std::format("{:x}", std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
         snap.name = name;
         snap.created_at = std::chrono::system_clock::now();
 
@@ -108,7 +143,7 @@ public:
         size_t processed = 0;
 
         for (auto& base_path : paths) {
-            auto process_file = [&](const std::string& file_path) {
+            auto process_file = [&](const std::string& file_path, const std::string& rel_path) {
                 if (cb) {
                     cb({static_cast<uint64_t>(processed),
                         static_cast<uint64_t>(total_files),
@@ -116,12 +151,13 @@ public:
                         0});
                 }
 
+                std::string fname = std::filesystem::path(file_path).filename().string();
                 FileEntry existing;
                 // Check if file already in vault for incremental
                 if (incremental) {
                     auto files = vault.list_files();
                     for (auto& f : files) {
-                        if (f.name == file_path) {
+                        if (f.name == fname) {
                             existing = f;
                             break;
                         }
@@ -142,10 +178,18 @@ public:
                 }
 
                 SnapshotFile sf;
-                sf.file_id = existing.name.empty() ? std::string{} : existing.id;
-                sf.name = file_path;
+                sf.name = fname;
+                sf.path = rel_path;
                 sf.size = std::filesystem::file_size(file_path);
                 sf.incremental = incremental && !existing.name.empty();
+                if (existing.name.empty()) {
+                    auto info = vault.get_file_info(fname);
+                    if (info) {
+                        sf.file_id = info->id;
+                    }
+                } else {
+                    sf.file_id = existing.id;
+                }
                 snap.files.push_back(std::move(sf));
                 ++processed;
             };
@@ -153,13 +197,24 @@ public:
             if (std::filesystem::is_directory(base_path)) {
                 for (auto& entry : std::filesystem::recursive_directory_iterator(base_path)) {
                     if (entry.is_regular_file()) {
-                        process_file(entry.path().string());
+                        std::string rel = std::filesystem::relative(entry.path(), base_path).string();
+                        process_file(entry.path().string(), rel);
                     }
                 }
             } else {
-                process_file(base_path);
+                std::string rel = std::filesystem::path(base_path).filename().string();
+                process_file(base_path, rel);
             }
         }
+
+        uint64_t total_bytes = 0;
+        for (const auto& sf : snap.files) {
+            total_bytes += sf.size;
+        }
+        snap.file_count = snap.files.size();
+        snap.total_size = total_bytes;
+        snap.stored_size = total_bytes;
+        snap.encrypted = !password.empty();
 
         bool ok = save_snapshot(snap);
         if (ok && cb) {
@@ -185,27 +240,29 @@ public:
 
         for (size_t i = 0; i < snap->files.size(); ++i) {
             auto& sf = snap->files[i];
+            std::string file_rel = !sf.path.empty() ? sf.path : sf.name;
             if (cb) {
                 cb({static_cast<uint64_t>(i),
                     static_cast<uint64_t>(snap->files.size()),
-                    std::format("Restoring {}...", std::filesystem::path(sf.name).filename().string()),
+                    std::format("Restoring {}...", sf.name),
                     0});
             }
 
             // Sanitize path: prevent directory traversal (CWE-22)
-            std::filesystem::path sanitized = std::filesystem::path(sf.name).relative_path();
+            std::filesystem::path sanitized = std::filesystem::path(file_rel).relative_path();
             auto output = std::filesystem::weakly_canonical(
                 std::filesystem::absolute(output_dir) / sanitized);
             if (output.string().find(std::filesystem::absolute(output_dir).string()) != 0) {
-                spdlog::error("Path traversal detected in snapshot: {}", sf.name);
+                spdlog::error("Path traversal detected in snapshot: {}", file_rel);
                 continue;
             }
             std::filesystem::create_directories(output.parent_path());
 
-            if (!sf.incremental) {
-                VaultOptions opts;
-                opts.password = password;
-                vault.pull(sf.name, output.string(), opts);
+            VaultOptions opts;
+            opts.password = password;
+            std::string pull_target = !sf.file_id.empty() ? sf.file_id : sf.name;
+            if (!vault.pull(pull_target, output.string(), opts)) {
+                spdlog::error("Failed to restore file: {}", sf.name);
             }
         }
 

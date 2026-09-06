@@ -113,10 +113,11 @@ public:
         return it != ext_mime.end() ? it->second : "application/octet-stream";
     }
 
-    PreviewResult preview_file(const std::string& local_path) {
+    PreviewResult preview_file(const std::string& local_path, const std::string& original_filename = "") {
         PreviewResult result;
-        result.category = classify(local_path);
-        result.mime_type = get_mime(local_path);
+        std::string name_for_type = original_filename.empty() ? local_path : original_filename;
+        result.category = classify(name_for_type);
+        result.mime_type = get_mime(name_for_type);
 
         switch (result.category) {
             case FileCategory::Text:
@@ -224,8 +225,8 @@ std::string PreviewEngine::mime_type(const std::string& filename) const {
     return impl_->get_mime(filename);
 }
 
-PreviewResult PreviewEngine::preview(const std::string& vault_path) {
-    return impl_->preview_file(vault_path);
+PreviewResult PreviewEngine::preview(const std::string& vault_path, const std::string& original_filename) {
+    return impl_->preview_file(vault_path, original_filename);
 }
 
 } // namespace tv

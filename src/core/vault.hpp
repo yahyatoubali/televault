@@ -58,6 +58,7 @@ public:
     bool pull(const std::string& vault_path, const std::string& output_path,
               const VaultOptions& opts, ProgressCallback cb = {});
     bool cat(const std::string& vault_path, const VaultOptions& opts = {}, ProgressCallback cb = {});
+    [[nodiscard]] std::optional<std::vector<uint8_t>> read_first_chunk(const std::string& vault_path, const VaultOptions& opts = {});
 
     // Listing & querying
     [[nodiscard]] std::vector<FileEntry> list_files() const;

@@ -244,13 +244,14 @@ public:
                     std::format("Chunk {}/{}...", ci.index + 1, meta->chunks.size()), 0});
             }
 
-            if (!tg.download_file_by_message(channel_id_, ci.message_id)) {
+            int64_t chunk_mid = (ci.message_id != 0) ? ci.message_id : meta->metadata_message_id;
+            if (!tg.download_file_by_message(channel_id_, chunk_mid)) {
                 spdlog::error("Failed to download chunk {}", ci.index);
                 std::filesystem::remove(temp_output);
                 return false;
             }
 
-            auto msg = tg.get_message(channel_id_, ci.message_id);
+            auto msg = tg.get_message(channel_id_, chunk_mid);
             auto finfo = tg.get_file_info(msg.file_id);
             if (!finfo || finfo->local_path.empty()) {
                 spdlog::error("Cannot locate downloaded file for chunk {}", ci.index);
@@ -353,9 +354,10 @@ public:
             reinterpret_cast<const uint8_t*>(salt_str.data()), salt_str.size());
 
         for (auto& ci : meta->chunks) {
-            if (!tg.download_file_by_message(channel_id_, ci.message_id)) break;
+            int64_t chunk_mid = (ci.message_id != 0) ? ci.message_id : meta->metadata_message_id;
+            if (!tg.download_file_by_message(channel_id_, chunk_mid)) break;
 
-            auto msg = tg.get_message(channel_id_, ci.message_id);
+            auto msg = tg.get_message(channel_id_, chunk_mid);
             auto finfo = tg.get_file_info(msg.file_id);
             if (!finfo || finfo->local_path.empty()) break;
 
@@ -385,6 +387,49 @@ public:
             }
         }
         return true;
+    }
+
+    std::optional<std::vector<uint8_t>> read_first_chunk(const std::string& vault_path, const VaultOptions& opts) {
+        auto meta = find_metadata(vault_path);
+        if (!meta || meta->chunks.empty()) return std::nullopt;
+
+        if (meta->encrypted && opts.password.empty()) {
+            spdlog::error("File is encrypted — password required");
+            return std::nullopt;
+        }
+
+        std::string salt_str = "televault" + std::to_string(channel_id_);
+        std::span<const uint8_t> fallback_salt(
+            reinterpret_cast<const uint8_t*>(salt_str.data()), salt_str.size());
+
+        auto& ci = meta->chunks[0];
+        int64_t chunk_mid = (ci.message_id != 0) ? ci.message_id : meta->metadata_message_id;
+        if (!tg.download_file_by_message(channel_id_, chunk_mid)) return std::nullopt;
+
+        auto msg = tg.get_message(channel_id_, chunk_mid);
+        auto finfo = tg.get_file_info(msg.file_id);
+        if (!finfo || finfo->local_path.empty()) return std::nullopt;
+
+        std::ifstream f(finfo->local_path, std::ios::binary);
+        if (!f) return std::nullopt;
+
+        std::vector<uint8_t> data((std::istreambuf_iterator<char>(f)),
+                                  std::istreambuf_iterator<char>());
+
+        if (meta->encrypted) {
+            try {
+                data = decrypt_chunk(data, opts.password, fallback_salt);
+            } catch (const std::exception& e) {
+                spdlog::error("Decryption failed for chunk 0: {}", e.what());
+                return std::nullopt;
+            }
+        }
+
+        if (meta->compressed) {
+            data = decompress_data(data);
+        }
+
+        return data;
     }
 
     // ── Disaster Recovery (Rebuild index from channel messages) ──────
@@ -472,7 +517,10 @@ public:
 
             int64_t target_mid = meta->metadata_message_id != 0 ? meta->metadata_message_id : mid;
             std::vector<int64_t> ids{target_mid};
-            for (auto& ci : meta->chunks) ids.push_back(ci.message_id);
+            for (auto& ci : meta->chunks) {
+                int64_t chunk_mid = (ci.message_id != 0) ? ci.message_id : meta->metadata_message_id;
+                if (chunk_mid != 0 && chunk_mid != target_mid) ids.push_back(chunk_mid);
+            }
             tg.delete_messages(channel_id_, ids);
             index_mgr->remove_file(fid);
             index_mgr->save(channel_id_);
@@ -486,7 +534,8 @@ public:
         if (!meta) return false;
 
         for (auto& ci : meta->chunks) {
-            auto msg = tg.get_message(channel_id_, ci.message_id);
+            int64_t chunk_mid = (ci.message_id != 0) ? ci.message_id : meta->metadata_message_id;
+            auto msg = tg.get_message(channel_id_, chunk_mid);
             if (msg.id == 0) {
                 spdlog::error("Chunk {} message not found", ci.index);
                 return false;
@@ -573,6 +622,10 @@ bool TeleVault::pull(const std::string& path, const std::string& output,
 
 bool TeleVault::cat(const std::string& path, const VaultOptions& opts, ProgressCallback cb) {
     return impl_->cat(path, opts, std::move(cb));
+}
+
+std::optional<std::vector<uint8_t>> TeleVault::read_first_chunk(const std::string& path, const VaultOptions& opts) {
+    return impl_->read_first_chunk(path, opts);
 }
 
 std::vector<FileEntry> TeleVault::list_files() const {

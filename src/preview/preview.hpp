@@ -25,7 +25,7 @@ public:
 
     [[nodiscard]] FileCategory classify(const std::string& filename) const;
     [[nodiscard]] std::string mime_type(const std::string& filename) const;
-    PreviewResult preview(const std::string& vault_path);
+    PreviewResult preview(const std::string& vault_path, const std::string& original_filename = "");
 
 private:
     class Impl;
