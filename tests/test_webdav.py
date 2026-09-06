@@ -19,7 +19,7 @@ class TestFormatSize:
         assert _format_size(1024 * 1024 * 1024) == "1.0 GB"
 
     def test_zero(self):
-        assert _format_size(0) == "0.0 B"
+        assert _format_size(0) == "0 B"
 
 
 class TestMultistatusXml:

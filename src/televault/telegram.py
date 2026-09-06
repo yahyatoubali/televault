@@ -371,6 +371,9 @@ class TelegramVault:
                 except Exception as e:
                     if attempt >= 2:
                         raise
+                    from .retry import is_retryable
+                    if not is_retryable(e):
+                        raise
                     logger.warning(f"save_index retry {attempt + 1}/3: {e}")
                     await asyncio.sleep(0.5 * (attempt + 1))
 

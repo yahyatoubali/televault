@@ -12,6 +12,8 @@ def format_size(size: int) -> str:
     """
     if size < 0:
         return "0 B"
+    if size == 0:
+        return "0 B"
     size_float: float = size
     for unit in ["B", "KB", "MB", "GB", "TB"]:
         if size_float < 1024:

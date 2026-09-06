@@ -219,6 +219,42 @@ All contributions and PRs target the `dev` branch. `main` is reserved for tagged
 
 ---
 
+## Disclaimer
+
+### Not Affiliated with Telegram
+
+TeleVault is an independent, community-driven open-source project. It is **not** endorsed by, affiliated with, or officially connected to Telegram or Telegram FZ-LLC in any way.
+
+### Telegram Terms of Service Compliance
+
+Using Telegram channels as file storage is not the explicitly intended use of the platform. While Telegram's Bot API and MTProto API are publicly available and TeleVault uses them through legitimate means, this use case exists in a gray area of Telegram's Terms of Service. Users should be aware that:
+
+- Telegram may change their terms, API limits, or storage policies at any time without notice
+- Excessive automated usage could trigger rate limits or account restrictions
+- Telegram reserves the right to revoke API access for any reason
+- There is no guarantee of data permanence on Telegram's servers
+- Files or channels may be removed if Telegram deems them in violation of their policies
+
+### User Responsibility
+
+By using TeleVault, you accept sole responsibility for:
+
+- Complying with [Telegram's Terms of Service](https://telegram.org/tos)
+- Complying with [Telegram's API Terms of Service](https://core.telegram.org/api/terms)
+- The legality of any files you store through this tool
+- Maintaining your own backups of important data (do **not** rely on TeleVault as your only copy)
+- Keeping your encryption password safe (there is no recovery mechanism if lost)
+
+### No Warranty
+
+This software is provided "as is", without warranty of any kind, express or implied. The authors and contributors are not liable for any data loss, account restrictions, service interruptions, or any other damages arising from the use of this software.
+
+### Recommendation
+
+Users should use TeleVault for **personal backup purposes only**. Please respect Telegram's rate limits, avoid commercial-scale storage operations, and never use this tool for distributing illegal content. If you are unsure whether your use case complies with Telegram's policies, review their terms directly or seek legal advice.
+
+---
+
 ## License
 
 MIT License — see [LICENSE](./LICENSE) for details.

@@ -76,9 +76,16 @@ def compress_data(data: bytes, level: int = DEFAULT_LEVEL) -> bytes:
 def decompress_data(data: bytes, max_output_size: int = 0) -> bytes:
     """Decompress zstd data."""
     dctx = zstd.ZstdDecompressor()
-    # max_output_size=0 means use content size from frame header
-    # For streaming data without content size, caller must provide max_output_size
-    return dctx.decompress(data, max_output_size=max_output_size)
+    try:
+        return dctx.decompress(data, max_output_size=max_output_size)
+    except zstd.ZstdError:
+        import logging
+
+        logging.getLogger("televault").debug(
+            "Zstd frame missing content size, using streaming decompressor"
+        )
+        decompressor = dctx.decompressobj()
+        return decompressor.decompress(data)
 
 
 def compress_file(

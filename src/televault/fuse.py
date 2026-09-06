@@ -231,7 +231,7 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
         self._id_to_path: dict[str, str] = {}
         self._fd = 0
         self._open_files: dict[int, str] = {}
-        self._write_buffer: dict[int, bytes] = {}
+        self._write_buffer: dict[int, bytearray] = {}
         self._last_refresh = 0.0
         self._cache_lock = asyncio.Lock()
 
@@ -240,14 +240,13 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
             if self._loop is None or self._loop.is_closed():
                 self._loop = asyncio.new_event_loop()
             loop = self._loop
-
-        try:
-            return loop.run_until_complete(coro)
-        except RuntimeError:
-            new_loop = asyncio.new_event_loop()
-            with self._loop_lock:
-                self._loop = new_loop
-            return new_loop.run_until_complete(coro)
+            try:
+                return loop.run_until_complete(coro)
+            except RuntimeError:
+                if self._loop is not None and not self._loop.is_closed():
+                    self._loop.close()
+                self._loop = asyncio.new_event_loop()
+                return self._loop.run_until_complete(coro)
 
     async def _ensure_connected(self):
         from .core import TeleVault
@@ -416,15 +415,16 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
     def write(self, path, data, offset, fh):
         if self.read_only:
             raise FuseOSError(30)
-
-        buf = self._write_buffer.get(fh, b"")
+        if fh not in self._write_buffer:
+            self._write_buffer[fh] = bytearray()
+        buf = self._write_buffer[fh]
         if offset == 0:
-            buf = data
+            buf[:] = data
         elif offset > len(buf):
-            buf = buf + b"\x00" * (offset - len(buf)) + data
+            buf.extend(b"\x00" * (offset - len(buf)))
+            buf.extend(data)
         else:
-            buf = buf[:offset] + data + buf[offset + len(data) :]
-        self._write_buffer[fh] = buf
+            buf[offset:offset + len(data)] = data
         return len(data)
 
     def create(self, path, mode):
@@ -433,8 +433,8 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
 
         self._fd += 1
         fd = self._fd
-        self._open_files[fd] = None
-        self._write_buffer[fd] = b""
+        self._open_files[fd] = path  # Store path instead of None
+        self._write_buffer[fd] = bytearray()
         return fd
 
     def flush(self, path, fh):
@@ -449,7 +449,7 @@ class TeleVaultFuse(FuseOperations if FUSE_AVAILABLE else object):
         local_path = self.cache_dir / path.lstrip("/")
         local_path.parent.mkdir(parents=True, exist_ok=True)
 
-        local_path.write_bytes(data)
+        local_path.write_bytes(bytes(data))
 
         try:
             self._run_async(self._upload_local_file(local_path, filename))

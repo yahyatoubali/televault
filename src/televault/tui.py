@@ -67,10 +67,8 @@ def get_file_icon(filename: str) -> str:
 
 def _cleanup_terminal():
     try:
-        sys.stdout.write("\033[?25h")
-        sys.stdout.write("\033[0m")
-        sys.stdout.write("\033[2J")
-        sys.stdout.write("\033[H")
+        sys.stdout.write("\033[?25h")  # Show cursor
+        sys.stdout.write("\033[0m")    # Reset attributes
         sys.stdout.flush()
     except Exception:
         pass

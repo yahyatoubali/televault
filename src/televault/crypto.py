@@ -107,6 +107,12 @@ class StreamingEncryptor:
 
     def _get_nonce(self) -> bytes:
         """Generate unique nonce for each block using counter mode."""
+        # GCM security bound: max 2^32 invocations per key (NIST SP 800-38D)
+        if self._counter >= 2**32:
+            raise ValueError(
+                "Streaming encryptor block limit exceeded. "
+                "Use per-chunk encryption for very large files."
+            )
         # Use base nonce + counter to ensure uniqueness
         counter_bytes = struct.pack(">Q", self._counter)  # 8 bytes
         self._counter += 1
