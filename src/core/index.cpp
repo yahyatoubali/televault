@@ -29,6 +29,7 @@ bool IndexManager::deserialize(const std::string& json_str) {
 
 bool IndexManager::load(int64_t chat_id) {
     auto pinned_id = find_pinned_message_id(chat_id);
+    spdlog::debug("IndexManager::load: pinned_id={}", pinned_id);
     if (pinned_id == 0) {
         spdlog::warn("No pinned message found — starting with empty index");
         index_ = VaultIndex{};
@@ -36,17 +37,21 @@ bool IndexManager::load(int64_t chat_id) {
     }
 
     auto msg = tg_.get_message(chat_id, pinned_id);
+    spdlog::debug("IndexManager::load: msg.id={}, text.len={}", msg.id, msg.text.size());
     if (msg.text.empty()) {
         spdlog::warn("Pinned message is empty — starting with empty index");
         index_ = VaultIndex{};
         return true;
     }
 
-    return deserialize(msg.text);
+    bool ok = deserialize(msg.text);
+    spdlog::debug("IndexManager::load: deserialize ok={}, file count={}", ok, index_.files.size());
+    return ok;
 }
 
 bool IndexManager::save(int64_t chat_id) {
     auto json_str = serialize();
+    spdlog::debug("IndexManager::save: serializing {} files (json len={})", index_.files.size(), json_str.size());
 
     auto pinned_id = find_pinned_message_id(chat_id);
     if (pinned_id == 0) {

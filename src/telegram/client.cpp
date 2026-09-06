@@ -17,11 +17,24 @@
 #include <atomic>
 #include <chrono>
 #include <print>
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+#include <zlib.h>
 
 namespace tv {
 
 namespace tda = ::td::td_api; // alias for shorter names
 using tda::make_object;
+
+// ── Helper: normalize message ID to TDLib format (server_id << 20) ────
+static int64_t to_tdlib_msg_id(int64_t id) {
+    if (id <= 0) return 0;
+    if (id < (1LL << 20)) {
+        return id << 20;
+    }
+    // Mask off temporary send bits in low 20 bits
+    return (id >> 20) << 20;
+}
 
 // ── Helper: extract file_id from a message with document ─────────────
 static int32_t extract_file_id(const tda::message& msg) {
@@ -34,12 +47,60 @@ static int32_t extract_file_id(const tda::message& msg) {
     return 0;
 }
 
-// ── Helper: extract text from message ─────────────────────────────────
 static std::string extract_text(const tda::message& msg) {
+    if (!msg.content_) return {};
+    spdlog::debug("extract_text for msg {}: content_id={}", msg.id_, msg.content_->get_id());
+    std::string raw;
     if (msg.content_->get_id() == tda::messageText::ID) {
-        return static_cast<const tda::messageText&>(*msg.content_).text_->text_;
+        if (auto& mt = static_cast<const tda::messageText&>(*msg.content_); mt.text_) {
+            raw = mt.text_->text_;
+        }
+    } else if (msg.content_->get_id() == tda::messageDocument::ID) {
+        auto& doc = static_cast<const tda::messageDocument&>(*msg.content_);
+        if (doc.caption_) {
+            raw = doc.caption_->text_;
+        }
     }
-    return {};
+    if (raw.empty() || !raw.starts_with("__TV1__")) {
+        return raw;
+    }
+
+    // Python __TV1__ format: base64-encoded zlib stream
+    std::string b64 = raw.substr(7);
+    BIO* bio = BIO_new_mem_buf(b64.data(), static_cast<int>(b64.size()));
+    BIO* b64_bio = BIO_new(BIO_f_base64());
+    BIO_set_flags(b64_bio, BIO_FLAGS_BASE64_NO_NL);
+    bio = BIO_push(b64_bio, bio);
+
+    std::vector<uint8_t> compressed(b64.size());
+    int decoded_len = BIO_read(bio, compressed.data(), static_cast<int>(compressed.size()));
+    BIO_free_all(bio);
+
+    if (decoded_len <= 0) return raw;
+    compressed.resize(decoded_len);
+
+    z_stream strm{};
+    if (inflateInit(&strm) != Z_OK) return raw;
+
+    strm.next_in = compressed.data();
+    strm.avail_in = static_cast<uInt>(compressed.size());
+
+    std::string out;
+    char buffer[4096];
+    int ret;
+    do {
+        strm.next_out = reinterpret_cast<Bytef*>(buffer);
+        strm.avail_out = sizeof(buffer);
+        ret = inflate(&strm, Z_NO_FLUSH);
+        if (ret != Z_OK && ret != Z_STREAM_END) {
+            inflateEnd(&strm);
+            return raw;
+        }
+        out.append(buffer, sizeof(buffer) - strm.avail_out);
+    } while (ret != Z_STREAM_END);
+
+    inflateEnd(&strm);
+    return out;
 }
 
 // ── Implementation ────────────────────────────────────────────────────
@@ -245,6 +306,9 @@ public:
 
     bool set_channel(int64_t channel_id) {
         channel_id_ = channel_id;
+        auto open = make_object<tda::openChat>();
+        open->chat_id_ = channel_id;
+        send_query_sync(std::move(open));
         return true;
     }
 
@@ -262,7 +326,7 @@ public:
         auto send = make_object<tda::sendMessage>();
         send->chat_id_ = chat_id;
         if (reply_to > 0) {
-            send->reply_to_message_id_ = reply_to;
+            send->reply_to_message_id_ = to_tdlib_msg_id(reply_to);
         }
 
         auto content = make_object<tda::inputMessageText>();
@@ -279,7 +343,8 @@ public:
             }
             return 0;
         }
-        return static_cast<tda::message&>(*result).id_;
+        auto& msg = static_cast<tda::message&>(*result);
+        return wait_for_send(msg.id_, msg.sending_state_);
     }
 
     int64_t send_file(int64_t chat_id, const std::string& file_path, int64_t reply_to) {
@@ -313,7 +378,7 @@ public:
         auto send = make_object<tda::sendMessage>();
         send->chat_id_ = chat_id;
         if (reply_to > 0) {
-            send->reply_to_message_id_ = reply_to;
+            send->reply_to_message_id_ = to_tdlib_msg_id(reply_to);
         }
 
         auto doc = make_object<tda::inputMessageDocument>();
@@ -324,13 +389,14 @@ public:
         if (!result || result->get_id() != tda::message::ID) {
             return 0;
         }
-        return static_cast<tda::message&>(*result).id_;
+        auto& msg = static_cast<tda::message&>(*result);
+        return wait_for_send(msg.id_, msg.sending_state_);
     }
 
     bool edit_message(int64_t chat_id, int64_t msg_id, const std::string& text) {
         auto edit = make_object<tda::editMessageText>();
         edit->chat_id_ = chat_id;
-        edit->message_id_ = msg_id;
+        edit->message_id_ = to_tdlib_msg_id(msg_id);
 
         auto content = make_object<tda::inputMessageText>();
         auto formatted = make_object<tda::formattedText>();
@@ -345,30 +411,58 @@ public:
     bool delete_messages(int64_t chat_id, const std::vector<int64_t>& msg_ids) {
         auto del = make_object<tda::deleteMessages>();
         del->chat_id_ = chat_id;
-        del->message_ids_ = msg_ids;
+        for (auto id : msg_ids) {
+            del->message_ids_.push_back(to_tdlib_msg_id(id));
+        }
         del->revoke_ = true;
 
         auto result = send_query_sync(std::move(del));
         return result && result->get_id() == tda::ok::ID;
     }
 
-    MessageInfo get_message(int64_t chat_id, int64_t msg_id) const {
+    MessageInfo get_message(int64_t chat_id, int64_t raw_msg_id) const {
+        int64_t msg_id = to_tdlib_msg_id(raw_msg_id);
+        if (msg_id == 0) return {};
+
         auto get = make_object<tda::getMessage>();
         get->chat_id_ = chat_id;
         get->message_id_ = msg_id;
 
         auto result = const_cast<Impl*>(this)->send_query_sync(std::move(get));
-        if (!result || result->get_id() != tda::message::ID) {
-            return {};
+        if (result && result->get_id() == tda::message::ID) {
+            auto& msg = static_cast<tda::message&>(*result);
+            MessageInfo info;
+            info.id = msg.id_;
+            info.text = extract_text(msg);
+            info.file_id = extract_file_id(msg);
+            info.reply_to_msg_id = msg.reply_to_message_id_;
+            return info;
         }
 
-        auto& msg = static_cast<tda::message&>(*result);
-        MessageInfo info;
-        info.id = msg.id_;
-        info.text = extract_text(msg);
-        info.file_id = extract_file_id(msg);
-        info.reply_to_msg_id = msg.reply_to_message_id_;
-        return info;
+        // TDLib getMessage only searches local DB. If not found locally, fetch from server via getMessages.
+        auto get_many = make_object<tda::getMessages>();
+        get_many->chat_id_ = chat_id;
+        get_many->message_ids_ = {msg_id};
+
+        auto many_result = const_cast<Impl*>(this)->send_query_sync(std::move(get_many));
+        if (many_result && many_result->get_id() == tda::messages::ID) {
+            auto& msgs = static_cast<tda::messages&>(*many_result);
+            if (!msgs.messages_.empty() && msgs.messages_[0]) {
+                auto& msg = *msgs.messages_[0];
+                MessageInfo info;
+                info.id = msg.id_;
+                info.text = extract_text(msg);
+                info.file_id = extract_file_id(msg);
+                info.reply_to_msg_id = msg.reply_to_message_id_;
+                return info;
+            }
+        } else if (many_result && many_result->get_id() == tda::error::ID) {
+            auto& err = static_cast<tda::error&>(*many_result);
+            spdlog::warn("getMessages failed for chat {} msg {}: {} (code {})",
+                         chat_id, msg_id, err.message_, err.code_);
+        }
+
+        return {};
     }
 
     // Download a file by its message ID (extracts file_id from message)
@@ -404,7 +498,7 @@ public:
         auto send = make_object<tda::sendMessage>();
         send->chat_id_ = chat_id;
         if (reply_to > 0) {
-            send->reply_to_message_id_ = reply_to;
+            send->reply_to_message_id_ = to_tdlib_msg_id(reply_to);
         }
 
         auto doc = make_object<tda::inputMessageDocument>();
@@ -413,7 +507,8 @@ public:
 
         auto send_result = send_query_sync(std::move(send));
         if (send_result && send_result->get_id() == tda::message::ID) {
-            result.message_id = static_cast<tda::message&>(*send_result).id_;
+            auto& msg = static_cast<tda::message&>(*send_result);
+            result.message_id = wait_for_send(msg.id_, msg.sending_state_);
         }
 
         return result;
@@ -422,7 +517,7 @@ public:
     std::vector<MessageInfo> get_chat_history(int64_t chat_id, int64_t from_msg_id, int limit) const {
         auto hist = make_object<tda::getChatHistory>();
         hist->chat_id_ = chat_id;
-        hist->from_message_id_ = from_msg_id;
+        hist->from_message_id_ = to_tdlib_msg_id(from_msg_id);
         hist->offset_ = 0;
         hist->limit_ = limit;
         hist->only_local_ = false;
@@ -451,24 +546,42 @@ public:
         get->chat_id_ = chat_id;
 
         auto result = const_cast<Impl*>(this)->send_query_sync(std::move(get));
-        if (!result || result->get_id() != tda::chat::ID) return 0;
+        if (!result || result->get_id() != tda::chat::ID) {
+            spdlog::warn("get_pinned_message_id: getChat failed, id={}", result ? result->get_id() : -1);
+            return 0;
+        }
         // tdlib 1.8: use getChatPinnedMessage function
         auto pin_get = make_object<tda::getChatPinnedMessage>();
         pin_get->chat_id_ = chat_id;
         auto pin_result = const_cast<Impl*>(this)->send_query_sync(std::move(pin_get));
-        if (!pin_result || pin_result->get_id() != tda::message::ID) return 0;
-        return static_cast<tda::message&>(*pin_result).id_;
+        if (!pin_result || pin_result->get_id() != tda::message::ID) {
+            if (pin_result && pin_result->get_id() == tda::error::ID) {
+                auto& err = static_cast<tda::error&>(*pin_result);
+                spdlog::warn("get_pinned_message_id: getChatPinnedMessage error: {} (code {})", err.message_, err.code_);
+            } else {
+                spdlog::warn("get_pinned_message_id: pin_result id={}", pin_result ? pin_result->get_id() : -1);
+            }
+            return 0;
+        }
+        return to_tdlib_msg_id(static_cast<tda::message&>(*pin_result).id_);
     }
 
     bool pin_message(int64_t chat_id, int64_t msg_id) {
         auto pin = make_object<tda::pinChatMessage>();
         pin->chat_id_ = chat_id;
-        pin->message_id_ = msg_id;
+        pin->message_id_ = to_tdlib_msg_id(msg_id);
         pin->only_for_self_ = false;
         pin->disable_notification_ = true;
 
         auto result = send_query_sync(std::move(pin));
-        return result && result->get_id() == tda::ok::ID;
+        if (!result || result->get_id() != tda::ok::ID) {
+            if (result && result->get_id() == tda::error::ID) {
+                auto& err = static_cast<tda::error&>(*result);
+                spdlog::error("pin_message failed: {} (code {})", err.message_, err.code_);
+            }
+            return false;
+        }
+        return true;
     }
 
     // ── File operations ─────────────────────────────────────────────
@@ -594,6 +707,36 @@ private:
         }
     }
 
+    int64_t wait_for_send(int64_t temp_id, const tda::object_ptr<tda::MessageSendingState>& sending_state) {
+        if (!sending_state) {
+            return to_tdlib_msg_id(temp_id);
+        }
+
+        std::shared_ptr<std::promise<int64_t>> promise;
+        std::future<int64_t> future;
+        {
+            std::lock_guard lock(send_mutex_);
+            if (auto it = completed_sends_.find(temp_id); it != completed_sends_.end()) {
+                int64_t real_id = it->second;
+                completed_sends_.erase(it);
+                return to_tdlib_msg_id(real_id);
+            }
+            promise = std::make_shared<std::promise<int64_t>>();
+            future = promise->get_future();
+            pending_sends_[temp_id] = promise;
+        }
+
+        auto status = future.wait_for(std::chrono::seconds(60));
+        if (status == std::future_status::ready) {
+            return to_tdlib_msg_id(future.get());
+        }
+
+        std::lock_guard lock(send_mutex_);
+        pending_sends_.erase(temp_id);
+        spdlog::warn("Message send confirmation timed out for temp id {}", temp_id);
+        return to_tdlib_msg_id(temp_id);
+    }
+
     // ── Client event loop ───────────────────────────────────────────
     void client_loop() {
         while (running_) {
@@ -620,6 +763,34 @@ private:
             case tda::updateFile::ID:
                 handle_file_update(std::move(static_cast<tda::updateFile&>(*obj).file_));
                 break;
+
+            case tda::updateMessageSendSucceeded::ID: {
+                auto& upd = static_cast<tda::updateMessageSendSucceeded&>(*obj);
+                int64_t old_id = upd.old_message_id_;
+                int64_t new_id = upd.message_ ? upd.message_->id_ : 0;
+                std::lock_guard lock(send_mutex_);
+                if (auto it = pending_sends_.find(old_id); it != pending_sends_.end()) {
+                    it->second->set_value(new_id);
+                    pending_sends_.erase(it);
+                } else {
+                    completed_sends_[old_id] = new_id;
+                }
+                break;
+            }
+
+            case tda::updateMessageSendFailed::ID: {
+                auto& upd = static_cast<tda::updateMessageSendFailed&>(*obj);
+                int64_t old_id = upd.old_message_id_;
+                spdlog::error("Message send failed: {} (code {})", upd.error_message_, upd.error_code_);
+                std::lock_guard lock(send_mutex_);
+                if (auto it = pending_sends_.find(old_id); it != pending_sends_.end()) {
+                    it->second->set_value(0);
+                    pending_sends_.erase(it);
+                } else {
+                    completed_sends_[old_id] = 0;
+                }
+                break;
+            }
 
             case tda::updateConnectionState::ID: {
                 auto& state = static_cast<tda::updateConnectionState&>(*obj);
@@ -880,7 +1051,10 @@ private:
     // Request tracking
     uint64_t next_query_id_{};
     std::map<uint64_t, std::shared_ptr<std::promise<ObjectPtr>>> pending_;
+    std::map<int64_t, std::shared_ptr<std::promise<int64_t>>> pending_sends_;
+    std::map<int64_t, int64_t> completed_sends_;
     std::mutex mutex_;
+    std::mutex send_mutex_;
     std::condition_variable cv_;
 };
 

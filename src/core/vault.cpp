@@ -42,6 +42,7 @@ public:
     bool initialize(int64_t channel_id, bool low_resource) {
         channel_id_ = channel_id;
         low_resource_ = low_resource;
+        tg.set_channel(channel_id);
 
         index_mgr = std::make_unique<IndexManager>(tg);
         return index_mgr->load(channel_id);
@@ -361,10 +362,24 @@ public:
     // ── Filesystem operations ───────────────────────────────────────
     std::vector<FileEntry> list_files() const {
         std::vector<FileEntry> entries;
+        bool index_updated = false;
+        spdlog::debug("list_files: index contains {} files", index_mgr->index().files.size());
         for (auto& [fid, mid] : index_mgr->index().files) {
+            spdlog::debug("list_files: entry fid={} mid={}", fid, mid);
             auto meta = get_metadata(mid);
-            if (!meta) continue;
+            if (!meta) {
+                spdlog::warn("list_files: get_metadata failed for fid={} mid={}", fid, mid);
+                continue;
+            }
+            if (meta->metadata_message_id != 0 && meta->metadata_message_id != mid) {
+                const_cast<IndexManager&>(*index_mgr).add_file(fid, meta->metadata_message_id);
+                index_updated = true;
+            }
             entries.push_back(make_entry(*meta));
+        }
+        if (index_updated) {
+            const_cast<IndexManager&>(*index_mgr).save(channel_id_);
+            spdlog::info("list_files: auto-healed index saved to Telegram");
         }
         return entries;
     }
@@ -379,7 +394,7 @@ public:
             if (!meta) continue;
             auto ln = meta->name;
             std::ranges::transform(ln, ln.begin(), [](char c) { return static_cast<char>(std::tolower(c)); });
-            if (ln.find(lq) != std::string::npos) {
+            if (ln.find(lq) != std::string::npos || meta->id.find(lq) != std::string::npos) {
                 results.push_back(make_entry(*meta));
             }
         }
@@ -393,9 +408,14 @@ public:
     bool delete_file(const std::string& path) {
         for (auto& [fid, mid] : index_mgr->index().files) {
             auto meta = get_metadata(mid);
-            if (!meta || meta->name != path) continue;
+            if (!meta) continue;
+            if (meta->name != path && meta->id != path && fid != path &&
+                !(path.size() >= 6 && meta->id.starts_with(path))) {
+                continue;
+            }
 
-            std::vector<int64_t> ids{mid};
+            int64_t target_mid = meta->metadata_message_id != 0 ? meta->metadata_message_id : mid;
+            std::vector<int64_t> ids{target_mid};
             for (auto& ci : meta->chunks) ids.push_back(ci.message_id);
             tg.delete_messages(channel_id_, ids);
             index_mgr->remove_file(fid);
@@ -422,19 +442,44 @@ public:
 private:
     // ── Helpers ─────────────────────────────────────────────────────
     std::optional<FileMetadata> get_metadata(int64_t msg_id) const {
-        auto msg = tg.get_message(channel_id_, msg_id);
-        if (msg.text.empty()) return std::nullopt;
-        try {
-            return nlohmann::json::parse(msg.text).get<FileMetadata>();
-        } catch (...) {
-            return std::nullopt;
+        auto try_parse = [this](int64_t id) -> std::optional<FileMetadata> {
+            auto msg = tg.get_message(channel_id_, id);
+            if (msg.text.empty()) return std::nullopt;
+            try {
+                auto j = nlohmann::json::parse(msg.text);
+                auto meta = j.get<FileMetadata>();
+                meta.metadata_message_id = id;
+                return meta;
+            } catch (const std::exception& e) {
+                return std::nullopt;
+            }
+        };
+
+        auto meta = try_parse(msg_id);
+        if (meta) return meta;
+
+        // Self-healing: if msg_id was off (e.g. pinned notification or temp id offset), check nearby IDs
+        int64_t seq = msg_id >> 20;
+        for (int64_t offset : {1, -1, 2, -2, 3, -3}) {
+            int64_t adj_id = (seq + offset) << 20;
+            auto adj_meta = try_parse(adj_id);
+            if (adj_meta) {
+                spdlog::info("get_metadata: self-healed msg_id {} -> {}", msg_id, adj_id);
+                return adj_meta;
+            }
         }
+        return std::nullopt;
     }
 
     std::optional<FileMetadata> find_metadata(const std::string& path) const {
         for (auto& [fid, mid] : index_mgr->index().files) {
             auto meta = get_metadata(mid);
-            if (meta && meta->name == path) return meta;
+            if (meta) {
+                if (meta->name == path || meta->id == path || fid == path ||
+                    (path.size() >= 6 && meta->id.starts_with(path))) {
+                    return meta;
+                }
+            }
         }
         return std::nullopt;
     }
