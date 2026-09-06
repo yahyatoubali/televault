@@ -1,185 +1,79 @@
-# The Engine
+# The TeleVault Engine (C++23 Native)
 
-TeleVault uses a single private Telegram channel as its entire data store. There is no local database — all state lives on Telegram as pinned messages and reply chains.
+TeleVault uses a private Telegram channel as an encrypted, distributed object store. All state lives on Telegram as pinned index messages, metadata nodes, and chunk reply chains.
 
 ## Message Topology
 
 ```
-                   Channel (private)
-                  ==================
-                  |  Pinned: VaultIndex  |──── files: { "abc123": 42, "def456": 87 }
-                  |  Pinned: SnapshotIndex|──── snapshots: { "snap01": 150 }
-                  ==================
+                  Private Channel
+                 =================
+                 | Pinned: VaultIndex | ─── files: { "file_id": metadata_msg_id, ... }
+                 =================
                          │
-            ┌────────────┼────────────┐
-            │                         │
-      msg 42 (text/JSON)        msg 87 (text/JSON)
-      FileMetadata for           FileMetadata for
-      file "abc123"              file "def456"
-            │                         │
-      ┌─────┼─────┐            ┌──────┼──────┐
-      │     │     │            │      │      │
-    reply  reply  reply       reply   reply  reply
-    msg43  msg44  msg45       msg88  msg89  msg90
-    chunk0 chunk1 chunk2      chunk0 chunk1  chunk2
+           ┌─────────────┴─────────────┐
+           ▼                           ▼
+    FileMetadata 1              FileMetadata 2
+    (JSON text msg)             (JSON text msg)
+           │                           │
+     ┌─────┼─────┐               ┌─────┴─────┐
+     ▼     ▼     ▼               ▼           ▼
+  Chunk0 Chunk1 Chunk2        Chunk0      Chunk1
+  (file) (file) (file)        (file)      (file)
+
+   ───────────────────────────────────────────────────
+   ISOLATED SNAPSHOT SYSTEM (Separate Message Tree)
+   ───────────────────────────────────────────────────
+   SnapshotIndex Message ─── snapshots: { "snap_id": snap_msg_id, ... }
+         │
+         ├── Snapshot 1 (JSON text msg: list of file entries and relative paths)
+         └── Snapshot 2 (JSON text msg)
 ```
 
-### How It Works
+### Safety Invariant: Index Decoupling
+The pinned message in the channel is **strictly reserved** for the primary `VaultIndex` (file listing). Snapshots are stored in their own message tree tracked by `snapshot_index_msg_id` in `config.json`. This architecture ensures that snapshot operations (creation, restoration, pruning) never interfere with or overwrite the user's file inventory.
 
-1. **Pinned VaultIndex** — A single pinned text message maps every file ID to its metadata message ID. This is the root pointer.
-2. **FileMetadata** — Each file has a text/JSON message containing its name, size, hash, and chunk list.
-3. **Reply Chains** — Each chunk is uploaded as a file message replying to its parent FileMetadata message. This creates a tree structure Telegram preserves.
-4. **Pinned SnapshotIndex** — Same pattern for backup snapshots.
+---
 
-### Index Lookup
-
-Two-tier caching for O(1) index retrieval:
-
-1. **In-memory** — `TelegramVault._index_msg_id` cached during the session
-2. **Config persistence** — `Config.index_msg_id` saved to disk between sessions
-3. **Full channel scan** — Only as fallback when no cached ID exists (first run)
-
-The index message ID is persisted after every save, so subsequent lookups never scan the channel.
-
-### Message Compression
-
-Telegram limits text messages to 4096 characters. Large indices are automatically compressed:
+## The Upload Pipeline
 
 ```
-if len(json_text) > 4096:
-    compressed = zlib.compress(json_text, level=9)
-    encoded = base64.b64encode(compressed)
-    message = f"__TV1__{encoded}"
+Local File
+    │
+    ▼
+Chunking (100 MB default; 32 MB low-resource)
+    │
+    ▼
+Compute Blake3 Plaintext Hash (ci.original_hash)
+    │
+    ▼
+Zstandard Compression (level 3) -- auto-bypassed for media files
+    │
+    ▼
+AES-256-GCM Encryption (Argon2id / PBKDF2 derived key, random nonce)
+    │
+    ▼
+Compute Blake3 Ciphertext Hash (ci.hash)
+    │
+    ▼
+Transmit via TDLib MTProto as Document replying to FileMetadata
 ```
 
-Decompression is transparent — messages without the `__TV1__` prefix are read as plain JSON.
+---
 
-## Storage Model
+## Download Integrity & Atomic Swapping
 
-### VaultIndex
+1. Pre-allocates or streams to a temporary sibling file (`target.partial.XXXXXX`).
+2. Validates chunk ciphertext hash against `ci.hash`.
+3. Decrypts and decompresses payload.
+4. Validates decompressed plaintext against `ci.original_hash` to detect wrong password or corrupted decryption.
+5. Verifies assembled full file against `FileMetadata.hash`.
+6. Executes atomic filesystem rename to ensure no partial or corrupt files ever replace existing data.
 
-```json
-{
-  "version": 7,
-  "files": { "abc123def456": 42, "def789ghi012": 87 },
-  "updated_at": 1700000100.0
-}
-```
+---
 
-The `version` field increments on each save. The save method finds the pinned message, reads its version, increments it, and edits the message in place. Retries only on Telegram API errors (3 attempts with exponential backoff).
+## Sub-Second Previews (`tvt preview`)
 
-### FileMetadata
-
-```json
-{
-  "id": "abc123def456",
-  "name": "photo.jpg",
-  "size": 5242880,
-  "hash": "a1b2c3d4...64 chars BLAKE3",
-  "chunks": [
-    {
-      "index": 0,
-      "message_id": 43,
-      "size": 10485780,
-      "hash": "e5f6a7b8...post-processing",
-      "original_hash": "c9d0e1f2...pre-processing"
-    }
-  ],
-  "encrypted": true,
-  "compressed": true,
-  "created_at": 1700000000.0
-}
-```
-
-### Crash Safety
-
-**Upload**: Data is uploaded to Telegram first, then the index is saved. If the process crashes after chunk upload but before index save, the data exists on Telegram but is not referenced. Run `tvt gc --clean-partials` to detect and clean incomplete uploads.
-
-**Delete**: Index entry is removed first, then messages are deleted. If the process crashes after index removal, `tvt gc` finds and cleans the orphaned messages.
-
-**Concurrent Access**: All index read-modify-write operations are serialized with `asyncio.Lock`. Concurrent uploads cannot silently overwrite each other's entries.
-
-## Encryption Pipeline
-
-### Upload
-
-```
-Original File
-      │
-      ▼
-   Chunker (256 MB slices)
-      │
-      ▼
-   BLAKE3 hash (original_hash)
-      │
-      ▼
-   zstd Compression (level 3)
-   ── skipped for incompressible extensions
-      │
-      ▼
-   AES-256-GCM Encryption
-   ── scrypt(password, salt) → 32-byte key
-   ── 16-byte salt + 12-byte nonce = 28-byte header
-   ── ciphertext + 16-byte auth tag
-   ── overhead: 44 bytes per chunk
-      │
-      ▼
-   BLAKE3 hash of encrypted data (ChunkInfo.hash)
-      │
-      ▼
-   Upload as Telegram file message (reply to metadata)
-```
-
-### Download
-
-```
-Download chunk by message_id
-      │
-      ▼
-   Verify BLAKE3 hash (ChunkInfo.hash)
-      │
-      ▼
-   AES-256-GCM Decryption
-   ── extract 28-byte header (salt + nonce)
-   ── scrypt(password, salt) → key
-   ── decrypt and verify GCM tag
-      │
-      ▼
-   zstd Decompression
-      │
-      ▼
-   Verify original_hash (BLAKE3)
-   ── catches wrong-password decryption that passes GCM
-      │
-      ▼
-   Write chunk at offset via ChunkWriter
-      │
-      ▼
-   Verify file-level BLAKE3 hash (FileMetadata.hash)
-```
-
-## Architecture
-
-![TeleVault System Architecture](img/televault-system-architecture.png)
-
-## Key Derivation
-
-```
-scrypt(password, salt):
-  N = 2^17 (131072)
-  r = 8
-  p = 1
-  output = 32 bytes (256-bit AES key)
-```
-
-## Incompressible Extensions
-
-Compression is skipped for files that are already compressed:
-
-| Category | Extensions |
-|---|---|
-| Images | `.jpg` `.jpeg` `.png` `.gif` `.webp` `.heic` `.heif` `.avif` |
-| Video | `.mp4` `.mkv` `.avi` `.mov` `.webm` `.m4v` `.wmv` `.flv` |
-| Audio | `.mp3` `.aac` `.ogg` `.opus` `.flac` `.m4a` `.wma` |
-| Archives | `.zip` `.gz` `.bz2` `.xz` `.7z` `.rar` `.zst` `.lz4` |
-| Documents | `.pdf` `.docx` `.xlsx` `.pptx` `.odt` |
+Instead of downloading whole multi-gigabyte files to preview content:
+- `tvt preview` queries only Chunk 0 (`index == 0`).
+- Decrypts and decompresses chunk 0 in-flight.
+- Classifies MIME type and renders the leading lines with syntax formatting in < 1 second.

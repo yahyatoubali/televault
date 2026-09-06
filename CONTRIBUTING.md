@@ -74,7 +74,7 @@ Follow conventional commits:
 
 ## Pull Requests
 
-1. Branch from `needspeed`
+1. Branch from `dev`
 2. Keep changes focused — one feature/fix per PR
 3. Add tests for new functionality
 4. Ensure all tests pass
