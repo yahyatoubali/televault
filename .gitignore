@@ -79,7 +79,13 @@ site/
 Thumbs.db
 desktop.ini
 
-# TeleVault local data
+# TeleVault local data and credentials
 *.partial
 *.progress
 a.out
+config.json
+telegram.json
+td.binlog
+*.binlog
+*.session
+tdlib/

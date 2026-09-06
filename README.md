@@ -283,7 +283,7 @@ Your password **never** leaves your machine. Telegram servers see only encrypted
 
 ```json
 {
-  "channel_id": -1003652003243,
+  "channel_id": -1001234567890,
   "index_msg_id": 42,
   "snapshot_index_msg_id": 150,
   "chunk_size": 268435456,
