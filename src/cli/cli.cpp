@@ -180,25 +180,86 @@ namespace {
         }
     }
 
-    void cmd_push(AppContext& ctx, const std::string& path, bool recursive, bool resume, bool low_resource) {
+    std::string resolve_password(const std::string& explicit_pw, bool prompt_if_empty = true) {
+        if (!explicit_pw.empty()) return explicit_pw;
+        if (const char* env_pw = std::getenv("TELEVAULT_PASSWORD")) {
+            if (std::string(env_pw).length() > 0) return std::string(env_pw);
+        }
+        if (prompt_if_empty) {
+            std::print("Enter encryption password: ");
+            std::string pw;
+            std::getline(std::cin, pw);
+            return pw;
+        }
+        return {};
+    }
+
+    void cmd_push(AppContext& ctx, const std::string& path, const std::string& password,
+                  bool recursive, bool resume, bool low_resource, bool no_encryption) {
         ensure_vault(ctx);
         VaultOptions opts;
         opts.low_resource = low_resource;
         opts.resume = resume;
 
-        bool ok = ctx.vault->push(path, opts);
+        auto& cfg = ConfigManager::instance().get();
+        opts.encrypted = !no_encryption && cfg.encryption;
+        opts.compressed = cfg.compression;
+
+        if (opts.encrypted) {
+            opts.password = resolve_password(password);
+            if (opts.password.empty()) {
+                print_error("Password cannot be empty when encryption is enabled");
+                return;
+            }
+        }
+
+        ProgressBar pb;
+        auto cb = [&pb](const ProgressInfo& p) {
+            if (!p.stage.empty()) {
+                pb.set_message(p.stage);
+            }
+            if (p.total > 0) {
+                pb.update(p.current, p.total);
+            }
+        };
+
+        bool ok = ctx.vault->push(path, opts, cb);
+        pb.finish();
         if (ok) print_success(std::format("Uploaded: {}", path));
         else print_error(std::format("Upload failed: {}", path));
     }
 
-    void cmd_pull(AppContext& ctx, const std::string& path, const std::string& output, bool resume, bool low_resource) {
+    void cmd_pull(AppContext& ctx, const std::string& path, const std::string& output,
+                  const std::string& password, bool resume, bool low_resource) {
         ensure_vault(ctx);
         VaultOptions opts;
         opts.low_resource = low_resource;
         opts.resume = resume;
 
+        auto& cfg = ConfigManager::instance().get();
+        opts.encrypted = cfg.encryption;
+
+        if (opts.encrypted) {
+            opts.password = resolve_password(password);
+            if (opts.password.empty()) {
+                print_error("Password cannot be empty when encryption is enabled");
+                return;
+            }
+        }
+
+        ProgressBar pb;
+        auto cb = [&pb](const ProgressInfo& p) {
+            if (!p.stage.empty()) {
+                pb.set_message(p.stage);
+            }
+            if (p.total > 0) {
+                pb.update(p.current, p.total);
+            }
+        };
+
         auto output_path = output.empty() ? path : output;
-        bool ok = ctx.vault->pull(path, output_path, opts);
+        bool ok = ctx.vault->pull(path, output_path, opts, cb);
+        pb.finish();
         if (ok) print_success(std::format("Downloaded: {} → {}", path, output_path));
         else print_error(std::format("Download failed: {}", path));
     }
@@ -230,14 +291,18 @@ namespace {
         std::println("\nTotal: {} files", files.size());
     }
 
-    void cmd_cat(AppContext& ctx, const std::string& path) {
+    void cmd_cat(AppContext& ctx, const std::string& path, const std::string& password) {
         ensure_vault(ctx);
         VaultOptions opts;
         auto& cfg = ConfigManager::instance().get();
-        // Password not stored in config — user must provide via env or we prompt
-        if (cfg.encryption) {
-            std::print("Enter encryption password: ");
-            std::getline(std::cin, opts.password);
+        opts.encrypted = cfg.encryption;
+
+        if (opts.encrypted) {
+            opts.password = resolve_password(password);
+            if (opts.password.empty()) {
+                print_error("Password cannot be empty when encryption is enabled");
+                return;
+            }
         }
         if (!ctx.vault->cat(path, opts)) {
             print_error("Failed to cat file");
@@ -377,23 +442,29 @@ void build_cli(CLI::App& app, AppContext& ctx) {
     // ── File operation subcommands ────────────────────────────────────
     struct PushArgs {
         std::string path;
+        std::string password;
         bool recursive{};
         bool resume{};
         bool low{};
+        bool no_encryption{};
     };
     auto push_args = std::make_shared<PushArgs>();
     auto* push = app.add_subcommand("push", "Upload a file");
     push->add_option("path", push_args->path, "File or directory to upload")->required();
+    push->add_option("-p,--password", push_args->password, "Encryption password (or set TELEVAULT_PASSWORD)");
     push->add_flag("-r,--recursive", push_args->recursive, "Upload directory recursively");
     push->add_flag("--resume", push_args->resume, "Resume interrupted upload");
     push->add_flag("--low-resource", push_args->low, "Low-resource mode");
+    push->add_flag("--no-encryption", push_args->no_encryption, "Disable encryption");
     push->callback([&ctx, push_args]() {
-        cmd_push(ctx, push_args->path, push_args->recursive, push_args->resume, push_args->low);
+        cmd_push(ctx, push_args->path, push_args->password, push_args->recursive,
+                 push_args->resume, push_args->low, push_args->no_encryption);
     });
 
     struct PullArgs {
         std::string path;
         std::string output;
+        std::string password;
         bool resume{};
         bool low{};
     };
@@ -401,10 +472,12 @@ void build_cli(CLI::App& app, AppContext& ctx) {
     auto* pull = app.add_subcommand("pull", "Download a file");
     pull->add_option("path", pull_args->path, "File path in vault")->required();
     pull->add_option("-o,--output", pull_args->output, "Output path (use '-' for stdout)");
+    pull->add_option("-p,--password", pull_args->password, "Decryption password (or set TELEVAULT_PASSWORD)");
     pull->add_flag("--resume", pull_args->resume, "Resume interrupted download");
     pull->add_flag("--low-resource", pull_args->low, "Low-resource mode");
     pull->callback([&ctx, pull_args]() {
-        cmd_pull(ctx, pull_args->path, pull_args->output, pull_args->resume, pull_args->low);
+        cmd_pull(ctx, pull_args->path, pull_args->output, pull_args->password,
+                 pull_args->resume, pull_args->low);
     });
 
     struct LsArgs {
@@ -417,10 +490,15 @@ void build_cli(CLI::App& app, AppContext& ctx) {
     ls->add_option("--sort", ls_args->sort, "Sort field");
     ls->callback([&ctx, ls_args]() { cmd_ls(ctx, ls_args->json, ls_args->sort); });
 
-    auto cat_path = std::make_shared<std::string>();
+    struct CatArgs {
+        std::string path;
+        std::string password;
+    };
+    auto cat_args = std::make_shared<CatArgs>();
     auto* cat = app.add_subcommand("cat", "Stream file to stdout");
-    cat->add_option("path", *cat_path, "File path in vault")->required();
-    cat->callback([&ctx, cat_path]() { cmd_cat(ctx, *cat_path); });
+    cat->add_option("path", cat_args->path, "File path in vault")->required();
+    cat->add_option("-p,--password", cat_args->password, "Decryption password (or set TELEVAULT_PASSWORD)");
+    cat->callback([&ctx, cat_args]() { cmd_cat(ctx, cat_args->path, cat_args->password); });
 
     struct FindArgs {
         std::string query;
