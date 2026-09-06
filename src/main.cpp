@@ -39,6 +39,7 @@ int main(int argc, char** argv) {
     spdlog::info("TeleVault v{} starting", TELEVAULT_VERSION);
 
     CLI::App app{"TeleVault — Encrypted cloud storage on Telegram channels"};
+    app.set_version_flag("-V,--version", std::string("TeleVault v") + TELEVAULT_VERSION);
     app.require_subcommand(0, 1);
 
     // Global options
