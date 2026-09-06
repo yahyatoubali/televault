@@ -38,12 +38,18 @@ echo "==> Packaging release archive..."
 mkdir -p "$DIST_DIR" "$STAGE_DIR"
 cp "$ROOT_DIR/build/src/televault" "$STAGE_DIR/"
 strip "$STAGE_DIR/televault" 2>/dev/null || true
+ln -sf televault "$STAGE_DIR/tvt"
 cp "$ROOT_DIR/README.md" "$STAGE_DIR/" 2>/dev/null || true
 cp "$ROOT_DIR/LICENSE" "$STAGE_DIR/" 2>/dev/null || true
 
 tar -czf "$DIST_DIR/$ARCHIVE_NAME" -C "$ROOT_DIR/build/stage" "televault-v${VERSION}-${OS}-${ARCH}"
+cp "$STAGE_DIR/televault" "$DIST_DIR/televault-v${VERSION}-${OS}-${ARCH}"
+
 cd "$DIST_DIR"
 sha256sum "$ARCHIVE_NAME" > "${ARCHIVE_NAME}.sha256"
+sha256sum "televault-v${VERSION}-${OS}-${ARCH}" > "televault-v${VERSION}-${OS}-${ARCH}.sha256"
 
 echo "==> Created release archive at: $DIST_DIR/$ARCHIVE_NAME"
-echo "==> SHA256: $(cat "${ARCHIVE_NAME}.sha256")"
+echo "==> SHA256 (archive): $(cat "${ARCHIVE_NAME}.sha256")"
+echo "==> Created binary at: $DIST_DIR/televault-v${VERSION}-${OS}-${ARCH}"
+echo "==> SHA256 (binary):  $(cat "televault-v${VERSION}-${OS}-${ARCH}.sha256")"
