@@ -28,6 +28,11 @@ bool AppContext::ensure_vault() {
     auto config = cfg.get();
     if (config.channel_id == 0) return false;
 
+    if (!tg_client.connect() || !tg_client.is_authorized()) {
+        spdlog::warn("Telegram client not connected or authorized");
+        return false;
+    }
+
     vault = std::make_unique<TeleVault>(tg_client);
     if (!vault->initialize(config.channel_id, config.low_resource.enabled)) {
         vault.reset();

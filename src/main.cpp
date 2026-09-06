@@ -30,7 +30,14 @@ int main(int argc, char** argv) {
     auto& cfg = ConfigManager::instance();
     cfg.load();
 
-    Logging::setup(cfg.data_dir(), "info");
+    bool has_debug = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view(argv[i]) == "--debug") {
+            has_debug = true;
+            break;
+        }
+    }
+    Logging::setup(cfg.data_dir(), has_debug ? "debug" : "info");
 
     AppContext app_ctx;
     g_app_ctx = &app_ctx;
@@ -43,9 +50,11 @@ int main(int argc, char** argv) {
     app.require_subcommand(0, 1);
 
     // Global options
-    bool verbose{}, debug{};
+    bool verbose{};
     app.add_flag("-v,--verbose", verbose, "Verbose output");
-    app.add_flag("--debug", debug, "Debug logging");
+    app.add_flag("--debug", [](int64_t count) {
+        if (count > 0) Logging::set_level("debug");
+    }, "Debug logging");
 
     // ── Build CLI ─────────────────────────────────────────────────────
     build_cli(app, app_ctx);
@@ -61,8 +70,6 @@ int main(int argc, char** argv) {
         app_ctx.shutdown();
         return 1;
     }
-
-    if (debug) Logging::set_level("debug");
 
     app_ctx.shutdown();
     return 0;

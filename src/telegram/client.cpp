@@ -16,6 +16,7 @@
 #include <queue>
 #include <atomic>
 #include <chrono>
+#include <print>
 
 namespace tv {
 
@@ -87,28 +88,30 @@ public:
         params_obj->ignore_file_names_ = false;
         auto params = make_object<tda::setTdlibParameters>(std::move(params_obj));
 
-        // Send parameters asynchronously
-        auto result_future = send_query_async(std::move(params));
+        // Send parameters synchronously so errors are caught immediately
+        auto result = send_query_sync(std::move(params));
+        if (!result || result->get_id() == tda::error::ID) {
+            if (result) {
+                auto& err = static_cast<tda::error&>(*result);
+                spdlog::error("setTdlibParameters failed: {} (code {})", err.message_, err.code_);
+                std::println("\033[31m✗ Telegram initialization error: {}\033[0m", err.message_);
+            } else {
+                spdlog::error("setTdlibParameters timed out");
+                std::println("\033[31m✗ Telegram initialization timed out\033[0m");
+            }
+            stop();
+            return false;
+        }
 
-        // Wait for client ready
+        // Wait for initial authorization state
         {
             std::unique_lock lock(mutex_);
-            if (!cv_.wait_for(lock, std::chrono::seconds(60), [this] {
-                return auth_state_ >= AuthState::WaitPhone;
+            if (!cv_.wait_for(lock, std::chrono::seconds(10), [this] {
+                return auth_state_.load() >= AuthState::WaitPhone;
             })) {
-                // Check if setTdlibParameters returned an error
-                if (result_future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                    auto result = result_future.get();
-                    if (result && result->get_id() == tda::error::ID) {
-                        auto& err = static_cast<tda::error&>(*result);
-                        spdlog::error("setTdlibParameters failed: {} (code {})", err.message_, err.code_);
-                    } else {
-                        spdlog::error("setTdlibParameters returned unexpected result");
-                    }
-                } else {
-                    spdlog::error("Timed out waiting for Tdlib client to initialize (auth_state={})",
-                        static_cast<int>(auth_state_.load()));
-                }
+                spdlog::error("Timed out waiting for Tdlib client to initialize (auth_state={})",
+                    static_cast<int>(auth_state_.load()));
+                stop();
                 return false;
             }
         }
@@ -145,23 +148,52 @@ public:
         code_cb_ = std::move(code_cb);
         pw_cb_ = std::move(pw_cb);
 
-        while (auth_state_ < AuthState::Ready) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        while (true) {
+            AuthState current_state;
+            {
+                std::unique_lock lock(mutex_);
+                if (!cv_.wait_for(lock, std::chrono::seconds(60), [this] {
+                    return auth_state_.load() != AuthState::None;
+                })) {
+                    spdlog::error("Timed out waiting for Telegram authorization state update");
+                    std::println("\033[31m✗ Timed out waiting for Telegram response\033[0m");
+                    return false;
+                }
+                current_state = auth_state_.load();
+            }
 
-            switch (auth_state_) {
+            switch (current_state) {
                 case AuthState::WaitPhone:
-                    send_phone();
+                    if (!send_phone()) {
+                        return false;
+                    }
                     break;
                 case AuthState::WaitCode:
-                    if (!code_cb_) break;
-                    send_code(code_cb_());
+                    if (!code_cb_) {
+                        spdlog::error("Authentication code required but no callback provided");
+                        return false;
+                    }
+                    if (!send_code(code_cb_())) {
+                        return false;
+                    }
                     break;
                 case AuthState::WaitPassword:
                     if (!pw_cb_) {
                         spdlog::error("2FA password required but no callback provided");
+                        std::println("\033[31m✗ 2FA password required\033[0m");
                         return false;
                     }
-                    send_password(pw_cb_());
+                    if (!send_password(pw_cb_())) {
+                        return false;
+                    }
+                    break;
+                case AuthState::WaitOtherDevice:
+                    {
+                        std::unique_lock lock(mutex_);
+                        cv_.wait_for(lock, std::chrono::seconds(120), [this] {
+                            return auth_state_.load() != AuthState::WaitOtherDevice;
+                        });
+                    }
                     break;
                 case AuthState::Ready:
                     return true;
@@ -171,14 +203,17 @@ public:
                     break;
             }
         }
-        return auth_state_ == AuthState::Ready;
     }
 
     void logout() {
         if (!client_ || !ready_) return;
-        send_query_async(make_object<tda::logOut>());
-        auth_state_ = AuthState::None;
-        ready_ = false;
+        send_query_sync(make_object<tda::logOut>());
+        {
+            std::lock_guard lock(mutex_);
+            auth_state_ = AuthState::None;
+            ready_ = false;
+        }
+        cv_.notify_all();
     }
 
     int32_t api_id() const { return api_id_; }
@@ -502,6 +537,7 @@ private:
         None,
         WaitPhone,
         WaitCode,
+        WaitOtherDevice,
         WaitPassword,
         Ready,
         Failed
@@ -509,10 +545,30 @@ private:
 
     // ── Internal helpers ────────────────────────────────────────────
 
+    // Request QR code authentication from Telegram
+    bool request_qr_code() {
+        auto req = make_object<tda::requestQrCodeAuthentication>();
+        auto result = send_query_sync(std::move(req));
+        if (!result || result->get_id() == tda::error::ID) {
+            if (result) {
+                auto& err = static_cast<tda::error&>(*result);
+                spdlog::error("requestQrCodeAuthentication failed: {} (code {})", err.message_, err.code_);
+            }
+            return false;
+        }
+        return true;
+    }
+
     // Send query asynchronously and get a future for the response
     std::future<ObjectPtr> send_query_async(FunctionPtr fn) {
         auto promise = std::make_shared<std::promise<ObjectPtr>>();
         auto future = promise->get_future();
+
+        if (!client_) {
+            spdlog::error("Telegram client is not connected");
+            promise->set_value(nullptr);
+            return future;
+        }
 
         std::lock_guard lock(mutex_);
         auto id = ++next_query_id_;
@@ -587,6 +643,7 @@ private:
     }
 
     void handle_auth_state(ObjectPtr state) {
+        if (!state) return;
         spdlog::debug("Auth state update: type_id={}", state->get_id());
         AuthState new_state;
         switch (state->get_id()) {
@@ -601,23 +658,55 @@ private:
                 return;
 
             case tda::authorizationStateWaitPhoneNumber::ID:
+                spdlog::debug("Got WaitPhoneNumber");
                 new_state = AuthState::WaitPhone;
                 break;
 
             case tda::authorizationStateWaitCode::ID:
+                spdlog::debug("Got WaitCode");
                 new_state = AuthState::WaitCode;
                 break;
 
+            case tda::authorizationStateWaitOtherDeviceConfirmation::ID: {
+                auto& wait_other = static_cast<tda::authorizationStateWaitOtherDeviceConfirmation&>(*state);
+                std::string link = wait_other.link_;
+                spdlog::info("Confirm login on another device or scan QR code: {}", link);
+                std::println("\n\033[1;36m┌─────────────────────────────────────────────────────────────┐\033[0m");
+                std::println("\033[1;36m│ Scan QR code with Telegram on your phone:                   │\033[0m");
+                std::println("\033[1;36m│ Settings → Devices → Link Desktop Device                    │\033[0m");
+                std::println("\033[1;36m└─────────────────────────────────────────────────────────────┘\033[0m\n");
+                std::string cmd = "qrencode -t ANSIUTF8 '" + link + "' 2>/dev/null";
+                int ret = std::system(cmd.c_str());
+                if (ret != 0) {
+                    std::println("Or open this link on a device with Telegram: {}", link);
+                } else {
+                    std::println("\nLink: {}", link);
+                }
+                std::println("Waiting for confirmation from your Telegram device...");
+                new_state = AuthState::WaitOtherDevice;
+                break;
+            }
+
+            case tda::authorizationStateWaitRegistration::ID: {
+                spdlog::error("Telegram account not registered for this phone number");
+                std::println("\033[31m✗ Account is not registered on Telegram\033[0m");
+                new_state = AuthState::Failed;
+                break;
+            }
+
             case tda::authorizationStateWaitPassword::ID:
+                spdlog::debug("Got WaitPassword");
                 new_state = AuthState::WaitPassword;
                 break;
 
             case tda::authorizationStateReady::ID:
+                spdlog::info("Telegram authorization ready");
                 new_state = AuthState::Ready;
                 break;
 
             case tda::authorizationStateClosed::ID:
             case tda::authorizationStateLoggingOut::ID:
+            case tda::authorizationStateClosing::ID:
                 new_state = AuthState::None;
                 ready_ = false;
                 break;
@@ -633,31 +722,133 @@ private:
         cv_.notify_all();
     }
 
-    void send_phone() {
+    bool send_phone() {
         auto& cfg = ConfigManager::instance();
         auto phone = cfg.get().telegram.phone;
         if (phone.empty()) {
             spdlog::error("No phone number configured");
-            auth_state_ = AuthState::Failed;
-            return;
+            std::println("\033[31m✗ No phone number configured\033[0m");
+            {
+                std::lock_guard lock(mutex_);
+                auth_state_ = AuthState::Failed;
+            }
+            cv_.notify_all();
+            return false;
         }
 
         auto set_phone = make_object<tda::setAuthenticationPhoneNumber>();
         set_phone->phone_number_ = phone;
-        auth_state_.store(AuthState::None, std::memory_order_release);
-        send_query_async(std::move(set_phone));
+        set_phone->settings_ = make_object<tda::phoneNumberAuthenticationSettings>();
+
+        {
+            std::lock_guard lock(mutex_);
+            auth_state_ = AuthState::None;
+        }
+
+        auto result = send_query_sync(std::move(set_phone));
+        if (!result) {
+            spdlog::error("Failed to send phone number: query timed out");
+            std::println("\033[31m✗ Telegram query timed out\033[0m");
+            {
+                std::lock_guard lock(mutex_);
+                auth_state_ = AuthState::Failed;
+            }
+            cv_.notify_all();
+            return false;
+        }
+
+        if (result->get_id() == tda::error::ID) {
+            auto& err = static_cast<tda::error&>(*result);
+            spdlog::warn("setAuthenticationPhoneNumber failed: {} (code {})", err.message_, err.code_);
+            if (err.message_ == "UPDATE_APP_TO_LOGIN") {
+                std::println("\033[33mTelegram restricted SMS login on this API layer (UPDATE_APP_TO_LOGIN).\033[0m");
+                std::println("\033[32mSwitching to instant QR Code authentication...\033[0m");
+                if (request_qr_code()) {
+                    return true;
+                }
+            }
+            std::println("\033[31m✗ Telegram auth error: {} (code {})\033[0m", err.message_, err.code_);
+            {
+                std::lock_guard lock(mutex_);
+                auth_state_ = AuthState::Failed;
+            }
+            cv_.notify_all();
+            return false;
+        }
+
+        return true;
     }
 
-    void send_code(const std::string& code) {
+    bool send_code(const std::string& code) {
         auto check = make_object<tda::checkAuthenticationCode>();
         check->code_ = code;
-        send_query_async(std::move(check));
+
+        {
+            std::lock_guard lock(mutex_);
+            auth_state_ = AuthState::None;
+        }
+
+        auto result = send_query_sync(std::move(check));
+        if (!result) {
+            spdlog::error("Failed to verify code: query timed out");
+            std::println("\033[31m✗ Telegram query timed out\033[0m");
+            {
+                std::lock_guard lock(mutex_);
+                auth_state_ = AuthState::Failed;
+            }
+            cv_.notify_all();
+            return false;
+        }
+
+        if (result->get_id() == tda::error::ID) {
+            auto& err = static_cast<tda::error&>(*result);
+            spdlog::error("checkAuthenticationCode failed: {} (code {})", err.message_, err.code_);
+            std::println("\033[31m✗ Invalid code or error: {} (code {})\033[0m", err.message_, err.code_);
+            {
+                std::lock_guard lock(mutex_);
+                auth_state_ = AuthState::Failed;
+            }
+            cv_.notify_all();
+            return false;
+        }
+
+        return true;
     }
 
-    void send_password(const std::string& password) {
+    bool send_password(const std::string& password) {
         auto check = make_object<tda::checkAuthenticationPassword>();
         check->password_ = password;
-        send_query_async(std::move(check));
+
+        {
+            std::lock_guard lock(mutex_);
+            auth_state_ = AuthState::None;
+        }
+
+        auto result = send_query_sync(std::move(check));
+        if (!result) {
+            spdlog::error("Failed to verify 2FA password: query timed out");
+            std::println("\033[31m✗ Telegram query timed out\033[0m");
+            {
+                std::lock_guard lock(mutex_);
+                auth_state_ = AuthState::Failed;
+            }
+            cv_.notify_all();
+            return false;
+        }
+
+        if (result->get_id() == tda::error::ID) {
+            auto& err = static_cast<tda::error&>(*result);
+            spdlog::error("checkAuthenticationPassword failed: {} (code {})", err.message_, err.code_);
+            std::println("\033[31m✗ 2FA password error: {} (code {})\033[0m", err.message_, err.code_);
+            {
+                std::lock_guard lock(mutex_);
+                auth_state_ = AuthState::Failed;
+            }
+            cv_.notify_all();
+            return false;
+        }
+
+        return true;
     }
 
     // ── File updates ────────────────────────────────────────────────

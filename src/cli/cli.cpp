@@ -35,14 +35,13 @@ namespace {
     void cmd_login(AppContext& ctx) {
         SessionManager sm;
 
-        if (sm.has_api_credentials() && ctx.tg_client.is_authorized()) {
-            print_info("Already logged in. Use 'logout' first to re-authenticate.");
-            return;
-        }
-
         if (sm.has_api_credentials()) {
             // Already have credentials from config — push to client
             ctx.tg_client.set_api_params(sm.api_id(), sm.api_hash());
+            if (ctx.tg_client.connect() && ctx.tg_client.is_authorized()) {
+                print_info("Already logged in. Use 'logout' first to re-authenticate.");
+                return;
+            }
         } else {
             std::print("Enter API ID (from my.telegram.org): ");
             std::string api_id_str;
@@ -52,7 +51,10 @@ namespace {
             std::string api_hash;
             std::getline(std::cin, api_hash);
 
-            int32_t api_id = std::stoi(api_id_str);
+            int32_t api_id = 0;
+            try {
+                api_id = std::stoi(api_id_str);
+            } catch (...) {}
             if (api_id <= 0 || api_hash.empty()) {
                 print_error("Invalid API credentials");
                 return;
@@ -65,6 +67,11 @@ namespace {
         std::print("Enter phone number (with country code): ");
         std::string phone;
         std::getline(std::cin, phone);
+
+        if (phone.empty()) {
+            print_error("Phone number cannot be empty");
+            return;
+        }
 
         AuthFlow auth(ctx.tg_client);
 
@@ -160,10 +167,16 @@ namespace {
         print_info(std::format("User: @{} (ID: {})", username, user_id));
     }
 
-    // ── File operations ──────────────────────────────────────────────
     void ensure_vault(AppContext& ctx) {
+        if (!ctx.tg_client.connect() || !ctx.tg_client.is_authorized()) {
+            throw std::runtime_error("Not authenticated. Use 'login' first.");
+        }
+        auto& cfg = ConfigManager::instance().get();
+        if (cfg.channel_id == 0) {
+            throw std::runtime_error("No channel configured. Use 'setup' first.");
+        }
         if (!ctx.ensure_vault()) {
-            throw std::runtime_error("Vault not initialized. Run 'setup' first.");
+            throw std::runtime_error("Vault channel initialization failed. Check channel access or run 'setup'.");
         }
     }
 
@@ -362,85 +375,108 @@ void build_cli(CLI::App& app, AppContext& ctx) {
     whoami->callback([&ctx]() { cmd_whoami(ctx); });
 
     // ── File operation subcommands ────────────────────────────────────
+    struct PushArgs {
+        std::string path;
+        bool recursive{};
+        bool resume{};
+        bool low{};
+    };
+    auto push_args = std::make_shared<PushArgs>();
     auto* push = app.add_subcommand("push", "Upload a file");
-    std::string push_path;
-    bool push_recursive{}, push_resume{}, push_low{};
-    push->add_option("path", push_path, "File or directory to upload")->required();
-    push->add_flag("-r,--recursive", push_recursive, "Upload directory recursively");
-    push->add_flag("--resume", push_resume, "Resume interrupted upload");
-    push->add_flag("--low-resource", push_low, "Low-resource mode");
-    push->callback([&ctx, &push_path, &push_recursive, &push_resume, &push_low]() {
-        cmd_push(ctx, push_path, push_recursive, push_resume, push_low);
+    push->add_option("path", push_args->path, "File or directory to upload")->required();
+    push->add_flag("-r,--recursive", push_args->recursive, "Upload directory recursively");
+    push->add_flag("--resume", push_args->resume, "Resume interrupted upload");
+    push->add_flag("--low-resource", push_args->low, "Low-resource mode");
+    push->callback([&ctx, push_args]() {
+        cmd_push(ctx, push_args->path, push_args->recursive, push_args->resume, push_args->low);
     });
 
+    struct PullArgs {
+        std::string path;
+        std::string output;
+        bool resume{};
+        bool low{};
+    };
+    auto pull_args = std::make_shared<PullArgs>();
     auto* pull = app.add_subcommand("pull", "Download a file");
-    std::string pull_path, pull_output;
-    bool pull_resume{}, pull_low{};
-    pull->add_option("path", pull_path, "File path in vault")->required();
-    pull->add_option("-o,--output", pull_output, "Output path (use '-' for stdout)");
-    pull->add_flag("--resume", pull_resume, "Resume interrupted download");
-    pull->add_flag("--low-resource", pull_low, "Low-resource mode");
-    pull->callback([&ctx, &pull_path, &pull_output, &pull_resume, &pull_low]() {
-        cmd_pull(ctx, pull_path, pull_output, pull_resume, pull_low);
+    pull->add_option("path", pull_args->path, "File path in vault")->required();
+    pull->add_option("-o,--output", pull_args->output, "Output path (use '-' for stdout)");
+    pull->add_flag("--resume", pull_args->resume, "Resume interrupted download");
+    pull->add_flag("--low-resource", pull_args->low, "Low-resource mode");
+    pull->callback([&ctx, pull_args]() {
+        cmd_pull(ctx, pull_args->path, pull_args->output, pull_args->resume, pull_args->low);
     });
 
+    struct LsArgs {
+        bool json{};
+        std::string sort;
+    };
+    auto ls_args = std::make_shared<LsArgs>();
     auto* ls = app.add_subcommand("ls", "List files");
-    bool ls_json{};
-    std::string ls_sort;
-    ls->add_flag("--json", ls_json, "JSON output");
-    ls->add_option("--sort", ls_sort, "Sort field");
-    ls->callback([&ctx, &ls_json, &ls_sort]() { cmd_ls(ctx, ls_json, ls_sort); });
+    ls->add_flag("--json", ls_args->json, "JSON output");
+    ls->add_option("--sort", ls_args->sort, "Sort field");
+    ls->callback([&ctx, ls_args]() { cmd_ls(ctx, ls_args->json, ls_args->sort); });
 
+    auto cat_path = std::make_shared<std::string>();
     auto* cat = app.add_subcommand("cat", "Stream file to stdout");
-    std::string cat_path;
-    cat->add_option("path", cat_path, "File path in vault")->required();
-    cat->callback([&ctx, &cat_path]() { cmd_cat(ctx, cat_path); });
+    cat->add_option("path", *cat_path, "File path in vault")->required();
+    cat->callback([&ctx, cat_path]() { cmd_cat(ctx, *cat_path); });
 
+    struct FindArgs {
+        std::string query;
+        bool json{};
+    };
+    auto find_args = std::make_shared<FindArgs>();
     auto* find = app.add_subcommand("find", "Search files by name");
-    std::string find_query;
-    bool find_json{};
-    find->add_option("query", find_query, "Search query")->required();
-    find->add_flag("--json", find_json, "JSON output");
-    find->callback([&ctx, &find_query, &find_json]() { cmd_find(ctx, find_query, find_json); });
+    find->add_option("query", find_args->query, "Search query")->required();
+    find->add_flag("--json", find_args->json, "JSON output");
+    find->callback([&ctx, find_args]() { cmd_find(ctx, find_args->query, find_args->json); });
 
+    struct InfoArgs {
+        std::string path;
+        bool json{};
+    };
+    auto info_args = std::make_shared<InfoArgs>();
     auto* info = app.add_subcommand("info", "Detailed file info");
-    std::string info_path;
-    bool info_json{};
-    info->add_option("path", info_path, "File path in vault")->required();
-    info->add_flag("--json", info_json, "JSON output");
-    info->callback([&ctx, &info_path, &info_json]() { cmd_info(ctx, info_path, info_json); });
+    info->add_option("path", info_args->path, "File path in vault")->required();
+    info->add_flag("--json", info_args->json, "JSON output");
+    info->callback([&ctx, info_args]() { cmd_info(ctx, info_args->path, info_args->json); });
 
+    auto stat_json = std::make_shared<bool>(false);
     auto* stat = app.add_subcommand("stat", "Vault statistics");
-    bool stat_json{};
-    stat->add_flag("--json", stat_json, "JSON output");
-    stat->callback([&ctx, &stat_json]() { cmd_stat(ctx, stat_json); });
+    stat->add_flag("--json", *stat_json, "JSON output");
+    stat->callback([&ctx, stat_json]() { cmd_stat(ctx, *stat_json); });
 
+    auto rm_path = std::make_shared<std::string>();
     auto* rm = app.add_subcommand("rm", "Delete a file");
-    std::string rm_path;
-    rm->add_option("path", rm_path, "File path in vault")->required();
-    rm->callback([&ctx, &rm_path]() { cmd_rm(ctx, rm_path); });
+    rm->add_option("path", *rm_path, "File path in vault")->required();
+    rm->callback([&ctx, rm_path]() { cmd_rm(ctx, *rm_path); });
 
+    auto verify_path = std::make_shared<std::string>();
     auto* verify_cmd = app.add_subcommand("verify", "Verify file integrity");
-    std::string verify_path;
-    verify_cmd->add_option("path", verify_path, "File path in vault")->required();
-    verify_cmd->callback([&ctx, &verify_path]() { cmd_verify(ctx, verify_path); });
+    verify_cmd->add_option("path", *verify_path, "File path in vault")->required();
+    verify_cmd->callback([&ctx, verify_path]() { cmd_verify(ctx, *verify_path); });
 
     // ── GC ────────────────────────────────────────────────────────────
+    struct GcArgs {
+        bool force{};
+        bool clean{};
+    };
+    auto gc_args = std::make_shared<GcArgs>();
     auto* gc = app.add_subcommand("gc", "Garbage collection");
-    bool gc_force{}, gc_clean{};
-    gc->add_flag("--force", gc_force, "Actually delete orphans");
-    gc->add_flag("--clean-partials", gc_clean, "Clean partial uploads");
-    gc->callback([&ctx, &gc_force, &gc_clean]() { cmd_gc(ctx, gc_force, gc_clean); });
+    gc->add_flag("--force", gc_args->force, "Actually delete orphans");
+    gc->add_flag("--clean-partials", gc_args->clean, "Clean partial uploads");
+    gc->callback([&ctx, gc_args]() { cmd_gc(ctx, gc_args->force, gc_args->clean); });
 
     // ── TUI ───────────────────────────────────────────────────────────
     auto* tui = app.add_subcommand("tui", "Launch terminal UI");
     tui->callback([&ctx]() { cmd_tui(ctx); });
 
     // ── Preview ───────────────────────────────────────────────────────
+    auto preview_path = std::make_shared<std::string>();
     auto* preview = app.add_subcommand("preview", "Preview a file");
-    std::string preview_path;
-    preview->add_option("path", preview_path, "File path in vault")->required();
-    preview->callback([&ctx, &preview_path]() { cmd_preview(ctx, preview_path); });
+    preview->add_option("path", *preview_path, "File path in vault")->required();
+    preview->callback([&ctx, preview_path]() { cmd_preview(ctx, *preview_path); });
 
     // ── Advanced subcommands ──────────────────────────────────────────
     auto* mount = app.add_subcommand("mount", "Mount FUSE filesystem");
