@@ -375,6 +375,16 @@ namespace {
         }
     }
 
+    void cmd_recover(AppContext& ctx) {
+        ensure_vault(ctx);
+        print_info("Scanning Telegram channel for file metadata...");
+        if (ctx.vault->recover_index()) {
+            print_success("Vault index successfully recovered and pinned!");
+        } else {
+            print_error("Recovery failed: no file metadata found in channel history");
+        }
+    }
+
     // ── GC ────────────────────────────────────────────────────────────
     void cmd_gc(AppContext& ctx, bool force, bool clean_partials) {
         ctx.initialize();
@@ -534,6 +544,9 @@ void build_cli(CLI::App& app, AppContext& ctx) {
     auto* verify_cmd = app.add_subcommand("verify", "Verify file integrity");
     verify_cmd->add_option("path", *verify_path, "File path in vault")->required();
     verify_cmd->callback([&ctx, verify_path]() { cmd_verify(ctx, *verify_path); });
+
+    auto* recover = app.add_subcommand("recover", "Reconstruct vault index from channel history");
+    recover->callback([&ctx]() { cmd_recover(ctx); });
 
     // ── GC ────────────────────────────────────────────────────────────
     struct GcArgs {

@@ -275,6 +275,14 @@ std::vector<uint8_t> decrypt_chunk(
         if (decrypt_gcm_block(ct, tag, key, nonce, pt)) {
             return pt;
         }
+
+        // If fallback_salt is provided, also try 44-byte format with key derived from fallback_salt
+        if (!fallback_salt.empty()) {
+            auto fb_key = derive_key(password, fallback_salt);
+            if (decrypt_gcm_block(ct, tag, fb_key, nonce, pt)) {
+                return pt;
+            }
+        }
     }
 
     // Legacy 28-byte format requires fallback salt

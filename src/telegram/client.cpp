@@ -19,6 +19,7 @@
 #include <print>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
+#include <openssl/buffer.h>
 #include <zlib.h>
 
 namespace tv {
@@ -101,6 +102,61 @@ static std::string extract_text(const tda::message& msg) {
 
     inflateEnd(&strm);
     return out;
+}
+
+static std::string compress_tv1(const std::string& text) {
+    if (text.empty()) return text;
+
+    z_stream strm{};
+    if (deflateInit2(&strm, 9, Z_DEFLATED, 15, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+        return text;
+    }
+
+    strm.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(text.data()));
+    strm.avail_in = static_cast<uInt>(text.size());
+
+    std::vector<uint8_t> compressed;
+    compressed.resize(deflateBound(&strm, static_cast<uLong>(text.size())));
+
+    strm.next_out = compressed.data();
+    strm.avail_out = static_cast<uInt>(compressed.size());
+
+    int ret = deflate(&strm, Z_FINISH);
+    if (ret != Z_STREAM_END) {
+        deflateEnd(&strm);
+        return text;
+    }
+    compressed.resize(compressed.size() - strm.avail_out);
+    deflateEnd(&strm);
+
+    // Base64 encode
+    BIO* b64_bio = BIO_new(BIO_f_base64());
+    BIO_set_flags(b64_bio, BIO_FLAGS_BASE64_NO_NL);
+    BIO* mem_bio = BIO_new(BIO_s_mem());
+    BIO* bio = BIO_push(b64_bio, mem_bio);
+
+    BIO_write(bio, compressed.data(), static_cast<int>(compressed.size()));
+    BIO_flush(bio);
+
+    BUF_MEM* mem_ptr = nullptr;
+    BIO_get_mem_ptr(bio, &mem_ptr);
+    std::string result = "__TV1__";
+    if (mem_ptr && mem_ptr->data && mem_ptr->length > 0) {
+        result.append(mem_ptr->data, mem_ptr->length);
+    }
+    BIO_free_all(bio);
+    return result;
+}
+
+static std::string maybe_compress(const std::string& text) {
+    if (text.size() <= 4096) {
+        return text;
+    }
+    auto comp = compress_tv1(text);
+    if (comp.size() < text.size()) {
+        return comp;
+    }
+    return text;
 }
 
 // ── Implementation ────────────────────────────────────────────────────
@@ -195,6 +251,15 @@ public:
                 } catch (...) {}
             }
             pending_.clear();
+        }
+        {
+            std::lock_guard lock(download_mutex_);
+            for (auto& [id, promise] : pending_downloads_) {
+                try {
+                    promise->set_value(false);
+                } catch (...) {}
+            }
+            pending_downloads_.clear();
         }
     }
 
@@ -331,7 +396,7 @@ public:
 
         auto content = make_object<tda::inputMessageText>();
         auto formatted = make_object<tda::formattedText>();
-        formatted->text_ = text;
+        formatted->text_ = maybe_compress(text);
         content->text_ = std::move(formatted);
         send->input_message_content_ = std::move(content);
 
@@ -400,12 +465,20 @@ public:
 
         auto content = make_object<tda::inputMessageText>();
         auto formatted = make_object<tda::formattedText>();
-        formatted->text_ = text;
+        formatted->text_ = maybe_compress(text);
         content->text_ = std::move(formatted);
         edit->input_message_content_ = std::move(content);
 
         auto result = send_query_sync(std::move(edit));
-        return result && result->get_id() == tda::message::ID;
+        if (!result || result->get_id() != tda::message::ID) {
+            if (result && result->get_id() == tda::error::ID) {
+                auto& err = static_cast<tda::error&>(*result);
+                spdlog::warn("edit_message failed for msg {}: {} (code {})",
+                             msg_id, err.message_, err.code_);
+            }
+            return false;
+        }
+        return true;
     }
 
     bool delete_messages(int64_t chat_id, const std::vector<int64_t>& msg_ids) {
@@ -515,29 +588,44 @@ public:
     }
 
     std::vector<MessageInfo> get_chat_history(int64_t chat_id, int64_t from_msg_id, int limit) const {
-        auto hist = make_object<tda::getChatHistory>();
-        hist->chat_id_ = chat_id;
-        hist->from_message_id_ = to_tdlib_msg_id(from_msg_id);
-        hist->offset_ = 0;
-        hist->limit_ = limit;
-        hist->only_local_ = false;
-
-        auto result = const_cast<Impl*>(this)->send_query_sync(std::move(hist));
-        if (!result || result->get_id() != tda::messages::ID) {
-            return {};
-        }
-
-        auto& msgs = static_cast<tda::messages&>(*result);
         std::vector<MessageInfo> out;
-        out.reserve(msgs.messages_.size());
+        int64_t current_from = to_tdlib_msg_id(from_msg_id);
 
-        for (auto& msg_ptr : msgs.messages_) {
-            if (!msg_ptr) continue;
-            MessageInfo info;
-            info.id = msg_ptr->id_;
-            info.text = extract_text(*msg_ptr);
-            out.push_back(std::move(info));
+        while (static_cast<int>(out.size()) < limit) {
+            auto hist = make_object<tda::getChatHistory>();
+            hist->chat_id_ = chat_id;
+            hist->from_message_id_ = current_from;
+            hist->offset_ = 0;
+            hist->limit_ = std::min(100, limit - static_cast<int>(out.size()));
+            hist->only_local_ = false;
+
+            auto result = const_cast<Impl*>(this)->send_query_sync(std::move(hist));
+            if (!result || result->get_id() != tda::messages::ID) {
+                if (result && result->get_id() == tda::error::ID) {
+                    auto& err = static_cast<tda::error&>(*result);
+                    spdlog::warn("get_chat_history failed: {} (code {})", err.message_, err.code_);
+                }
+                break;
+            }
+
+            auto& msgs = static_cast<tda::messages&>(*result);
+            if (msgs.messages_.empty()) break;
+
+            int64_t last_id = current_from;
+            for (auto& msg_ptr : msgs.messages_) {
+                if (!msg_ptr) continue;
+                last_id = msg_ptr->id_;
+                MessageInfo info;
+                info.id = msg_ptr->id_;
+                info.text = extract_text(*msg_ptr);
+                out.push_back(std::move(info));
+            }
+
+            if (last_id == current_from) break;
+            current_from = last_id;
         }
+
+        spdlog::debug("get_chat_history: total retrieved {} messages", out.size());
         return out;
     }
 
@@ -586,8 +674,25 @@ public:
 
     // ── File operations ─────────────────────────────────────────────
     bool download_file(int32_t file_id, FileProgressCallback cb) const {
-        // Store the progress callback for handle_file_update in the client thread
-        const_cast<Impl*>(this)->file_progress_cb_ = cb;
+        auto self = const_cast<Impl*>(this);
+        self->file_progress_cb_ = cb;
+
+        // Fast path: check if file is already completely downloaded
+        auto existing = get_file_info(file_id);
+        if (existing && !existing->local_path.empty() && std::filesystem::exists(existing->local_path)) {
+            if (existing->size > 0 && existing->downloaded_size >= existing->size) {
+                return true;
+            }
+        }
+
+        std::shared_ptr<std::promise<bool>> promise;
+        std::future<bool> future;
+        {
+            std::lock_guard lock(self->download_mutex_);
+            promise = std::make_shared<std::promise<bool>>();
+            future = promise->get_future();
+            self->pending_downloads_[file_id] = promise;
+        }
 
         auto download = make_object<tda::downloadFile>();
         download->file_id_ = file_id;
@@ -596,16 +701,30 @@ public:
         download->limit_ = 0;
         download->synchronous_ = false;
 
-        auto result = const_cast<Impl*>(this)->send_query_sync(std::move(download));
-        if (!result || result->get_id() != tda::file::ID) return false;
+        auto result = self->send_query_sync(std::move(download));
+        if (!result || result->get_id() != tda::file::ID) {
+            std::lock_guard lock(self->download_mutex_);
+            self->pending_downloads_.erase(file_id);
+            return false;
+        }
 
         auto& file = static_cast<tda::file&>(*result);
-        if (file.local_->is_downloading_completed_) return true;
+        if (file.local_->is_downloading_completed_) {
+            std::lock_guard lock(self->download_mutex_);
+            self->pending_downloads_.erase(file_id);
+            return true;
+        }
 
-        // If synchronous mode fails to complete, try with progress
-        spdlog::warn("File download may be incomplete: {}/{}",
-                     file.local_->downloaded_size_, file.size_);
-        return file.local_->is_downloading_completed_;
+        // Wait for updateFile to signal download completion
+        auto status = future.wait_for(std::chrono::seconds(180));
+        if (status == std::future_status::ready) {
+            return future.get();
+        }
+
+        std::lock_guard lock(self->download_mutex_);
+        self->pending_downloads_.erase(file_id);
+        spdlog::error("File download timed out for file_id {}", file_id);
+        return false;
     }
 
     std::optional<FileInfo> get_file_info(int32_t file_id) const {
@@ -1029,6 +1148,35 @@ private:
         if (file_progress_cb_) {
             file_progress_cb_(file.id_, file.local_->downloaded_size_, file.size_);
         }
+        if (file.local_->is_downloading_completed_) {
+            std::shared_ptr<std::promise<bool>> p;
+            {
+                std::lock_guard lock(download_mutex_);
+                if (auto it = pending_downloads_.find(file.id_); it != pending_downloads_.end()) {
+                    p = it->second;
+                    pending_downloads_.erase(it);
+                }
+            }
+            if (p) {
+                try {
+                    p->set_value(true);
+                } catch (...) {}
+            }
+        } else if (!file.local_->is_downloading_active_ && !file.local_->can_be_downloaded_) {
+            std::shared_ptr<std::promise<bool>> p;
+            {
+                std::lock_guard lock(download_mutex_);
+                if (auto it = pending_downloads_.find(file.id_); it != pending_downloads_.end()) {
+                    p = it->second;
+                    pending_downloads_.erase(it);
+                }
+            }
+            if (p) {
+                try {
+                    p->set_value(false);
+                } catch (...) {}
+            }
+        }
     }
 
     // ── State ───────────────────────────────────────────────────────
@@ -1053,8 +1201,10 @@ private:
     std::map<uint64_t, std::shared_ptr<std::promise<ObjectPtr>>> pending_;
     std::map<int64_t, std::shared_ptr<std::promise<int64_t>>> pending_sends_;
     std::map<int64_t, int64_t> completed_sends_;
+    std::map<int32_t, std::shared_ptr<std::promise<bool>>> pending_downloads_;
     std::mutex mutex_;
     std::mutex send_mutex_;
+    std::mutex download_mutex_;
     std::condition_variable cv_;
 };
 

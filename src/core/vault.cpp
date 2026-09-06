@@ -58,7 +58,7 @@ public:
         have_key = true;
     }
 
-    // ── Upload pipeline ─────────────────────────────────────────────
+    // ── Upload pipeline (Streaming chunking with bounded RAM) ──────
     bool push(const std::string& local_path, const VaultOptions& opts, ProgressCallback cb) {
         if (!std::filesystem::exists(local_path)) {
             spdlog::error("File does not exist: {}", local_path);
@@ -68,12 +68,9 @@ public:
         uint64_t file_size = std::filesystem::file_size(local_path);
         std::string file_name = std::filesystem::path(local_path).filename().string();
 
-        if (opts.encrypted) {
-            if (opts.password.empty()) {
-                spdlog::error("Password required for encryption");
-                return false;
-            }
-            derive_master_key(opts.password);
+        if (opts.encrypted && opts.password.empty()) {
+            spdlog::error("Password required for encryption");
+            return false;
         }
 
         if (cb) cb({0, file_size, "Hashing file...", 0});
@@ -83,110 +80,114 @@ public:
             ? static_cast<uint64_t>(32) * 1024 * 1024
             : static_cast<uint64_t>(256) * 1024 * 1024;
 
-        if (cb) cb({0, file_size, "Chunking file...", 0});
-        auto chunks = iter_chunks(local_path, chunk_size);
+        uint64_t total_chunks = file_size == 0 ? 1 : ((file_size + chunk_size - 1) / chunk_size);
 
-        // Process chunks: hash → compress → encrypt
-        struct ProcChunk {
-            int64_t index;
-            uint64_t offset;
-            uint64_t original_size;
-            std::string original_hash;
-            std::vector<uint8_t> data;
-            std::string cipher_hash;
-        };
-
-        std::vector<ProcChunk> processed;
-        processed.reserve(chunks.size());
-
-        for (auto& chunk : chunks) {
-            ProcChunk pc;
-            pc.index = chunk.index;
-            pc.offset = chunk.offset;
-            pc.original_size = chunk.original_size;
-            pc.original_hash = std::move(chunk.hash);
-
-            auto data = std::move(chunk.data);
-
-            if (opts.compressed && should_compress(file_name)) {
-                data = compress_data(data);
-            }
-            if (opts.encrypted && have_key) {
-                data = encrypt_chunk(data, master_key);
-            }
-
-            pc.data = std::move(data);
-            pc.cipher_hash = hash_data(pc.data);
-            processed.push_back(std::move(pc));
-
-            if (cb) {
-                cb({pc.offset + pc.original_size, file_size, "Processing...", 0});
-            }
-        }
-
-        // Send metadata message
+        // Send initial thread-root metadata message
         FileMetadata meta;
         meta.id = file_hash.substr(0, 16);
         meta.name = file_name;
         meta.size = file_size;
         meta.hash = file_hash;
-        meta.encrypted = opts.encrypted && have_key;
+        meta.encrypted = opts.encrypted;
         meta.compressed = opts.compressed;
         meta.created_at = std::chrono::system_clock::now();
         meta.updated_at = meta.created_at;
 
-        for (auto& pc : processed) {
-            ChunkInfo ci;
-            ci.index = pc.index;
-            ci.offset = pc.offset;
-            ci.size = pc.data.size();
-            ci.hash = pc.cipher_hash;
-            ci.original_hash = pc.original_hash;
-            meta.chunks.push_back(std::move(ci));
-        }
-
-        if (cb) cb({0, file_size, "Sending metadata...", 0});
+        if (cb) cb({0, file_size, "Initializing metadata...", 0});
         nlohmann::json meta_json = meta;
         auto meta_msg_id = tg.send_text(channel_id_, meta_json.dump());
         if (meta_msg_id == 0) {
-            spdlog::error("Failed to send metadata");
+            spdlog::error("Failed to send metadata root message");
             return false;
         }
         meta.metadata_message_id = meta_msg_id;
 
-        // Upload each chunk
-        for (auto& pc : processed) {
-            if (cb) {
-                cb({static_cast<uint64_t>(pc.index + 1),
-                    static_cast<uint64_t>(processed.size()),
-                    std::format("Uploading chunk {}/{}...", pc.index + 1, processed.size()), 0});
-            }
+        std::ifstream file(local_path, std::ios::binary);
+        if (!file && file_size > 0) {
+            spdlog::error("Failed to open file for reading: {}", local_path);
+            return false;
+        }
 
-            auto tmp = std::filesystem::temp_directory_path() /
-                std::format("tv_{}_{}_{}", meta.id, pc.index, std::rand());
-            {
-                std::ofstream f(tmp, std::ios::binary);
-                if (!f.write(reinterpret_cast<const char*>(pc.data.data()), pc.data.size())) {
-                    spdlog::error("Failed to write temp file: {}", tmp.string());
+        uint64_t bytes_processed = 0;
+        meta.chunks.reserve(total_chunks);
+
+        for (uint64_t chunk_idx = 0; chunk_idx < total_chunks; ++chunk_idx) {
+            uint64_t current_offset = chunk_idx * chunk_size;
+            uint64_t this_chunk_size = (file_size > current_offset)
+                ? std::min(chunk_size, file_size - current_offset)
+                : 0;
+
+            std::vector<uint8_t> chunk_data(this_chunk_size);
+            if (this_chunk_size > 0) {
+                file.seekg(current_offset);
+                file.read(reinterpret_cast<char*>(chunk_data.data()), this_chunk_size);
+                if (!file && !file.eof()) {
+                    spdlog::error("Failed to read chunk {} from file", chunk_idx);
                     return false;
                 }
+            }
+
+            ChunkInfo ci;
+            ci.index = static_cast<int64_t>(chunk_idx);
+            ci.offset = current_offset;
+            ci.original_hash = hash_data(chunk_data);
+
+            if (opts.compressed && should_compress(file_name)) {
+                chunk_data = compress_data(chunk_data);
+            }
+            if (opts.encrypted) {
+                chunk_data = encrypt_chunk(chunk_data, opts.password);
+            }
+
+            ci.size = chunk_data.size();
+            ci.hash = hash_data(chunk_data);
+
+            // Write chunk to temp file for TDLib upload
+            auto tmp = std::filesystem::temp_directory_path() /
+                std::format("tv_{}_{}_{}", meta.id, chunk_idx, std::rand());
+            {
+                std::ofstream f(tmp, std::ios::binary);
+                if (!f.write(reinterpret_cast<const char*>(chunk_data.data()), chunk_data.size())) {
+                    spdlog::error("Failed to write temp chunk file: {}", tmp.string());
+                    std::filesystem::remove(tmp);
+                    return false;
+                }
+            }
+
+            // Immediately free chunk data from RAM
+            chunk_data.clear();
+            chunk_data.shrink_to_fit();
+
+            if (cb) {
+                cb({bytes_processed, file_size,
+                    std::format("Uploading chunk {}/{}...", chunk_idx + 1, total_chunks), 0});
             }
 
             auto send_result = tg.send_file_with_id(channel_id_, tmp.string(), meta_msg_id);
             std::filesystem::remove(tmp);
 
             if (send_result.message_id == 0) {
-                spdlog::error("Failed to upload chunk {}", pc.index);
+                spdlog::error("Failed to upload chunk {}", chunk_idx);
                 return false;
             }
 
-            meta.chunks[pc.index].message_id = send_result.message_id;
-            meta.chunks[pc.index].file_id = send_result.file_id;
+            ci.message_id = send_result.message_id;
+            ci.file_id = send_result.file_id;
+            meta.chunks.push_back(std::move(ci));
+
+            bytes_processed += this_chunk_size;
+            if (cb) {
+                cb({bytes_processed, file_size,
+                    std::format("Uploaded chunk {}/{}", chunk_idx + 1, total_chunks), 0});
+            }
         }
 
-        // Update metadata with message IDs
+        // Update metadata message with complete chunk list
         nlohmann::json updated_json = meta;
-        tg.edit_message(channel_id_, meta_msg_id, updated_json.dump());
+        if (!tg.edit_message(channel_id_, meta_msg_id, updated_json.dump())) {
+            spdlog::error("Failed to update metadata message with chunk list");
+            return false;
+        }
 
         // Save index
         index_mgr->add_file(meta.id, meta_msg_id);
@@ -196,42 +197,45 @@ public:
         }
 
         if (cb) cb({file_size, file_size, "Complete", 0});
-        spdlog::info("Uploaded {} ({} chunks, {})", file_name, processed.size(), format_size(file_size));
+        spdlog::info("Uploaded {} ({} chunks, {})", file_name, meta.chunks.size(), format_size(file_size));
         return true;
     }
 
-    // ── Download pipeline ───────────────────────────────────────────
+    // ── Download pipeline (Atomic write with temporary swap) ────────
     bool pull(const std::string& vault_path, const std::string& output_path,
               const VaultOptions& opts, ProgressCallback cb)
     {
-        // Find file
         auto meta = find_metadata(vault_path);
         if (!meta) {
             spdlog::error("File not found: {}", vault_path);
             return false;
         }
 
-        if (meta->encrypted) {
-            if (opts.password.empty()) {
-                spdlog::error("Password required");
-                return false;
-            }
-            derive_master_key(opts.password);
+        if (meta->encrypted && opts.password.empty()) {
+            spdlog::error("Password required for decryption");
+            return false;
         }
 
         auto output = output_path.empty() ? vault_path : output_path;
+        auto temp_output = output + ".tvt_tmp." + std::to_string(std::rand());
+
         if (cb) cb({0, meta->size, "Downloading...", 0});
 
-        // Pre-allocate output file
+        // Pre-allocate temporary output file
         if (meta->size > 0) {
-            std::ofstream f(output, std::ios::binary);
+            std::ofstream f(temp_output, std::ios::binary);
             f.seekp(meta->size - 1);
             f.put(0);
             if (!f) {
-                spdlog::error("Failed to pre-allocate output file: {}", output);
+                spdlog::error("Failed to pre-allocate output file: {}", temp_output);
+                std::filesystem::remove(temp_output);
                 return false;
             }
         }
+
+        std::string salt_str = "televault" + std::to_string(channel_id_);
+        std::span<const uint8_t> fallback_salt(
+            reinterpret_cast<const uint8_t*>(salt_str.data()), salt_str.size());
 
         uint64_t total = 0;
         for (auto& ci : meta->chunks) {
@@ -240,17 +244,17 @@ public:
                     std::format("Chunk {}/{}...", ci.index + 1, meta->chunks.size()), 0});
             }
 
-            // Download via message → extract file_id → download to local
             if (!tg.download_file_by_message(channel_id_, ci.message_id)) {
                 spdlog::error("Failed to download chunk {}", ci.index);
+                std::filesystem::remove(temp_output);
                 return false;
             }
 
-            // Read downloaded file from tdlib's cache
             auto msg = tg.get_message(channel_id_, ci.message_id);
             auto finfo = tg.get_file_info(msg.file_id);
             if (!finfo || finfo->local_path.empty()) {
                 spdlog::error("Cannot locate downloaded file for chunk {}", ci.index);
+                std::filesystem::remove(temp_output);
                 return false;
             }
 
@@ -263,13 +267,20 @@ public:
 
             // Verify cipher hash
             if (hash_data(data) != ci.hash) {
-                spdlog::error("Hash mismatch on chunk {}", ci.index);
+                spdlog::error("Cipher hash mismatch on chunk {}", ci.index);
+                std::filesystem::remove(temp_output);
                 return false;
             }
 
             // Decrypt
-            if (meta->encrypted && have_key) {
-                data = decrypt_chunk(data, master_key);
+            if (meta->encrypted) {
+                try {
+                    data = decrypt_chunk(data, opts.password, fallback_salt);
+                } catch (const std::exception& e) {
+                    spdlog::error("Decryption failed on chunk {}: {}", ci.index, e.what());
+                    std::filesystem::remove(temp_output);
+                    return false;
+                }
             }
 
             // Decompress
@@ -278,15 +289,18 @@ public:
             }
 
             // Verify original hash
-            if (hash_data(data) != ci.original_hash) {
+            if (!ci.original_hash.empty() && hash_data(data) != ci.original_hash) {
                 spdlog::error("Original hash mismatch on chunk {}", ci.index);
+                std::filesystem::remove(temp_output);
                 return false;
             }
 
-            // Write at offset
-            std::ofstream out(output, std::ios::binary | std::ios::in);
-            out.seekp(ci.offset);
-            out.write(reinterpret_cast<const char*>(data.data()), data.size());
+            // Write chunk at offset in temporary file
+            {
+                std::ofstream out(temp_output, std::ios::binary | std::ios::in | std::ios::out);
+                out.seekp(ci.offset);
+                out.write(reinterpret_cast<const char*>(data.data()), data.size());
+            }
             total += data.size();
 
             if (cb) {
@@ -297,10 +311,27 @@ public:
             }
         }
 
-        // Verify file hash
-        if (hash_file(output) != meta->hash) {
-            spdlog::error("File hash mismatch — download may be corrupted");
-            return false;
+        // Verify full file hash before finalizing
+        if (meta->size > 0) {
+            auto final_hash = hash_file(temp_output);
+            if (final_hash != meta->hash) {
+                spdlog::error("File hash mismatch — download may be corrupted: computed {} != expected {}",
+                              final_hash, meta->hash);
+                std::filesystem::remove(temp_output);
+                return false;
+            }
+        }
+
+        // Atomically replace target destination
+        std::error_code ec;
+        std::filesystem::rename(temp_output, output, ec);
+        if (ec) {
+            std::filesystem::copy_file(temp_output, output, std::filesystem::copy_options::overwrite_existing, ec);
+            std::filesystem::remove(temp_output);
+            if (ec) {
+                spdlog::error("Failed to commit downloaded file: {}", ec.message());
+                return false;
+            }
         }
 
         if (cb) cb({meta->size, meta->size, "Complete", 0});
@@ -317,14 +348,9 @@ public:
             return false;
         }
 
-        bool have_key = false;
-        std::array<uint8_t, 32> master_key{};
-        if (meta->encrypted && !opts.password.empty()) {
-            auto salt_str = "televault" + std::to_string(channel_id_);
-            auto salt = std::vector<uint8_t>(salt_str.begin(), salt_str.end());
-            master_key = derive_key(opts.password, salt);
-            have_key = true;
-        }
+        std::string salt_str = "televault" + std::to_string(channel_id_);
+        std::span<const uint8_t> fallback_salt(
+            reinterpret_cast<const uint8_t*>(salt_str.data()), salt_str.size());
 
         for (auto& ci : meta->chunks) {
             if (!tg.download_file_by_message(channel_id_, ci.message_id)) break;
@@ -339,24 +365,54 @@ public:
             std::vector<uint8_t> file_data((std::istreambuf_iterator<char>(f)),
                                             std::istreambuf_iterator<char>());
 
-            auto data = file_data;
-            if (meta->encrypted && have_key) {
-                auto decrypted = decrypt_chunk(data, master_key);
-                if (decrypted.empty()) {
-                    spdlog::error("Decryption failed for chunk {}", ci.index);
+            auto data = std::move(file_data);
+            if (meta->encrypted) {
+                try {
+                    data = decrypt_chunk(data, opts.password, fallback_salt);
+                } catch (const std::exception& e) {
+                    spdlog::error("Decryption failed for chunk {}: {}", ci.index, e.what());
                     return false;
                 }
-                data = std::move(decrypted);
             }
 
-            auto decompressed = decompress_data(data);
-            std::cout.write(reinterpret_cast<const char*>(decompressed.data()), decompressed.size());
+            if (meta->compressed) {
+                data = decompress_data(data);
+            }
+            std::cout.write(reinterpret_cast<const char*>(data.data()), data.size());
             if (!std::cout) {
                 spdlog::error("Write to stdout failed");
                 return false;
             }
         }
         return true;
+    }
+
+    // ── Disaster Recovery (Rebuild index from channel messages) ──────
+    bool recover_index() {
+        spdlog::info("Starting index recovery from channel history...");
+        auto history = tg.get_chat_history(channel_id_, 0, 100);
+        int recovered = 0;
+        for (const auto& msg : history) {
+            if (msg.text.empty()) continue;
+            try {
+                auto j = nlohmann::json::parse(msg.text);
+                if (j.contains("id") && j.contains("chunks") && j.contains("name")) {
+                    auto meta = j.get<FileMetadata>();
+                    index_mgr->add_file(meta.id, msg.id);
+                    recovered++;
+                    spdlog::info("Recovered entry: fid={} name={} mid={}", meta.id, meta.name, msg.id);
+                }
+            } catch (...) {
+                // Not a valid FileMetadata JSON message, ignore
+            }
+        }
+        if (recovered > 0) {
+            index_mgr->save(channel_id_);
+            spdlog::info("Recovery complete: {} files found and index updated", recovered);
+            return true;
+        }
+        spdlog::warn("No file metadata found to recover");
+        return false;
     }
 
     // ── Filesystem operations ───────────────────────────────────────
@@ -537,6 +593,10 @@ bool TeleVault::delete_file(const std::string& path) {
 
 bool TeleVault::verify_file(const std::string& path) {
     return impl_->verify_file(path);
+}
+
+bool TeleVault::recover_index() {
+    return impl_->recover_index();
 }
 
 } // namespace tv

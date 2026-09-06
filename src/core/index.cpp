@@ -54,8 +54,13 @@ bool IndexManager::save(int64_t chat_id) {
     spdlog::debug("IndexManager::save: serializing {} files (json len={})", index_.files.size(), json_str.size());
 
     auto pinned_id = find_pinned_message_id(chat_id);
-    if (pinned_id == 0) {
-        // No pinned message yet — send new one and pin it
+    bool saved = false;
+    if (pinned_id != 0) {
+        saved = tg_.edit_message(chat_id, pinned_id, json_str);
+    }
+
+    if (!saved) {
+        // Send new index message and pin it
         auto new_id = tg_.send_text(chat_id, json_str);
         if (new_id == 0) {
             spdlog::error("Failed to send index message");
@@ -63,12 +68,6 @@ bool IndexManager::save(int64_t chat_id) {
         }
         if (!tg_.pin_message(chat_id, new_id)) {
             spdlog::error("Failed to pin index message");
-            return false;
-        }
-    } else {
-        // Update existing pinned message
-        if (!tg_.edit_message(chat_id, pinned_id, json_str)) {
-            spdlog::error("Failed to update index message");
             return false;
         }
     }

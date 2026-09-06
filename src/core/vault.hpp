@@ -67,6 +67,7 @@ public:
     // Management
     bool delete_file(const std::string& path);
     bool verify_file(const std::string& path);
+    bool recover_index();
 
 private:
     class Impl;

@@ -217,3 +217,20 @@ TEST(CryptoTest, PasswordBasedEncryptDecrypt) {
     
     EXPECT_THROW(decrypt_chunk(ct, "wrong_pass"), std::runtime_error);
 }
+
+TEST(CryptoTest, FallbackSaltDualWireFormat) {
+    std::string pass = "vault_master_pass";
+    std::vector<uint8_t> fallback_salt = {'t','e','l','e','v','a','u','l','t','1','2','3','4','5','6','7'};
+    std::vector<uint8_t> plaintext = {'F', 'a', 'l', 'l', 'b', 'a', 'c', 'k', '!'};
+    
+    // Encrypt with key derived from fallback_salt (simulating channel-derived master_key)
+    auto key = derive_key(pass, fallback_salt);
+    auto ct = encrypt_chunk(plaintext, key); // Writes 44-byte format with random salt
+    
+    // Decrypting with wrong password must throw
+    EXPECT_THROW(decrypt_chunk(ct, "wrong_pass", fallback_salt), std::runtime_error);
+    
+    // Decrypting with correct password and fallback_salt must succeed via fallback!
+    auto pt = decrypt_chunk(ct, pass, fallback_salt);
+    EXPECT_EQ(pt, plaintext);
+}
