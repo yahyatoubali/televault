@@ -24,14 +24,23 @@ if(APPLE)
     # Support Homebrew installations on Apple Silicon (/opt/homebrew) and Intel (/usr/local)
     list(APPEND CMAKE_PREFIX_PATH
         "/opt/homebrew"
+        "/opt/homebrew/lib/cmake/Td"
         "/opt/homebrew/opt/openssl@3"
         "/opt/homebrew/opt/openssl"
         "/opt/homebrew/opt/libzstd"
+        "/opt/homebrew/opt/zstd"
         "/usr/local"
+        "/usr/local/lib/cmake/Td"
         "/usr/local/opt/openssl@3"
         "/usr/local/opt/openssl"
         "/usr/local/opt/libzstd"
+        "/usr/local/opt/zstd"
     )
+    if(EXISTS "/opt/homebrew/opt/openssl@3")
+        set(OPENSSL_ROOT_DIR "/opt/homebrew/opt/openssl@3")
+    elseif(EXISTS "/usr/local/opt/openssl@3")
+        set(OPENSSL_ROOT_DIR "/usr/local/opt/openssl@3")
+    endif()
     if(EXISTS "/opt/homebrew/bin/brew")
         set(ENV{PKG_CONFIG_PATH} "/opt/homebrew/lib/pkgconfig:/opt/homebrew/opt/openssl@3/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
     elseif(EXISTS "/usr/local/bin/brew")
@@ -42,7 +51,20 @@ endif()
 # ── System dependencies ───────────────────────────────────────────────
 find_package(OpenSSL REQUIRED)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(ZSTD REQUIRED IMPORTED_TARGET libzstd)
+pkg_check_modules(ZSTD QUIET IMPORTED_TARGET libzstd)
+if(NOT ZSTD_FOUND)
+    find_path(ZSTD_INCLUDE_DIR zstd.h HINTS /opt/homebrew/include /usr/local/include)
+    find_library(ZSTD_LIBRARY NAMES zstd libzstd HINTS /opt/homebrew/lib /usr/local/lib)
+    if(ZSTD_INCLUDE_DIR AND ZSTD_LIBRARY)
+        add_library(PkgConfig::ZSTD UNKNOWN IMPORTED)
+        set_target_properties(PkgConfig::ZSTD PROPERTIES
+            IMPORTED_LOCATION "${ZSTD_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${ZSTD_INCLUDE_DIR}"
+        )
+    else()
+        message(FATAL_ERROR "libzstd not found. Install with 'brew install zstd' or 'apt install libzstd-dev'")
+    endif()
+endif()
 pkg_check_modules(BLAKE3 QUIET IMPORTED_TARGET libblake3)
 if(NOT BLAKE3_FOUND)
     find_path(BLAKE3_INCLUDE_DIR blake3.h HINTS /opt/homebrew/include /usr/local/include)

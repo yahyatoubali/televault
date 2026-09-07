@@ -76,10 +76,10 @@ verify_sha256() {
     fi
 }
 
-echo "==> Downloading ${TARBALL} from GitHub Releases..."
-if curl -fsSL "$DOWNLOAD_URL" -o "$TMP_DIR/$TARBALL"; then
+echo "==> Checking for pre-built binary on GitHub Releases (${TARBALL})..."
+if curl -sSL -f "$DOWNLOAD_URL" -o "$TMP_DIR/$TARBALL" 2>/dev/null; then
     echo "==> Download complete. Verifying SHA256 checksum..."
-    if curl -fsSL "$CHECKSUM_URL" -o "$TMP_DIR/${TARBALL}.sha256"; then
+    if curl -sSL -f "$CHECKSUM_URL" -o "$TMP_DIR/${TARBALL}.sha256" 2>/dev/null; then
         cd "$TMP_DIR"
         if verify_sha256 "${TARBALL}.sha256"; then
             echo "✓ SHA256 checksum verified successfully."
@@ -94,9 +94,15 @@ if curl -fsSL "$DOWNLOAD_URL" -o "$TMP_DIR/$TARBALL"; then
     tar -xzf "$TMP_DIR/$TARBALL" -C "$TMP_DIR"
     EXTRACTED_DIR="$TMP_DIR/televault-v${VERSION}-${OS}-${ARCH}"
 
-    cp "$EXTRACTED_DIR/televault" "$INSTALL_DIR/televault"
-    chmod +x "$INSTALL_DIR/televault"
-    ln -sf "$INSTALL_DIR/televault" "$INSTALL_DIR/tvt"
+    if [ -w "$INSTALL_DIR" ]; then
+        cp "$EXTRACTED_DIR/televault" "$INSTALL_DIR/televault"
+        chmod +x "$INSTALL_DIR/televault"
+        ln -sf "$INSTALL_DIR/televault" "$INSTALL_DIR/tvt"
+    else
+        sudo cp "$EXTRACTED_DIR/televault" "$INSTALL_DIR/televault"
+        sudo chmod +x "$INSTALL_DIR/televault"
+        sudo ln -sf "$INSTALL_DIR/televault" "$INSTALL_DIR/tvt"
+    fi
 
     echo ""
     echo "🎉 TeleVault v${VERSION} installed successfully to ${INSTALL_DIR}/televault"
@@ -108,25 +114,57 @@ if curl -fsSL "$DOWNLOAD_URL" -o "$TMP_DIR/$TARBALL"; then
     echo "  1) tvt login      # Authenticate with Telegram"
     echo "  2) tvt setup      # Set up storage channel"
     echo "  3) tvt tui        # Launch interactive Terminal UI"
-else
-    echo "⚠️  Pre-built binary for ${OS}-${ARCH} is not yet available on GitHub release v${VERSION}."
-    echo "==> You can build directly from source:"
-    if [ "$OS" = "darwin" ]; then
-        echo "      # Install dependencies via Homebrew"
-        echo "      brew install cmake boost openssl@3 zstd pkg-config"
-        echo ""
-        echo "      # Clone and compile"
-        echo "      git clone https://github.com/${REPO}.git"
-        echo "      cd televault"
-        echo "      cmake -B build -DCMAKE_BUILD_TYPE=Release -DTV_BUILD_TDLIB=ON -DTV_BUILD_TUI=ON"
-        echo "      cmake --build build -j\$(sysctl -n hw.ncpu)"
-        echo "      sudo cmake --install build"
-    else
-        echo "      git clone https://github.com/${REPO}.git"
-        echo "      cd televault"
-        echo "      cmake -B build -DCMAKE_BUILD_TYPE=Release -DTV_BUILD_TDLIB=ON -DTV_BUILD_TUI=ON"
-        echo "      cmake --build build -j\$(nproc)"
-        echo "      sudo cmake --install build"
-    fi
-    exit 1
+    exit 0
 fi
+
+# Fallback: Automatic build from source
+echo "ℹ️  Pre-built binary for ${OS}-${ARCH} is not yet hosted on GitHub release v${VERSION}."
+echo "==> Automatically compiling and installing TeleVault v${VERSION} from source..."
+
+if [ "$OS" = "darwin" ]; then
+    if ! command -v brew >/dev/null 2>&1; then
+        echo "❌ Homebrew is required on macOS to install dependencies automatically." >&2
+        echo "   Install Homebrew from https://brew.sh and re-run this script." >&2
+        exit 1
+    fi
+    echo "==> Installing / updating dependencies via Homebrew..."
+    brew install cmake boost openssl@3 zstd pkg-config tdlib || true
+fi
+
+echo "==> Fetching TeleVault source (branch main)..."
+SRC_DIR="$TMP_DIR/source"
+git clone --depth 1 -b main "https://github.com/${REPO}.git" "$SRC_DIR"
+
+echo "==> Configuring and compiling TeleVault (C++23 Native)..."
+CORES=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+cmake -B "$SRC_DIR/build" -S "$SRC_DIR" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DTV_BUILD_TDLIB=ON \
+    -DTV_BUILD_TUI=ON \
+    -DTV_BUILD_TESTS=OFF
+
+cmake --build "$SRC_DIR/build" -j"$CORES"
+
+echo "==> Installing to ${INSTALL_DIR}..."
+mkdir -p "$INSTALL_DIR" 2>/dev/null || sudo mkdir -p "$INSTALL_DIR"
+if [ -w "$INSTALL_DIR" ]; then
+    cp "$SRC_DIR/build/src/televault" "$INSTALL_DIR/televault"
+    chmod +x "$INSTALL_DIR/televault"
+    ln -sf "$INSTALL_DIR/televault" "$INSTALL_DIR/tvt"
+else
+    sudo cp "$SRC_DIR/build/src/televault" "$INSTALL_DIR/televault"
+    sudo chmod +x "$INSTALL_DIR/televault"
+    sudo ln -sf "$INSTALL_DIR/televault" "$INSTALL_DIR/tvt"
+fi
+
+echo ""
+echo "🎉 TeleVault v${VERSION} built and installed successfully to ${INSTALL_DIR}/televault"
+echo "   Symlink created at: ${INSTALL_DIR}/tvt"
+echo ""
+"$INSTALL_DIR/tvt" --version || true
+echo ""
+echo "Next steps:"
+echo "  1) tvt login      # Authenticate with Telegram"
+echo "  2) tvt setup      # Set up storage channel"
+echo "  3) tvt tui        # Launch interactive Terminal UI"
+
