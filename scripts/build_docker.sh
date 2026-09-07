@@ -34,7 +34,7 @@ docker run --rm --platform "$PLATFORM" \
             -DTV_BUILD_TESTS=ON \
             -DTV_BUILD_FUSE=OFF \
             -DTV_BUILD_WEBDAV=OFF \
-            -DTV_BUILD_TUI=OFF
+            -DTV_BUILD_TUI=ON
         cmake --build . --target televault -j\$(nproc)
         ctest --output-on-failure
         cd ..

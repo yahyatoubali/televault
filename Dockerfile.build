@@ -12,16 +12,23 @@ RUN apt-get update -qq && \
         pkg-config \
         libssl-dev \
         libzstd-dev \
-        libblake3-dev \
         libboost-dev \
         libfuse3-dev \
         ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
+# Install Blake3 C library
+RUN git clone --depth 1 https://github.com/BLAKE3-team/BLAKE3.git /tmp/blake3 && \
+    cmake -B /tmp/blake3/c/build -S /tmp/blake3/c -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build /tmp/blake3/c/build && \
+    cmake --install /tmp/blake3/c/build && \
+    rm -rf /tmp/blake3
+
 WORKDIR /workspace
 
-# Set default compiler
+# Set default compiler and pkg-config path
 ENV CXX=g++-14
 ENV CC=gcc-14
+ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}
 
 ENTRYPOINT ["/bin/bash"]
