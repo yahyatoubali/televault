@@ -42,11 +42,15 @@ echo "🛡️  TeleVault Universal Installer v${VERSION}"
 echo "   Detected Platform: ${OS}-${ARCH} (${RAW_ARCH})"
 
 # 3. Determine install destination
-if [ "$(id -u)" -eq 0 ]; then
-    INSTALL_DIR="/usr/local/bin"
-else
-    if [ "$OS" = "darwin" ] && [ -d "/opt/homebrew/bin" ] && [ -w "/opt/homebrew/bin" ]; then
+if [ "$OS" = "darwin" ]; then
+    if [ -d "/opt/homebrew/bin" ]; then
         INSTALL_DIR="/opt/homebrew/bin"
+    else
+        INSTALL_DIR="/usr/local/bin"
+    fi
+else
+    if [ "$(id -u)" -eq 0 ] || [ -w "/usr/local/bin" ]; then
+        INSTALL_DIR="/usr/local/bin"
     else
         INSTALL_DIR="${HOME}/.local/bin"
         mkdir -p "$INSTALL_DIR"
@@ -56,6 +60,29 @@ else
         esac
     fi
 fi
+
+install_file() {
+    local src="$1"
+    local dest="$2"
+    mkdir -p "$(dirname "$dest")" 2>/dev/null || sudo mkdir -p "$(dirname "$dest")"
+    if [ -w "$(dirname "$dest")" ]; then
+        cp -f "$src" "$dest"
+        chmod +x "$dest"
+    else
+        sudo cp -f "$src" "$dest"
+        sudo chmod +x "$dest"
+    fi
+}
+
+install_symlink() {
+    local target="$1"
+    local link="$2"
+    if [ -w "$(dirname "$link")" ]; then
+        ln -sf "$target" "$link"
+    else
+        sudo ln -sf "$target" "$link"
+    fi
+}
 
 TARBALL="televault-v${VERSION}-${OS}-${ARCH}.tar.gz"
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/v${VERSION}/${TARBALL}"
@@ -94,15 +121,8 @@ if curl -sSL -f "$DOWNLOAD_URL" -o "$TMP_DIR/$TARBALL" 2>/dev/null; then
     tar -xzf "$TMP_DIR/$TARBALL" -C "$TMP_DIR"
     EXTRACTED_DIR="$TMP_DIR/televault-v${VERSION}-${OS}-${ARCH}"
 
-    if [ -w "$INSTALL_DIR" ]; then
-        cp "$EXTRACTED_DIR/televault" "$INSTALL_DIR/televault"
-        chmod +x "$INSTALL_DIR/televault"
-        ln -sf "$INSTALL_DIR/televault" "$INSTALL_DIR/tvt"
-    else
-        sudo cp "$EXTRACTED_DIR/televault" "$INSTALL_DIR/televault"
-        sudo chmod +x "$INSTALL_DIR/televault"
-        sudo ln -sf "$INSTALL_DIR/televault" "$INSTALL_DIR/tvt"
-    fi
+    install_file "$EXTRACTED_DIR/televault" "$INSTALL_DIR/televault"
+    install_symlink "$INSTALL_DIR/televault" "$INSTALL_DIR/tvt"
 
     echo ""
     echo "🎉 TeleVault v${VERSION} installed successfully to ${INSTALL_DIR}/televault"
@@ -129,6 +149,7 @@ if [ "$OS" = "darwin" ]; then
     fi
     echo "==> Installing / updating dependencies via Homebrew..."
     brew install cmake boost openssl@3 zstd pkg-config tdlib || true
+    export PKG_CONFIG_PATH="/opt/homebrew/opt/openssl@3/lib/pkgconfig:/usr/local/opt/openssl@3/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 fi
 
 echo "==> Fetching TeleVault source (branch main)..."
@@ -146,16 +167,8 @@ cmake -B "$SRC_DIR/build" -S "$SRC_DIR" \
 cmake --build "$SRC_DIR/build" -j"$CORES"
 
 echo "==> Installing to ${INSTALL_DIR}..."
-mkdir -p "$INSTALL_DIR" 2>/dev/null || sudo mkdir -p "$INSTALL_DIR"
-if [ -w "$INSTALL_DIR" ]; then
-    cp "$SRC_DIR/build/src/televault" "$INSTALL_DIR/televault"
-    chmod +x "$INSTALL_DIR/televault"
-    ln -sf "$INSTALL_DIR/televault" "$INSTALL_DIR/tvt"
-else
-    sudo cp "$SRC_DIR/build/src/televault" "$INSTALL_DIR/televault"
-    sudo chmod +x "$INSTALL_DIR/televault"
-    sudo ln -sf "$INSTALL_DIR/televault" "$INSTALL_DIR/tvt"
-fi
+install_file "$SRC_DIR/build/src/televault" "$INSTALL_DIR/televault"
+install_symlink "$INSTALL_DIR/televault" "$INSTALL_DIR/tvt"
 
 echo ""
 echo "🎉 TeleVault v${VERSION} built and installed successfully to ${INSTALL_DIR}/televault"
