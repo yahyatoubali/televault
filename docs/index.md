@@ -32,7 +32,7 @@ tvt push secret-archive.tar.gz
 | **Instant Preview** | Sub-second chunk-0 retrieval (`tvt preview`) with syntax & MIME detection |
 | **Interactive TUI** | Native FTXUI dashboard (`tvt tui`) with keyboard navigation & modals |
 | **Backup Engine** | Isolated Grandfather-Father-Son (GFS) snapshot engine (`tvt backup`) |
-| **Supported Platforms** | `linux-x86_64` (AMD64), `linux-aarch64` (ARM64, Raspberry Pi, Apple Silicon) |
+| **Supported Platforms** | Linux (`x86_64`, `aarch64`), macOS Darwin (`arm64` Apple Silicon, `x86_64` Intel) |
 
 ---
 
@@ -65,25 +65,39 @@ tvt push secret-archive.tar.gz
 
 ### 1. Download & Install
 
-=== "Auto-Detecting One-Liner"
+=== "Universal One-Liner (Linux & macOS)"
     ```bash
+    curl -fsSL https://raw.githubusercontent.com/yahyatoubali/televault/main/scripts/install.sh | bash
+    ```
+
+=== "Manual Download"
+    ```bash
+    # Auto-detect OS & CPU
+    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
     ARCH=$(uname -m)
-    [ "$ARCH" = "arm64" ] && ARCH="aarch64"
-    curl -sLO "https://github.com/yahyatoubali/televault/releases/latest/download/televault-v3.5.0-linux-${ARCH}.tar.gz"
-    tar -xzf "televault-v3.5.0-linux-${ARCH}.tar.gz"
-    sudo cp "televault-v3.5.0-linux-${ARCH}/televault" /usr/local/bin/televault
+    [ "$ARCH" = "x86_64" ] && [ "$OS" = "linux" ] && TARGET="linux-x86_64"
+    [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ] && [ "$OS" = "linux" ] && TARGET="linux-aarch64"
+    [ "$ARCH" = "arm64" ] && [ "$OS" = "darwin" ] && TARGET="darwin-arm64"
+    [ "$ARCH" = "x86_64" ] && [ "$OS" = "darwin" ] && TARGET="darwin-x86_64"
+
+    curl -sLO "https://github.com/yahyatoubali/televault/releases/latest/download/televault-v3.5.0-${TARGET}.tar.gz"
+    tar -xzf "televault-v3.5.0-${TARGET}.tar.gz"
+    sudo cp "televault-v3.5.0-${TARGET}/televault" /usr/local/bin/televault
     sudo ln -sf /usr/local/bin/televault /usr/local/bin/tvt
     tvt --version
     ```
 
-=== "Build from Source (CMake)"
+=== "Build from Source"
     ```bash
-    # Ubuntu 24.04 / Debian
+    # Ubuntu / Debian
     sudo apt update && sudo apt install -y cmake g++-14 libssl-dev libzstd-dev libblake3-dev libboost-dev pkg-config
+
+    # macOS (Homebrew)
+    brew install cmake boost openssl@3 zstd pkg-config
 
     # Configure & Compile
     cmake -B build -DCMAKE_BUILD_TYPE=Release -DTV_BUILD_TESTS=ON
-    cmake --build build -j$(nproc)
+    cmake --build build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
     # Test & Install
     ctest --test-dir build --output-on-failure

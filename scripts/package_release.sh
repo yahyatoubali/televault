@@ -11,10 +11,38 @@ ARCH="${2:-$(uname -m)}"
 
 case "$ARCH" in
     x86_64|amd64) ARCH="x86_64" ;;
-    aarch64|arm64) ARCH="aarch64" ;;
+    aarch64|arm64)
+        if [ "$OS" = "darwin" ]; then
+            ARCH="arm64"
+        else
+            ARCH="aarch64"
+        fi
+        ;;
+    universal2) ARCH="universal2" ;;
     armv7l|armhf) ARCH="armhf" ;;
     *) ARCH="$ARCH" ;;
 esac
+
+get_cpu_cores() {
+    if command -v nproc >/dev/null 2>&1; then
+        nproc
+    elif command -v sysctl >/dev/null 2>&1; then
+        sysctl -n hw.ncpu 2>/dev/null || echo 4
+    else
+        echo 4
+    fi
+}
+
+calc_sha256() {
+    local file="$1"
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file"
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$file"
+    else
+        echo "$(openssl dgst -sha256 "$file" | awk '{print $NF}')  $file"
+    fi
+}
 
 DIST_DIR="$ROOT_DIR/dist"
 STAGE_DIR="$ROOT_DIR/build/stage/televault-v${VERSION}-${OS}-${ARCH}"
@@ -35,7 +63,7 @@ if [ "$SKIP_BUILD" != "1" ] && [ ! -f "$BINARY_PATH" ]; then
         -DTV_BUILD_WEBDAV=OFF \
         -DTV_BUILD_TUI=ON
 
-    cmake --build . --target televault -j"$(nproc)"
+    cmake --build . --target televault -j"$(get_cpu_cores)"
 fi
 
 if [ ! -f "$BINARY_PATH" ]; then
@@ -55,8 +83,8 @@ tar -czf "$DIST_DIR/$ARCHIVE_NAME" -C "$ROOT_DIR/build/stage" "televault-v${VERS
 cp "$STAGE_DIR/televault" "$DIST_DIR/televault-v${VERSION}-${OS}-${ARCH}"
 
 cd "$DIST_DIR"
-sha256sum "$ARCHIVE_NAME" > "${ARCHIVE_NAME}.sha256"
-sha256sum "televault-v${VERSION}-${OS}-${ARCH}" > "televault-v${VERSION}-${OS}-${ARCH}.sha256"
+calc_sha256 "$ARCHIVE_NAME" > "${ARCHIVE_NAME}.sha256"
+calc_sha256 "televault-v${VERSION}-${OS}-${ARCH}" > "televault-v${VERSION}-${OS}-${ARCH}.sha256"
 
 echo "==> Created release archive at: $DIST_DIR/$ARCHIVE_NAME"
 echo "==> SHA256 (archive): $(cat "${ARCHIVE_NAME}.sha256")"

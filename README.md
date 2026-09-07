@@ -2,7 +2,8 @@
   <img src="https://img.shields.io/badge/version-3.5.0-blue?style=flat-square" alt="version">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license">
   <img src="https://img.shields.io/badge/C++-23-yellow?style=flat-square" alt="cpp">
-  <img src="https://img.shields.io/badge/arch-x86__64%20%7C%20aarch64-blueviolet?style=flat-square" alt="multi-arch">
+  <img src="https://img.shields.io/badge/os-Linux%20%7C%20macOS-informational?style=flat-square" alt="os">
+  <img src="https://img.shields.io/badge/arch-x86__64%20%7C%20aarch64%20%7C%20arm64-blueviolet?style=flat-square" alt="multi-arch">
   <img src="https://img.shields.io/badge/encryption-AES--256--GCM-red?style=flat-square" alt="encryption">
   <img src="https://img.shields.io/badge/integrity-BLAKE3-orange?style=flat-square" alt="blake3">
   <a href="https://yahyatoubali.github.io/televault/"><img src="https://img.shields.io/badge/docs-GitHub%20Pages-0969da?style=flat-square&logo=github" alt="docs"></a>
@@ -54,17 +55,29 @@ TeleVault turns a **private Telegram channel** into an encrypted, unlimited clou
 
 ## Quick Install (Pre-built Binaries)
 
-TeleVault provides pre-compiled native binaries for **x86_64** (`amd64`) and **aarch64** (`arm64`, Raspberry Pi 4/5, Apple Silicon Linux, AWS Graviton) from [GitHub Releases](https://github.com/yahyatoubali/televault/releases/latest):
+TeleVault provides pre-compiled native binaries for **Linux** (`x86_64`, `aarch64`) and **macOS Darwin** (`arm64` Apple Silicon, `x86_64` Intel) from [GitHub Releases](https://github.com/yahyatoubali/televault/releases/latest):
+
+### Universal One-Liner (Linux & macOS)
 
 ```bash
-# Auto-detect your CPU architecture (x86_64 or aarch64)
+curl -fsSL https://raw.githubusercontent.com/yahyatoubali/televault/main/scripts/install.sh | bash
+```
+
+### Manual Download
+
+```bash
+# Auto-detect your OS and CPU architecture
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
-[ "$ARCH" = "arm64" ] && ARCH="aarch64"
+[ "$ARCH" = "x86_64" ] && [ "$OS" = "linux" ] && TARGET="linux-x86_64"
+[ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ] && [ "$OS" = "linux" ] && TARGET="linux-aarch64"
+[ "$ARCH" = "arm64" ] && [ "$OS" = "darwin" ] && TARGET="darwin-arm64"
+[ "$ARCH" = "x86_64" ] && [ "$OS" = "darwin" ] && TARGET="darwin-x86_64"
 
 # Download and unpack
-curl -sLO "https://github.com/yahyatoubali/televault/releases/latest/download/televault-v3.5.0-linux-${ARCH}.tar.gz"
-tar -xzf "televault-v3.5.0-linux-${ARCH}.tar.gz"
-cd "televault-v3.5.0-linux-${ARCH}"
+curl -sLO "https://github.com/yahyatoubali/televault/releases/latest/download/televault-v3.5.0-${TARGET}.tar.gz"
+tar -xzf "televault-v3.5.0-${TARGET}.tar.gz"
+cd "televault-v3.5.0-${TARGET}"
 
 # Install to system PATH
 sudo cp televault /usr/local/bin/televault
@@ -78,7 +91,7 @@ tvt --version
 
 ## Build from Source
 
-### Dependencies (Ubuntu 24.04 / Debian / Arch)
+### Dependencies
 
 ```bash
 # Ubuntu / Debian
@@ -88,6 +101,9 @@ sudo apt update && sudo apt install -y \
 
 # Arch Linux
 sudo pacman -S cmake gcc tdlib openssl zstd blake3 boost
+
+# macOS (Homebrew)
+brew install cmake boost openssl@3 zstd pkg-config
 ```
 
 ### Compile & Test

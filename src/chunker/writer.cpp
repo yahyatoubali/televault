@@ -32,9 +32,20 @@ ChunkWriter::ChunkWriter(const std::string& path, uint64_t expected_size, uint64
 
     // Pre-allocate file if non-zero size
     if (expected_size > 0) {
+#if defined(__APPLE__) && defined(__MACH__)
+        fstore_t fst = {F_ALLOCATECONTIG, F_PEOFPOSMODE, 0, static_cast<off_t>(expected_size), 0};
+        if (::fcntl(fd_, F_PREALLOCATE, &fst) == -1) {
+            fst.fst_flags = F_ALLOCATEALL;
+            ::fcntl(fd_, F_PREALLOCATE, &fst);
+        }
+        ::ftruncate(fd_, static_cast<off_t>(expected_size));
+#elif defined(__linux__)
         if (::fallocate(fd_, 0, 0, static_cast<off_t>(expected_size)) != 0 && errno != EOPNOTSUPP && errno != ENOSYS) {
             spdlog::warn("fallocate failed for {} ({}), continuing without pre-allocation", path, std::strerror(errno));
         }
+#else
+        ::ftruncate(fd_, static_cast<off_t>(expected_size));
+#endif
     }
 }
 

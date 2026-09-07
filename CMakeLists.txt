@@ -19,11 +19,52 @@ option(TV_BUILD_TESTS "Build tests"         ON)
 option(TV_LOW_RESOURCE "Low-resource defaults" OFF)
 option(TV_ENABLE_SANITIZERS "Enable AddressSanitizer (ASan) and UndefinedBehaviorSanitizer (UBSan)" OFF)
 
+# ── Darwin / macOS Homebrew Path Support ─────────────────────────────
+if(APPLE)
+    # Support Homebrew installations on Apple Silicon (/opt/homebrew) and Intel (/usr/local)
+    list(APPEND CMAKE_PREFIX_PATH
+        "/opt/homebrew"
+        "/opt/homebrew/opt/openssl@3"
+        "/opt/homebrew/opt/openssl"
+        "/opt/homebrew/opt/libzstd"
+        "/usr/local"
+        "/usr/local/opt/openssl@3"
+        "/usr/local/opt/openssl"
+        "/usr/local/opt/libzstd"
+    )
+    if(EXISTS "/opt/homebrew/bin/brew")
+        set(ENV{PKG_CONFIG_PATH} "/opt/homebrew/lib/pkgconfig:/opt/homebrew/opt/openssl@3/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+    elseif(EXISTS "/usr/local/bin/brew")
+        set(ENV{PKG_CONFIG_PATH} "/usr/local/lib/pkgconfig:/usr/local/opt/openssl@3/lib/pkgconfig:$ENV{PKG_CONFIG_PATH}")
+    endif()
+endif()
+
 # ── System dependencies ───────────────────────────────────────────────
 find_package(OpenSSL REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(ZSTD REQUIRED IMPORTED_TARGET libzstd)
-pkg_check_modules(BLAKE3 REQUIRED IMPORTED_TARGET libblake3)
+pkg_check_modules(BLAKE3 QUIET IMPORTED_TARGET libblake3)
+if(NOT BLAKE3_FOUND)
+    find_path(BLAKE3_INCLUDE_DIR blake3.h HINTS /opt/homebrew/include /usr/local/include)
+    find_library(BLAKE3_LIBRARY NAMES blake3 libblake3 HINTS /opt/homebrew/lib /usr/local/lib)
+    if(BLAKE3_INCLUDE_DIR AND BLAKE3_LIBRARY)
+        add_library(PkgConfig::BLAKE3 UNKNOWN IMPORTED)
+        set_target_properties(PkgConfig::BLAKE3 PROPERTIES
+            IMPORTED_LOCATION "${BLAKE3_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${BLAKE3_INCLUDE_DIR}"
+        )
+    else()
+        include(FetchContent)
+        FetchContent_Declare(
+            blake3_c
+            GIT_REPOSITORY https://github.com/BLAKE3-team/BLAKE3.git
+            GIT_TAG 1.5.4
+            SOURCE_SUBDIR c
+        )
+        FetchContent_MakeAvailable(blake3_c)
+        add_library(PkgConfig::BLAKE3 ALIAS blake3)
+    endif()
+endif()
 
 # ── Fetched dependencies ──────────────────────────────────────────────
 include(FetchContent)

@@ -54,6 +54,7 @@ endif()
 # Manually find Boost headers since FindBoost module is removed in CMake 4
 find_path(Boost_INCLUDE_DIRS boost/asio.hpp
     HINTS
+        /opt/homebrew/include
         $ENV{HOME}/.local/include
         /usr/include
         /usr/local/include

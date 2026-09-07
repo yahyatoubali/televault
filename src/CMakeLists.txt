@@ -128,22 +128,39 @@ target_link_libraries(tv_app PUBLIC tv_core)
 
 if(TV_BUILD_TDLIB)
     target_include_directories(tv_app PUBLIC ${Boost_INCLUDE_DIRS})
-    target_link_libraries(tv_app PUBLIC
-        "-Wl,--start-group"
-        Td::tdclient
-        Td::tdcore
-        Td::tdapi
-        Td::tdnet
-        Td::tddb
-        Td::tdactor
-        Td::tdutils
-        Td::tdsqlite
-        OpenSSL::SSL
-        OpenSSL::Crypto
-        "-Wl,--end-group"
-        ${CMAKE_DL_LIBS}
-        z
-    )
+    if(APPLE)
+        target_link_libraries(tv_app PUBLIC
+            Td::tdclient
+            Td::tdcore
+            Td::tdapi
+            Td::tdnet
+            Td::tddb
+            Td::tdactor
+            Td::tdutils
+            Td::tdsqlite
+            OpenSSL::SSL
+            OpenSSL::Crypto
+            ${CMAKE_DL_LIBS}
+            z
+        )
+    else()
+        target_link_libraries(tv_app PUBLIC
+            "-Wl,--start-group"
+            Td::tdclient
+            Td::tdcore
+            Td::tdapi
+            Td::tdnet
+            Td::tddb
+            Td::tdactor
+            Td::tdutils
+            Td::tdsqlite
+            OpenSSL::SSL
+            OpenSSL::Crypto
+            "-Wl,--end-group"
+            ${CMAKE_DL_LIBS}
+            z
+        )
+    endif()
 endif()
 
 if(TV_BUILD_FUSE)
