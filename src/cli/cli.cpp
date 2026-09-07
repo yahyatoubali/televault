@@ -10,6 +10,9 @@
 #include "../preview/preview.hpp"
 #include "../backup/engine.hpp"
 #include "../watcher/watcher.hpp"
+#if defined(TV_BUILD_TUI)
+#include "../tui/tui.hpp"
+#endif
 
 #include <iostream>
 #include <print>
@@ -404,9 +407,20 @@ namespace {
 
     // ── TUI ───────────────────────────────────────────────────────────
     void cmd_tui(AppContext& ctx) {
-        print_info("TUI mode — launching...");
-        // FTXUI TUI implementation
-        print_error("TUI not yet implemented");
+#if defined(TV_BUILD_TUI) && defined(TV_BUILD_TDLIB)
+        if (!ctx.ensure_vault()) {
+            print_error("Failed to initialize vault for TUI mode. Ensure you are logged in (tvt login) and channel is configured (tvt setup).");
+            return;
+        }
+        try {
+            TUI tui(*ctx.vault);
+            tui.run();
+        } catch (const std::exception& e) {
+            print_error(std::format("TUI terminated with error: {}", e.what()));
+        }
+#else
+        print_error("TeleVault was built without TUI support. Rebuild with -DTV_BUILD_TUI=ON -DTV_BUILD_TDLIB=ON.");
+#endif
     }
 
     // ── Preview ───────────────────────────────────────────────────────

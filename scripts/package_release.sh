@@ -33,7 +33,7 @@ if [ "$SKIP_BUILD" != "1" ] && [ ! -f "$BINARY_PATH" ]; then
         -DTV_BUILD_TESTS=ON \
         -DTV_BUILD_FUSE=OFF \
         -DTV_BUILD_WEBDAV=OFF \
-        -DTV_BUILD_TUI=OFF
+        -DTV_BUILD_TUI=ON
 
     cmake --build . --target televault -j"$(nproc)"
 fi

@@ -30,6 +30,7 @@ tvt push secret-archive.tar.gz
 | **Compression** | Zstandard level 3 (intelligent media type detection & bypass) |
 | **Chunking Engine** | Memory-bounded streaming chunker (default 256 MB, low-resource 32 MB) |
 | **Instant Preview** | Sub-second chunk-0 retrieval (`tvt preview`) with syntax & MIME detection |
+| **Interactive TUI** | Native FTXUI dashboard (`tvt tui`) with keyboard navigation & modals |
 | **Backup Engine** | Isolated Grandfather-Father-Son (GFS) snapshot engine (`tvt backup`) |
 | **Supported Platforms** | `linux-x86_64` (AMD64), `linux-aarch64` (ARM64, Raspberry Pi, Apple Silicon) |
 
@@ -53,6 +54,7 @@ tvt push secret-archive.tar.gz
     - **Snapshot Backups**: Dedicated reply chains isolate snapshots from the primary vault index.
 
 === "Developer Interfaces"
+    - **Interactive TUI**: Rich terminal UI (`tvt tui`) with real-time filtering, instant preview, and modals.
     - **Virtual Filesystem**: Mount your vault via FUSE3 (`tvt mount`).
     - **WebDAV Server**: Native HTTP/WebDAV server (`tvt serve`) for Finder and Windows Explorer.
     - **Directory Watcher**: Real-time automated synchronization (`tvt watch`) with clean signal handling.

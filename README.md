@@ -99,7 +99,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release -DTV_BUILD_TESTS=ON
 # Build native binary
 cmake --build build -j$(nproc)
 
-# Run full test suite (7 GTest suites)
+# Run full test suite (8 GTest suites)
 ctest --test-dir build --output-on-failure
 
 # Install to local prefix
@@ -117,22 +117,39 @@ tvt login
 # 2) Setup storage channel (interactive channel creator & validator)
 tvt setup
 
-# 3) Push a file to the vault
+# 3) Launch the interactive Terminal User Interface (TUI)
+tvt tui
+
+# Or use direct CLI commands:
+# 4) Push a file to the vault
 tvt push document.pdf
 
-# 4) List files in your vault
+# 5) List files in your vault
 tvt ls
 
-# 5) Instant sub-second preview without full download
+# 6) Instant sub-second preview without full download
 tvt preview document.pdf
 
-# 6) Download file
+# 7) Download file
 tvt pull document.pdf -o ./downloaded_doc.pdf
 ```
 
 ---
 
 ## Command Reference
+
+### Interactive Terminal User Interface (`tvt tui`)
+
+TeleVault features a rich, responsive terminal UI built natively with [FTXUI](https://github.com/ArthurSonzogni/FTXUI):
+
+```bash
+tvt tui
+```
+
+- **Browse & Filter**: Arrow keys / `j`/`k` list navigation, `/` real-time search filter.
+- **Instant Preview**: Press `p` for chunk-0 syntax-highlighted text or hex dump preview.
+- **Transfers**: Press `u` for interactive upload modal, `d` for download modal with live progress gauge.
+- **File Management**: Press `x` / `Del` for safe deletion modal, `r` / `F5` to refresh from channel, `?` for full help.
 
 ### Core Vault Operations
 

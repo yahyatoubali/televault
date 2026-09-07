@@ -17,3 +17,11 @@ add_tv_test(test_m2_stress)
 add_executable(m2_cross_helper m2_cross_helper.cpp)
 target_include_directories(m2_cross_helper PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(m2_cross_helper PRIVATE tv_core pthread)
+
+if(TV_BUILD_TUI)
+    add_executable(test_tui test_tui.cpp)
+    target_include_directories(test_tui PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    target_link_libraries(test_tui PRIVATE tv_app tv_core GTest::gtest_main pthread)
+    add_test(NAME test_tui COMMAND test_tui)
+endif()
+

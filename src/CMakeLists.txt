@@ -123,6 +123,7 @@ add_library(tv_app STATIC ${APP_SOURCES} ${APP_HEADERS})
 target_include_directories(tv_app PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(tv_app PUBLIC TELEVAULT_VERSION="${PROJECT_VERSION}")
 target_compile_definitions(tv_app PUBLIC $<$<BOOL:${TV_BUILD_TDLIB}>:TV_BUILD_TDLIB>)
+target_compile_definitions(tv_app PUBLIC $<$<BOOL:${TV_BUILD_TUI}>:TV_BUILD_TUI>)
 target_link_libraries(tv_app PUBLIC tv_core)
 
 if(TV_BUILD_TDLIB)

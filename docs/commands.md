@@ -32,7 +32,36 @@ Complete reference for all `tvt` commands in TeleVault v3.5.0 (C++23 Native).
 
 ---
 
+## Interactive Terminal UI (`tvt tui`)
+
+TeleVault includes a high-performance native Terminal User Interface built with [FTXUI](https://github.com/ArthurSonzogni/FTXUI).
+
+```bash
+tvt tui
+```
+
+### Keybindings & Navigation
+
+| Key | Action |
+|---|---|
+| `↑` / `k` | Move selection up in file list |
+| `↓` / `j` | Move selection down in file list |
+| `PgUp` / `PgDn` | Scroll file list by 10 items |
+| `Home` / `End` | Jump to beginning / end of file list |
+| `/` | Focus real-time search & filter input |
+| `u` | Open interactive Upload modal (with encryption/compression toggles) |
+| `d` | Open interactive Download modal with destination & live gauge |
+| `p` | Sub-second chunk 0 preview (syntax text & hex dump viewer) |
+| `x` / `Del` | Delete selected file with confirmation dialog |
+| `r` / `F5` | Refresh vault index from Telegram |
+| `?` / `F1` | Open keybinding help modal |
+| `Esc` | Dismiss modal or clear search input |
+| `q` | Exit TUI |
+
+---
+
 ## Authentication & Channel Setup
+
 
 | Command | Description |
 |---|---|
