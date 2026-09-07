@@ -1,104 +1,61 @@
-# Hardware Optimization
+# Hardware Optimization & Resource Tuning
 
-TeleVault runs efficiently on any system, including low-RAM machines. This page covers performance tuning and resource-constrained operation.
+TeleVault v3.5.0 is written in native C++23, designed to achieve wire-speed throughput on powerful workstations while remaining lightweight enough to run seamlessly on resource-constrained single-board computers (Raspberry Pi, low-end VPS, embedded gateways).
 
-## Low-Resource Mode
+---
 
-Enable with `--low-resource` on any command:
+## Low-Resource Mode (`--low-resource`)
+
+Enable low-resource mode on any push or pull operation:
 
 ```bash
-tvt push large_file.iso --low-resource
-tvt pull large_file.iso --low-resource --resume
+tvt push large_archive.tar.gz --low-resource
+tvt pull large_archive.tar.gz --low-resource --resume
 ```
 
-### What Changes
+### Operational Comparison
 
-| Setting | Default | Low-Resource |
+| Parameter | Default Profile | Low-Resource Profile (`--low-resource`) |
 |---|---|---|
-| Chunk Size | 256 MB | 32 MB |
-| Parallel Uploads | 8 | 2 |
-| Parallel Downloads | 10 | 2 |
+| **Chunk Size** | 256 MB | 32 MB |
+| **Max Concurrent Uploads** | 8 threads | 2 threads |
+| **Max Concurrent Downloads** | 10 threads | 2 threads |
+| **RAM Utilization (Peak)** | ~512 MB – 1.5 GB | < 96 MB |
+| **Recommended Systems** | Desktops, Dedicated Servers | Raspberry Pi 3/4/5, 512MB RAM VPS |
 
-### When to Use
+---
 
-- Systems with **< 2 GB RAM**
-- **Raspberry Pi** or similar SBCs
-- **VPS** with limited memory
-- **Mobile** or embedded devices
-- Unstable network connections (fewer concurrent transfers = fewer retries)
+## Performance Tuning Configuration
 
-### Memory Footprint
-
-Each chunk is held in memory during processing:
-
-- **Default mode**: ~256 MB per chunk × 8 parallel = up to 2 GB peak
-- **Low-resource mode**: ~32 MB per chunk × 2 parallel = ~64 MB peak
-
-The actual memory usage is lower because chunks are streamed, not fully buffered. But these are the worst-case bounds.
-
-## Performance Tuning
-
-### Chunk Size
-
-Larger chunks = fewer API calls, higher throughput per chunk, more memory per chunk.
-
-Smaller chunks = more API calls, better resume granularity, less memory per chunk.
-
-The default 256 MB is optimal for most desktop/server systems with good network connections.
-
-### Parallelism
-
-Upload and download concurrency can be tuned in `~/.config/televault/config.json`:
+Tuning options can be customized in `~/.config/televault/config.json`:
 
 ```json
 {
   "parallel_uploads": 8,
   "parallel_downloads": 10,
   "chunk_size": 268435456,
-  "max_retries": 3,
-  "retry_delay": 1.0
+  "max_retries": 5,
+  "retry_delay": 1.0,
+  "low_resource": false
 }
 ```
 
-**Guidelines:**
+### Concurrency Recommendations
 
-| Scenario | Uploads | Downloads |
-|---|---|---|
-| Desktop, good network | 8 | 10 |
-| Server, high bandwidth | 12 | 15 |
-| Low-RAM system | 2 | 2 |
-| Unstable network | 4 | 4 |
+| Deployment Profile | Cores | RAM | Upload Workers | Download Workers |
+|---|---|---|---|---|
+| **High-Performance Server** | 8+ | 16 GB+ | 12 | 15 |
+| **Developer Workstation** | 4–8 | 8–16 GB | 8 | 10 |
+| **Cloud VPS (Standard)** | 2 | 2–4 GB | 4 | 6 |
+| **Single Board Computer / Pi** | 4 (ARM) | 1–2 GB | 2 | 2 |
 
-### Network Speed Tracking
+---
 
-The CLI tracks transfer speed using Exponential Moving Average (EMA) smoothing:
+## Native Multithreading Architecture
 
-```
-⬆️ Uploading photo.jpg (3/8 chunks)  45.2 MB/s  ████████████░░░░░░░░ 65%
-```
+TeleVault replaces the Python asyncio event loop with a C++23 native `tv::AsyncExecutor` thread pool:
 
-Speed is updated every chunk with a 0.3 smoothing factor to avoid jitter.
-
-## Async I/O
-
-File hashing uses `aiofiles` with a `ThreadPoolExecutor` to avoid blocking the event loop:
-
-- **Hashing** runs in a background thread pool
-- **Chunk reading** uses async file I/O
-- **Encryption/compression** runs on the event loop (CPU-bound but fast)
-
-This keeps the upload pipeline saturated — hashing the next chunk while uploading the current one.
-
-## Resumable Operations
-
-Both uploads and downloads support resume:
-
-```bash
-# Resume interrupted upload
-tvt push large_file.iso --resume
-
-# Resume interrupted download
-tvt pull large_file.iso --resume
-```
-
-Progress files include CRC32 checksums to detect corruption. If the progress file is corrupted, the operation starts fresh but partial data is preserved.
+1. **Streaming Chunker Thread**: Reads chunks sequentially from disk into memory-bounded buffers without buffering the whole file in RAM.
+2. **Crypto & Compression Workers**: Run concurrently across all available CPU cores, taking full advantage of SIMD vector instructions (AVX-512, AVX2, ARM NEON).
+3. **TDLib MTProto Client**: Dispatches asynchronous chunk transfers directly across multiple network connections to Telegram datacenters.
+4. **Resumable Transfers with Exponential Backoff**: Transfer progress is tracked atomically, automatically retrying dropped chunks with jittered backoff without discarding verified progress.

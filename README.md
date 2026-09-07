@@ -2,8 +2,10 @@
   <img src="https://img.shields.io/badge/version-3.5.0-blue?style=flat-square" alt="version">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license">
   <img src="https://img.shields.io/badge/C++-23-yellow?style=flat-square" alt="cpp">
+  <img src="https://img.shields.io/badge/arch-x86__64%20%7C%20aarch64-blueviolet?style=flat-square" alt="multi-arch">
   <img src="https://img.shields.io/badge/encryption-AES--256--GCM-red?style=flat-square" alt="encryption">
   <img src="https://img.shields.io/badge/integrity-BLAKE3-orange?style=flat-square" alt="blake3">
+  <a href="https://yahyatoubali.github.io/televault/"><img src="https://img.shields.io/badge/docs-GitHub%20Pages-0969da?style=flat-square&logo=github" alt="docs"></a>
   <a href="https://ko-fi.com/yahyatoubali"><img src="https://img.shields.io/badge/Support%20me%20on-Ko--fi-FF5E5B?style=flat-square&logo=ko-fi" alt="ko-fi"></a>
 </p>
 
@@ -19,13 +21,17 @@
 </p>
 
 <p align="center">
-  <a href="#quick-install-pre-built-binary">Quick Install</a>
+  <a href="https://yahyatoubali.github.io/televault/">📖 Official Docs</a>
   <span>&nbsp;·&nbsp;</span>
-  <a href="#build-from-source">Build from Source</a>
+  <a href="#quick-install-pre-built-binaries">📦 Quick Install</a>
   <span>&nbsp;·&nbsp;</span>
-  <a href="#command-reference">Commands</a>
+  <a href="#build-from-source">🛠️ Build from Source</a>
   <span>&nbsp;·&nbsp;</span>
-  <a href="#architecture">Architecture</a>
+  <a href="#command-reference">💻 Commands</a>
+  <span>&nbsp;·&nbsp;</span>
+  <a href="ARCHITECTURE.md">🏗️ Architecture</a>
+  <span>&nbsp;·&nbsp;</span>
+  <a href="docs/multiarch.md">🌐 Multi-Arch</a>
 </p>
 
 ---

@@ -1,33 +1,33 @@
-# Virtualization
+# Virtualization: FUSE3 Filesystem & WebDAV Server
 
-Mount your TeleVault as a local filesystem or serve it over HTTP. Access your encrypted files from any application without using the CLI.
+TeleVault can expose your encrypted vault as a standard local mount point or serve it over HTTP/WebDAV, allowing file managers, media players, and desktop applications to access your files on demand.
 
-## FUSE Mount
+---
 
-Mount your vault as a read-only or read-write filesystem:
+## 1. Native FUSE3 Mount (`tvt mount`)
+
+Mount your vault directory directly into the Linux filesystem:
 
 ```bash
-pipx install televault[fuse]
+# Read-only mount (safest for browsing)
+tvt mount ~/my-vault --read-only
 
-# Read-only mount
-tvt mount ~/vault --read-only
-
-# Read-write with custom cache
-tvt mount ~/vault --cache-size 500 --cache-dir /tmp/tvcache
+# Read-write mount with custom LRU chunk cache
+tvt mount ~/my-vault --cache-size 500 --cache-dir /tmp/tvcache
 ```
 
-### How It Works
+### On-Demand Streaming Architecture
 
-The FUSE driver uses **on-demand chunk streaming** — only the chunks needed for a specific read are downloaded, not the entire file.
+The FUSE3 subsystem downloads only the specific byte ranges and chunks requested by the operating system kernel:
 
 ```
-Application reads bytes 0-4096 from file.jpg
+Application reads bytes 0-4096 from photo.jpg
     │
     ▼
 FUSE getattr → cached metadata (30s TTL)
     │
     ▼
-FUSE open → prefetch first 3 chunks into LRU cache
+FUSE open → prefetch leading chunk into LRU cache
     │
     ▼
 FUSE read → fetch_range(0, 4096)
@@ -36,90 +36,58 @@ FUSE read → fetch_range(0, 4096)
 ChunkCache.fetch_chunk(0) → download from Telegram
     │
     ▼
-Decrypt → Decompress → Return bytes 0-4096
+AES-256-GCM Decrypt → Zstandard Decompress → Return 4096 bytes
 ```
 
-### Architecture
-
-| Component | Role |
-|---|---|
-| `TeleVaultFuse` | FUSE operations implementation |
-| `ChunkCache` | Per-file chunk manager, fetches only needed chunks |
-| `LRUCache` | Global chunk data cache, configurable size (default 100 MB) |
-| Index refresh | 30s TTL on `getattr`, forced refresh on `readdir` |
-| Prefetch | First 3 chunks loaded on file open |
-
-### Options
+### FUSE Mount Options
 
 | Flag | Default | Description |
 |---|---|---|
-| `--read-only` | false | Mount as read-only |
-| `--cache-size` | 100 | LRU cache size in MB |
-| `--cache-dir` | `~/.local/share/televault/fuse_cache` | Local cache directory |
-| `--allow-other` | false | Allow other users to access the mount |
-| `--foreground` | true | Run in foreground (Ctrl+C to unmount) |
-| `--background` | false | Run as daemon |
+| `--read-only` | `false` | Mount filesystem as read-only |
+| `--cache-size <MB>` | `100` | In-memory LRU chunk cache size in megabytes |
+| `--cache-dir <path>` | `~/.local/share/televault/fuse_cache` | Disk directory for partial chunk caching |
+| `--allow-other` | `false` | Allow non-root users to access mount point |
+| `--foreground` | `true` | Run in foreground (cleanly unmounts on `Ctrl+C`) |
 
-### Performance
-
-- **First browse**: Index is preloaded before the mount becomes active, so the first directory listing is instant
-- **Sequential reads**: Prefetching keeps the next chunks in cache
-- **Random access**: Only the overlapping chunks are downloaded
-- **Large files**: On-demand streaming means a 2 GB file doesn't need to be fully downloaded to read the first 1 KB
-
-### Requirements
+### Prerequisites
 
 ```bash
-# Linux
-sudo apt install fuse libfuse2
+# Ubuntu / Debian
+sudo apt install -y libfuse3-dev fuse3
 
-# macOS
-# Install macFUSE from https://macfuse.io/
+# Arch Linux
+sudo pacman -S fuse3
 ```
 
-## WebDAV Server
+---
 
-Serve your vault over HTTP/WebDAV for access from file managers, mobile apps, or any WebDAV client:
+## 2. Native WebDAV Server (`tvt serve`)
+
+Serve your encrypted vault over HTTP/WebDAV for network-attached storage (NAS) access from file managers and mobile clients:
 
 ```bash
-pipx install televault[webdav]
-
-# Default: http://0.0.0.0:8080
+# Default listener on http://0.0.0.0:8080
 tvt serve
 
-# Custom host/port
-tvt serve --host 192.168.1.100 --port 9090
+# Custom bind address and port
+tvt serve --host 127.0.0.1 --port 9090
 
-# Read-only
+# Read-only server
 tvt serve --read-only
 ```
 
-### Accessing from Clients
+### Supported WebDAV Clients
 
-| Client | URL |
-|---|---|
-| **macOS Finder** | Go → Connect to Server → `http://localhost:8080` |
-| **Windows Explorer** | Map Network Drive → `http://localhost:8080` |
-| **Linux (gvfs)** | `dav://localhost:8080/` in file manager |
-| **Mobile (iOS/Android)** | Any WebDAV client app |
-
-### Architecture
-
-The WebDAV server is built on `aiohttp` and implements:
-
-- **PROPFIND** — List files and directories
-- **GET** — Download files (streaming, on-demand)
-- **HEAD** — File metadata
-- **OPTIONS** — WebDAV capability discovery
-- **Read-only mode** — PUT, DELETE, MKCOL, PROPPATCH return 403
-
-Files are streamed on-demand — only the chunks needed for a specific read are fetched from Telegram.
-
-### Options
-
-| Flag | Default | Description |
+| Platform | Client / Protocol | Connection URL |
 |---|---|---|
-| `--host` | `0.0.0.0` | Bind address |
-| `--port` | 8080 | Port number |
-| `--read-only` | false | Read-only mode |
-| `--cache-dir` | `~/.local/share/televault/webdav_cache` | Local cache directory |
+| **Linux** | GNOME Files / Dolphin (gvfs / kio) | `dav://localhost:8080/` |
+| **macOS** | Finder (Connect to Server) | `http://localhost:8080` |
+| **Windows** | Map Network Drive | `http://localhost:8080` |
+| **Mobile (iOS/Android)** | Documents by Readdle, FE File Explorer | `http://<server-ip>:8080` |
+
+### WebDAV Protocol Operations
+
+- `PROPFIND`: Directory listing and file metadata querying.
+- `GET`: On-demand streaming chunk download with HTTP Range header support.
+- `HEAD`: File existence and size checks.
+- `OPTIONS`: WebDAV Class 1/2 compliance negotiation.

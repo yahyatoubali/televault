@@ -1,78 +1,136 @@
 # TeleVault
 
-Unlimited encrypted cloud storage via Telegram MTProto. No servers. No limits. No trust required.
+**High-Performance Encrypted Cloud Storage on Telegram MTProto**  
+*Full Native C++23 Core • Military-Grade Zero-Trust Encryption • Multi-Gigabit Throughput*
 
+---
+
+TeleVault transforms private Telegram channels into unlimited, zero-trust cloud storage. Plaintext files and passwords never leave your machine — data is compressed with Zstandard, encrypted with OpenSSL 3 AES-256-GCM, and verified with Blake3 cryptographic integrity before streaming directly over Telegram's native MTProto network via TDLib.
+
+```bash
+# Instant install for x86_64 and ARM64 / aarch64
+curl -fsSL https://raw.githubusercontent.com/yahyatoubali/televault/main/scripts/install.sh | bash
+
+# Authenticate & push file
+tvt login
+tvt push secret-archive.tar.gz
 ```
-$ pipx install televault
-$ tvt login
-$ tvt push secret.tar.gz
-```
 
-## Core Specs
+---
 
-| | |
+## Core Specifications
+
+| Feature | Specification |
 |---|---|
-| **Protocol** | Telegram MTProto (Telethon) |
-| **Storage** | Private channel, pinned messages + reply chains |
-| **Encryption** | AES-256-GCM, scrypt KDF (N=2^17) |
-| **Integrity** | BLAKE3 per-chunk + file-level hash |
-| **Chunk Size** | 256 MB default (32 MB low-resource) |
-| **Parallelism** | 8 uploads / 10 downloads concurrent |
-| **Max File** | 2 GB (Telegram limit) |
-| **Compression** | zstd level 3 (skips incompressible) |
-| **Python** | 3.11+ |
+| **Core Architecture** | Native ISO C++23 (`tv_core` / `tv_app`), compiled with GCC 14+ / Clang 18+ |
+| **Network Protocol** | Native Telegram MTProto via TDLib v1.8.0+ |
+| **Encryption** | OpenSSL 3 AES-256-GCM (256-bit key, 12-byte random nonce, 16-byte auth tag) |
+| **Key Derivation** | Argon2id & PBKDF2 with dual-salt backward-compatible negotiation |
+| **Integrity Verification** | Multithreaded Blake3 (chunk-level and full-file verification) |
+| **Compression** | Zstandard level 3 (intelligent media type detection & bypass) |
+| **Chunking Engine** | Memory-bounded streaming chunker (default 256 MB, low-resource 32 MB) |
+| **Instant Preview** | Sub-second chunk-0 retrieval (`tvt preview`) with syntax & MIME detection |
+| **Backup Engine** | Isolated Grandfather-Father-Son (GFS) snapshot engine (`tvt backup`) |
+| **Supported Platforms** | `linux-x86_64` (AMD64), `linux-aarch64` (ARM64, Raspberry Pi, Apple Silicon) |
+
+---
+
+## Key Capabilities
+
+=== "Zero-Trust Security"
+    - **Client-Side Encryption**: AES-256-GCM with a random 12-byte nonce per chunk.
+    - **Dual-Salt Derivation**: Eliminates protocol lock-in with seamless backward compatibility.
+    - **Integrity Guarantee**: Every chunk has a Blake3 hash verified before and after upload.
+
+=== "Multi-Gigabit Throughput"
+    - **C++23 Native Pipeline**: Replaced Python prototype with native multithreaded streaming.
+    - **Zero Whole-File Buffering**: Gigabyte-scale files stream in chunks without exhausting RAM.
+    - **Parallel Transfers**: Up to 8 concurrent upload / 10 concurrent download streams.
+
+=== "Zero-Data-Loss Reliability"
+    - **Atomic Writes**: Downloads stream into temporary `.tmp.tv` files and atomic-rename on Blake3 match.
+    - **Self-Healing Recovery**: `tvt recover` reconstructs corrupt local indexes from channel history.
+    - **Snapshot Backups**: Dedicated reply chains isolate snapshots from the primary vault index.
+
+=== "Developer Interfaces"
+    - **Virtual Filesystem**: Mount your vault via FUSE3 (`tvt mount`).
+    - **WebDAV Server**: Native HTTP/WebDAV server (`tvt serve`) for Finder and Windows Explorer.
+    - **Directory Watcher**: Real-time automated synchronization (`tvt watch`) with clean signal handling.
+
+---
 
 ## Quick Start
 
-```bash
-# Install
-pipx install televault
+### 1. Download & Install
 
-# Login — will prompt for API credentials from https://my.telegram.org
+=== "Auto-Detecting One-Liner"
+    ```bash
+    ARCH=$(uname -m)
+    [ "$ARCH" = "arm64" ] && ARCH="aarch64"
+    curl -sLO "https://github.com/yahyatoubali/televault/releases/latest/download/televault-v3.5.0-linux-${ARCH}.tar.gz"
+    tar -xzf "televault-v3.5.0-linux-${ARCH}.tar.gz"
+    sudo cp "televault-v3.5.0-linux-${ARCH}/televault" /usr/local/bin/televault
+    sudo ln -sf /usr/local/bin/televault /usr/local/bin/tvt
+    tvt --version
+    ```
+
+=== "Build from Source (CMake)"
+    ```bash
+    # Ubuntu 24.04 / Debian
+    sudo apt update && sudo apt install -y cmake g++-14 libssl-dev libzstd-dev libblake3-dev libboost-dev pkg-config
+
+    # Configure & Compile
+    cmake -B build -DCMAKE_BUILD_TYPE=Release -DTV_BUILD_TESTS=ON
+    cmake --build build -j$(nproc)
+
+    # Test & Install
+    ctest --test-dir build --output-on-failure
+    sudo cp build/src/televault /usr/local/bin/televault
+    sudo ln -sf /usr/local/bin/televault /usr/local/bin/tvt
+    ```
+
+### 2. Authenticate & Setup Channel
+
+```bash
+# Authenticate with phone code, 2FA, or interactive terminal QR code
 tvt login
 
-# Setup storage channel (interactive)
+# Create and configure the encrypted Telegram storage channel
 tvt setup
-
-# Upload
-tvt push photo.jpg
-tvt push --recursive /data/documents
-
-# Download
-tvt pull photo.jpg
-tvt pull photo.jpg -o /tmp/photo.jpg
-
-# List
-tvt ls
-tvt ls --json | jq '.[].name'
-
-# Stream to stdout
-tvt cat config.yaml | grep api_key
-cat secret.txt | tvt push - --name secret.txt
 ```
 
-## Why TeleVault
+### 3. Everyday Operations
 
-| | TeleVault | Cloud Storage |
-|---|---|---|
-| Cost | Free | $5–30/month |
-| Limit | Unlimited | 15 GB – 2 TB |
-| Encryption | AES-256-GCM client-side | Server-side or none |
-| Trust Model | Zero-trust (you hold the key) | Trust the provider |
-| Max File | 2 GB | Varies |
-| Speed | Parallel chunk transfers | Single connection |
+```bash
+# Push single file or entire directory recursively
+tvt push document.pdf
+tvt push --recursive /data/projects
 
-## Next
+# Sub-second preview of remote encrypted file (fetches only chunk 0)
+tvt preview document.pdf
 
-- **[The Engine](engine.md)** — How data is stored on Telegram: message topology, storage model, encryption pipeline
-- **[Security Protocol](security.md)** — AES-256-GCM, scrypt KDF, BLAKE3 integrity, zero-trust model
-- **[Hardware Optimization](hardware.md)** — Low-resource mode for constrained systems
-- **[Virtualization](virtualization.md)** — FUSE mount and WebDAV server setup
-- **[Command Reference](commands.md)** — Complete `tvt` command manual
+# Download file with atomic swap & Blake3 verification
+tvt pull document.pdf -o ~/Downloads/document.pdf
 
-## Support
+# List vault files with sizes, dates, and chunk counts
+tvt ls
 
-TeleVault is free and open source. If you find it useful, consider supporting development:
+# Search files by pattern
+tvt find "*.pdf"
 
-- [**Ko-fi**](https://ko-fi.com/yahyatoubali) — Buy me a coffee
-- [**GitHub Sponsors**](https://github.com/sponsors/yahyatoubali) — Sponsor the project
+# Create an isolated snapshot backup
+tvt backup create /home/user/docs -n "weekly-backup"
+```
+
+---
+
+## Documentation Index
+
+- **[Architecture Design](architecture.md)** — Core C++23 modules, state machines, and threat model.
+- **[Message Topology](engine.md)** — Channel layout, pinned index, chunk replies, and snapshot chains.
+- **[Security Protocol](security.md)** — AES-256-GCM, dual-salt KDF, wire format, and Blake3 integrity.
+- **[Multi-Architecture](multiarch.md)** — Support for x86_64, aarch64, Raspberry Pi, and ARM servers.
+- **[Hardware Optimization](hardware.md)** — Low-resource mode, memory bounding, and performance tuning.
+- **[Virtualization](virtualization.md)** — FUSE3 filesystem mount and WebDAV server.
+- **[Command Manual](commands.md)** — Complete `tvt` CLI reference with all flags and examples.
+- **[Developer Notes](development/project-scope.md)** — Project scope, test infrastructure, and audit verification.

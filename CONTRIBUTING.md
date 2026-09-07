@@ -7,7 +7,7 @@ Thanks for your interest in contributing! This guide covers the C++23 version on
 ```bash
 git clone https://github.com/YahyaToubali/televault.git
 cd televault
-git checkout needspeed
+git checkout dev
 
 # Install dependencies (Ubuntu 24.04)
 sudo apt install cmake g++-14 clang++-18 libtd-dev libssl-dev \

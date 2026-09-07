@@ -1,9 +1,9 @@
 site_name: TeleVault
-site_description: Unlimited encrypted cloud storage via Telegram MTProto
+site_description: High-Performance Encrypted Cloud Storage on Telegram MTProto (C++23 Native)
 site_url: https://yahyatoubali.github.io/televault/
 repo_url: https://github.com/yahyatoubali/televault
 repo_name: yahyatoubali/televault
-edit_uri: edit/dev/docs/
+edit_uri: edit/main/docs/
 
 theme:
   name: material
@@ -53,24 +53,30 @@ markdown_extensions:
       permalink: true
 
 nav:
-  - Home: index.md
-  - Engine:
+  - Overview: index.md
+  - Architecture: architecture.md
+  - Engine & Security:
     - Message Topology: engine.md
     - Security Protocol: security.md
-  - Usage:
+  - Platforms & Tuning:
+    - Multi-CPU Architecture: multiarch.md
     - Hardware Optimization: hardware.md
-    - Virtualization: virtualization.md
+    - Virtualization (FUSE & WebDAV): virtualization.md
   - Reference:
     - Command Reference: commands.md
+  - Development:
+    - Project Scope: development/project-scope.md
+    - Test Infrastructure: development/test-infra.md
+    - Test Verification: development/test-verification.md
 
 extra:
-  version:
-    provider: mike
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/yahyatoubali/televault
-    - icon: fontawesome/brands/python
-      link: https://pypi.org/project/televault/
+      name: GitHub Repository
+    - icon: fontawesome/solid/download
+      link: https://github.com/yahyatoubali/televault/releases/latest
+      name: Pre-built Binaries
     - icon: fontawesome/brands/kickstarter-k
       link: https://ko-fi.com/yahyatoubali
       name: Support on Ko-fi
