@@ -186,3 +186,10 @@ add_executable(tvt ALIAS televault)
 
 # ── Install ────────────────────────────────────────────────────────────
 install(TARGETS televault DESTINATION bin)
+# Create `tvt` convenience symlink alongside `televault`.
+# `add_executable(tvt ALIAS ...)` above does NOT produce an installable
+# artifact, so the Homebrew formula test (`#{bin}/tvt --version`) and
+# `cmake --install --prefix ~/.local` were missing `tvt`.
+install(CODE "
+    execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink televault \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/bin/tvt\")
+")

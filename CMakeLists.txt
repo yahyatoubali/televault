@@ -18,6 +18,7 @@ option(TV_BUILD_TUI   "Build TUI support"   ON)
 option(TV_BUILD_TESTS "Build tests"         ON)
 option(TV_LOW_RESOURCE "Low-resource defaults" OFF)
 option(TV_ENABLE_SANITIZERS "Enable AddressSanitizer (ASan) and UndefinedBehaviorSanitizer (UBSan)" OFF)
+option(TV_PORTABLE "Portable release: statically link libstdc++/libgcc and prefer static zstd/blake3/fuse" OFF)
 
 # ── Darwin / macOS Homebrew Path Support ─────────────────────────────
 if(APPLE)
@@ -147,6 +148,15 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
             -fno-sanitize=vptr
         )
     endif()
+endif()
+
+# ── Portable release (static libstdc++/libgcc for multi-distro compat) ──
+# Pre-built release binaries must run on Ubuntu 24.04 (glibc 2.39),
+# Fedora 40+, and Arch without `GLIBCXX_3.4.36 not found` or
+# `libblake3.so.0: cannot open shared object` errors.
+if(TV_PORTABLE AND NOT APPLE)
+    message(STATUS "TeleVault: portable release mode (static libstdc++/libgcc)")
+    add_link_options(-static-libstdc++ -static-libgcc)
 endif()
 
 # ── Sources ────────────────────────────────────────────────────────────

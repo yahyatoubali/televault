@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 PLATFORM="${1:-linux/amd64}"
-VERSION="${2:-3.5.0}"
+VERSION="${2:-4.0.0}"
 
 # Normalize architecture name
 case "$PLATFORM" in
@@ -32,9 +32,10 @@ docker run --rm --platform "$PLATFORM" \
             -DCMAKE_BUILD_TYPE=Release \
             -DTV_BUILD_TDLIB=ON \
             -DTV_BUILD_TESTS=ON \
-            -DTV_BUILD_FUSE=OFF \
-            -DTV_BUILD_WEBDAV=OFF \
-            -DTV_BUILD_TUI=ON
+            -DTV_BUILD_FUSE=ON \
+            -DTV_BUILD_WEBDAV=ON \
+            -DTV_BUILD_TUI=ON \
+            -DTV_PORTABLE=ON
         cmake --build . --target televault -j\$(nproc)
         ctest --output-on-failure
         cd ..
