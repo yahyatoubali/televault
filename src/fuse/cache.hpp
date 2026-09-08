@@ -18,6 +18,7 @@ public:
     std::optional<std::vector<uint8_t>> get(const std::string& file_id, int64_t chunk_index);
     void evict(const std::string& file_id);
     void clear();
+    void set_max_bytes(uint64_t max_bytes);
 
 private:
     struct CacheEntry {

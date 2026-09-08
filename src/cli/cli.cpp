@@ -565,7 +565,7 @@ namespace {
         StreamOptions s_opts;
         s_opts.host = "127.0.0.1";
         s_opts.port = port;
-        s_opts.password = resolve_password(password, false);
+        s_opts.password = resolve_password(password);
 
         StreamServer server(*ctx.vault);
         std::println("\033[1;32m=== TeleVault Media Stream Server ===\033[0m");

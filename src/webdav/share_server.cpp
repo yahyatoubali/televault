@@ -322,7 +322,7 @@ body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMac
         http::write(socket, res, ec);
     }
 
-    void serve_file_content(tcp::socket& socket, const http::request<http::string_body>& req, const FileEntry& file_info, bool download_attachment) {
+    void serve_file_content(tcp::socket& socket, const http::request<http::string_body>& req, const FileMetadata& file_info, bool download_attachment) {
         beast::error_code ec;
         uint64_t total_size = file_info.size;
         std::string mime = guess_mime(file_info.name);

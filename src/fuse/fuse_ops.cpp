@@ -46,7 +46,7 @@ public:
     bool mount(const FuseOptions& opts) {
         opts_ = opts;
         if (opts.cache_size_mb > 0) {
-            cache_ = LRUChunkCache(opts.cache_size_mb * 1024 * 1024);
+            cache_.set_max_bytes(opts.cache_size_mb * 1024 * 1024);
         }
 
         std::vector<std::string> args_vec = {
@@ -120,7 +120,7 @@ public:
     static Impl* get_self() {
         auto* ctx = fuse_get_context();
         if (!ctx) return nullptr;
-        return static_cast<Impl*>(ctx->user_data);
+        return static_cast<Impl*>(ctx->private_data);
     }
 
     static int op_getattr(const char* path, struct stat* stbuf, struct fuse_file_info*) {

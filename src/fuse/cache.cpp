@@ -51,4 +51,15 @@ void LRUChunkCache::clear() {
     current_bytes_ = 0;
 }
 
+void LRUChunkCache::set_max_bytes(uint64_t max_bytes) {
+    std::unique_lock lock(mutex_);
+    max_bytes_ = max_bytes;
+    while (current_bytes_ > max_bytes_ && !entries_.empty()) {
+        auto& old = entries_.back();
+        current_bytes_ -= old.size;
+        lookup_.erase(old.file_id + ":" + std::to_string(old.chunk_index));
+        entries_.pop_back();
+    }
+}
+
 } // namespace tv
