@@ -134,16 +134,37 @@ target_link_libraries(tv_app PUBLIC tv_core)
 
 if(TV_BUILD_TDLIB)
     target_include_directories(tv_app PUBLIC ${Boost_INCLUDE_DIRS})
+    # find_package(Td) provides namespaced Td:: targets; FetchContent
+    # (add_subdirectory) provides raw tdclient/tdcore/... targets.
+    if(Td_FOUND)
+        set(TV_TDCLIENT Td::tdclient)
+        set(TV_TDCORE Td::tdcore)
+        set(TV_TDAPI Td::tdapi)
+        set(TV_TDNET Td::tdnet)
+        set(TV_TDDB Td::tddb)
+        set(TV_TDACTOR Td::tdactor)
+        set(TV_TDUTILS Td::tdutils)
+        set(TV_TDSQLITE Td::tdsqlite)
+    else()
+        set(TV_TDCLIENT tdclient)
+        set(TV_TDCORE tdcore)
+        set(TV_TDAPI tdapi)
+        set(TV_TDNET tdnet)
+        set(TV_TDDB tddb)
+        set(TV_TDACTOR tdactor)
+        set(TV_TDUTILS tdutils)
+        set(TV_TDSQLITE tdsqlite)
+    endif()
     if(APPLE)
         target_link_libraries(tv_app PUBLIC
-            Td::tdclient
-            Td::tdcore
-            Td::tdapi
-            Td::tdnet
-            Td::tddb
-            Td::tdactor
-            Td::tdutils
-            Td::tdsqlite
+            ${TV_TDCLIENT}
+            ${TV_TDCORE}
+            ${TV_TDAPI}
+            ${TV_TDNET}
+            ${TV_TDDB}
+            ${TV_TDACTOR}
+            ${TV_TDUTILS}
+            ${TV_TDSQLITE}
             OpenSSL::SSL
             OpenSSL::Crypto
             ${CMAKE_DL_LIBS}
@@ -152,14 +173,14 @@ if(TV_BUILD_TDLIB)
     else()
         target_link_libraries(tv_app PUBLIC
             "-Wl,--start-group"
-            Td::tdclient
-            Td::tdcore
-            Td::tdapi
-            Td::tdnet
-            Td::tddb
-            Td::tdactor
-            Td::tdutils
-            Td::tdsqlite
+            ${TV_TDCLIENT}
+            ${TV_TDCORE}
+            ${TV_TDAPI}
+            ${TV_TDNET}
+            ${TV_TDDB}
+            ${TV_TDACTOR}
+            ${TV_TDUTILS}
+            ${TV_TDSQLITE}
             OpenSSL::SSL
             OpenSSL::Crypto
             "-Wl,--end-group"
