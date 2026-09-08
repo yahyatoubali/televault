@@ -111,6 +111,22 @@ if(TV_BUILD_FUSE)
     list(APPEND APP_HEADERS fuse/fuse_ops.hpp fuse/cache.hpp)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(FUSE3 REQUIRED IMPORTED_TARGET fuse3)
+    # Portable releases: prefer static libfuse3.a to avoid
+    # libfuse3.so.3 (Ubuntu) vs .so.4 (Arch) mismatch.
+    if(TV_PORTABLE AND NOT APPLE)
+        find_library(TV_FUSE3_STATIC libfuse3.a HINTS /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/lib)
+        if(TV_FUSE3_STATIC)
+            message(STATUS "TeleVault: portable static fuse3: ${TV_FUSE3_STATIC}")
+            # Replace imported shared target with static archive
+            add_library(tv_fuse3_static STATIC IMPORTED)
+            set_target_properties(tv_fuse3_static PROPERTIES IMPORTED_LOCATION "${TV_FUSE3_STATIC}")
+            set(TV_FUSE3_TARGET tv_fuse3_static)
+        else()
+            set(TV_FUSE3_TARGET PkgConfig::FUSE3)
+        endif()
+    else()
+        set(TV_FUSE3_TARGET PkgConfig::FUSE3)
+    endif()
 endif()
 
 if(TV_BUILD_WEBDAV)
@@ -191,7 +207,7 @@ if(TV_BUILD_TDLIB)
 endif()
 
 if(TV_BUILD_FUSE)
-    target_link_libraries(tv_app PUBLIC PkgConfig::FUSE3)
+    target_link_libraries(tv_app PUBLIC ${TV_FUSE3_TARGET})
 endif()
 
 if(TV_BUILD_TUI)

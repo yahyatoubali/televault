@@ -168,6 +168,17 @@ endif()
 if(TV_PORTABLE AND NOT APPLE)
     message(STATUS "TeleVault: portable release mode (static libstdc++/libgcc)")
     add_link_options(-static-libstdc++ -static-libgcc)
+    # Prefer static archives for zstd/fuse3 when available, so the
+    # release binary does not require libfuse3.so.3 vs .so.4 or
+    # libzstd.so.1 on minimal installs. BLAKE3 already static via
+    # FetchContent fallback; TBB not needed for portable blake3_c.
+    find_library(TV_ZSTD_STATIC libzstd.a HINTS /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/lib /usr/local/lib)
+    if(TV_ZSTD_STATIC)
+        message(STATUS "TeleVault: portable static zstd: ${TV_ZSTD_STATIC}")
+        if(TARGET PkgConfig::ZSTD)
+            set_target_properties(PkgConfig::ZSTD PROPERTIES IMPORTED_LOCATION "${TV_ZSTD_STATIC}")
+        endif()
+    endif()
 endif()
 
 # ── Sources ────────────────────────────────────────────────────────────
