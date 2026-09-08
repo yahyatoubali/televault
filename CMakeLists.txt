@@ -93,6 +93,14 @@ if(NOT BLAKE3_FOUND)
 endif()
 
 # ── Fetched dependencies ──────────────────────────────────────────────
+# TDLib v1.8.0 predates C++20 char8_t: u8"..." is const char8_t[N] in
+# C++20+, breaking td::Slice conversion with GCC 13+/Clang 16+.
+# -fno-char8_t restores C++17 u8 behavior. Must be set BEFORE
+# FetchContent_MakeAvailable(tdlib) so it applies to tdlib targets.
+# Our code does not use char8_t, so this is safe globally.
+if(TV_BUILD_TDLIB AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-fno-char8_t)
+endif()
 include(FetchContent)
 include(cmake/FetchDependencies.cmake)
 
@@ -160,14 +168,6 @@ endif()
 if(TV_PORTABLE AND NOT APPLE)
     message(STATUS "TeleVault: portable release mode (static libstdc++/libgcc)")
     add_link_options(-static-libstdc++ -static-libgcc)
-endif()
-
-# ── TDLib v1.8.0 predates C++20 char8_t: u8"..." is const char8_t[N] in
-# C++20+, breaking td::Slice conversion with GCC 13+/Clang 16+.
-# -fno-char8_t restores C++17 u8 behavior for the whole build (our code
-# does not use char8_t). Required for Docker/CI FetchContent builds.
-if(TV_BUILD_TDLIB AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(-fno-char8_t)
 endif()
 
 # ── Sources ────────────────────────────────────────────────────────────
