@@ -80,9 +80,9 @@ tvt push secret-archive.tar.gz
     [ "$ARCH" = "arm64" ] && [ "$OS" = "darwin" ] && TARGET="darwin-arm64"
     [ "$ARCH" = "x86_64" ] && [ "$OS" = "darwin" ] && TARGET="darwin-x86_64"
 
-    curl -sLO "https://github.com/yahyatoubali/televault/releases/latest/download/televault-v3.5.0-${TARGET}.tar.gz"
-    tar -xzf "televault-v3.5.0-${TARGET}.tar.gz"
-    sudo cp "televault-v3.5.0-${TARGET}/televault" /usr/local/bin/televault
+    curl -sLO "https://github.com/yahyatoubali/televault/releases/latest/download/televault-v4.0.0-${TARGET}.tar.gz"
+    tar -xzf "televault-v4.0.0-${TARGET}.tar.gz"
+    sudo cp "televault-v4.0.0-${TARGET}/televault" /usr/local/bin/televault
     sudo ln -sf /usr/local/bin/televault /usr/local/bin/tvt
     tvt --version
     ```

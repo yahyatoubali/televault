@@ -12,6 +12,7 @@ set(CORE_SOURCES
     compress/zstd.cpp
     compress/stream.cpp
     chunker/chunker.cpp
+    chunker/fastcdc.cpp
     chunker/hash.cpp
     chunker/writer.cpp
     preview/preview.cpp
@@ -31,6 +32,7 @@ set(CORE_HEADERS
     compress/zstd.hpp
     compress/stream.hpp
     chunker/chunker.hpp
+    chunker/fastcdc.hpp
     chunker/hash.hpp
     chunker/writer.hpp
     preview/preview.hpp
@@ -83,6 +85,7 @@ if(TV_BUILD_TDLIB)
         watcher/watcher.cpp
         schedule/schedule.cpp
         schedule/systemd.cpp
+        webdav/stream_server.cpp
     )
     list(APPEND APP_HEADERS
         telegram/client.hpp
@@ -97,6 +100,7 @@ if(TV_BUILD_TDLIB)
         watcher/watcher.hpp
         schedule/schedule.hpp
         schedule/systemd.hpp
+        webdav/stream_server.hpp
     )
 else()
     list(APPEND APP_SOURCES stubs.cpp)

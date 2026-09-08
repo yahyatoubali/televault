@@ -1,23 +1,25 @@
 # Command Reference
 
-Complete reference for all `tvt` commands in TeleVault v3.5.0 (C++23 Native).
+Complete reference for all `tvt` commands in TeleVault v4.0.0 (C++23 Native).
 
 ## Core Vault Commands
 
 | Command | Description |
 |---|---|
-| `tvt push <path>` | Upload a file to the vault |
-| `tvt pull <path> [-o <dest>]` | Download a file from vault with atomic replacement |
+| `tvt push <path>` | Upload a file with FastCDC content-defined chunking and deduplication |
+| `tvt pull [query] [-o <dest>]` | Smart download: interactive menu if omitted, fuzzy matching, auto destination |
+| `tvt stream <path> [--port 8080]` | Stream media directly over HTTP Range (206 Partial Content) to VLC/browser |
 | `tvt cat <path>` | Stream file content directly to stdout |
 | `tvt preview <path>` | Sub-second chunk-0 preview with syntax & MIME detection |
-| `tvt ls [--json] [--sort field]` | List all files in the vault |
-| `tvt find <query> [--json]` | Search files by name |
+| `tvt ls [-w] [--json] [--sort field]` | List files with dynamic terminal width or wide mode (`-w`) |
+| `tvt find <query> [-e ext] [--min-size N]` | Search files with extension, size filters, and substring highlighting |
 | `tvt info <path> [--json]` | Detailed file metadata and chunk topology |
 | `tvt stat [--json]` | Vault statistics (total size and file count) |
 | `tvt rm <path>` | Delete file and its Telegram chunks |
 | `tvt verify <path>` | Verify chunk integrity against channel state |
 | `tvt recover` | Reconstruct vault index from channel history |
 | `tvt gc [--force] [--clean-partials]` | Garbage collection of orphaned chunks |
+| `tvt completion <shell>` | Generate shell autocompletion script (`bash`, `zsh`, `fish`) |
 
 ### Push / Pull Options
 

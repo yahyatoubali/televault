@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-3.5.0-blue?style=flat-square" alt="version">
+  <img src="https://img.shields.io/badge/version-4.0.0-blue?style=flat-square" alt="version">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license">
   <img src="https://img.shields.io/badge/C++-23-yellow?style=flat-square" alt="cpp">
   <img src="https://img.shields.io/badge/os-Linux%20%7C%20macOS-informational?style=flat-square" alt="os">
@@ -39,7 +39,7 @@
 
 ## Why TeleVault?
 
-| Feature | TeleVault v3.5.0 | Traditional Cloud Storage |
+| Feature | TeleVault v4.0.0 | Traditional Cloud Storage |
 |---|---|---|
 | **Cost** | 100% Free (your Telegram account) | $5 - $30 / month |
 | **Storage Limit** | Unlimited | 15 GB - 2 TB |
@@ -56,6 +56,13 @@ TeleVault turns a **private Telegram channel** into an encrypted, unlimited clou
 ## Quick Install (Pre-built Binaries)
 
 TeleVault provides pre-compiled native binaries for **Linux** (`x86_64`, `aarch64`) and **macOS Darwin** (`arm64` Apple Silicon, `x86_64` Intel) from [GitHub Releases](https://github.com/yahyatoubali/televault/releases/latest):
+
+### Homebrew (macOS & Linux)
+
+```bash
+brew tap yahyatoubali/televault https://github.com/yahyatoubali/televault
+brew install televault
+```
 
 ### Universal One-Liner (Linux & macOS)
 
@@ -75,9 +82,9 @@ ARCH=$(uname -m)
 [ "$ARCH" = "x86_64" ] && [ "$OS" = "darwin" ] && TARGET="darwin-x86_64"
 
 # Download and unpack
-curl -sLO "https://github.com/yahyatoubali/televault/releases/latest/download/televault-v3.5.0-${TARGET}.tar.gz"
-tar -xzf "televault-v3.5.0-${TARGET}.tar.gz"
-cd "televault-v3.5.0-${TARGET}"
+curl -sLO "https://github.com/yahyatoubali/televault/releases/latest/download/televault-v4.0.0-${TARGET}.tar.gz"
+tar -xzf "televault-v4.0.0-${TARGET}.tar.gz"
+cd "televault-v4.0.0-${TARGET}"
 
 # Install to system PATH
 sudo cp televault /usr/local/bin/televault
@@ -170,17 +177,19 @@ tvt tui
 ### Core Vault Operations
 
 ```bash
-tvt push <file>              # Upload a file (use -p for password, --no-encryption to disable)
-tvt pull <file>              # Download a file (atomic temporary swap on completion)
+tvt push <file>              # Upload with FastCDC content deduplication & compression
+tvt pull [query]             # Smart pull: interactive picker if omitted, fuzzy match & auto-named
+tvt stream <file> [--port]   # Stream 4K video/audio via HTTP Range (206 Partial Content) to VLC/browser
 tvt cat <file>               # Stream file directly to stdout
 tvt preview <file>           # Sub-second chunk-0 preview with syntax & MIME detection
-tvt ls [--json]              # List files in vault
-tvt find <query>             # Search vault by filename
+tvt ls [-w|--wide] [--json]  # Dynamic terminal-width formatted file listing
+tvt find <query> [-e ext]    # Search vault with extension/size filters & substring highlighting
 tvt info <file> [--json]     # Detailed file metadata and chunk topology
 tvt stat [--json]            # Total vault size and file count statistics
 tvt rm <file>                # Delete file and all chunk messages from Telegram
 tvt verify <file>            # Verify chunk integrity against channel state
 tvt recover                  # Self-healing index recovery from channel history
+tvt completion <shell>       # Generate autocompletion for bash, zsh, or fish
 ```
 
 ### Snapshot Backup Management (`tvt backup`)

@@ -7,8 +7,11 @@
 #include <filesystem>
 #include <algorithm>
 #include <cctype>
+#include <random>
+#include <cstring>
 
 #include "chunker/chunker.hpp"
+#include "chunker/fastcdc.hpp"
 #include "chunker/hash.hpp"
 #include "chunker/writer.hpp"
 
@@ -287,3 +290,73 @@ TEST(ChunkerTest, HashDifferentData) {
     std::vector<uint8_t> d2 = {'H', 'e', 'l', 'l', '!'};
     EXPECT_NE(hash_data(d1), hash_data(d2));
 }
+
+TEST(FastCDCTest, BufferChunkingReconstruction) {
+    // Generate a 1 MB test payload
+    std::vector<uint8_t> data(1024 * 1024);
+    for (size_t i = 0; i < data.size(); ++i) {
+        data[i] = static_cast<uint8_t>((i * 31 + 17) & 0xFF);
+    }
+
+    FastCDCConfig cfg{
+        .min_size = 16 * 1024,
+        .avg_size = 64 * 1024,
+        .max_size = 128 * 1024
+    };
+    FastCDC cdc(cfg);
+    auto chunks = cdc.chunk_buffer(data);
+
+    EXPECT_FALSE(chunks.empty());
+
+    uint64_t total_len = 0;
+    for (size_t i = 0; i < chunks.size(); ++i) {
+        const auto& c = chunks[i];
+        if (i + 1 < chunks.size()) {
+            EXPECT_GE(c.length, cfg.min_size);
+        }
+        EXPECT_LE(c.length, cfg.max_size);
+        EXPECT_EQ(c.offset, total_len);
+        EXPECT_FALSE(c.hash.empty());
+        total_len += c.length;
+    }
+    EXPECT_EQ(total_len, data.size());
+}
+
+TEST(FastCDCTest, ContentDefinedBoundaryStability) {
+    // Generate 1 MB of non-periodic pseudo-random data
+    std::mt19937_64 rng(1337);
+    std::vector<uint8_t> base_data(1024 * 1024);
+    for (size_t i = 0; i < base_data.size(); i += 8) {
+        uint64_t val = rng();
+        std::memcpy(base_data.data() + i, &val, sizeof(val));
+    }
+
+    FastCDCConfig cfg{
+        .min_size = 4 * 1024,
+        .avg_size = 16 * 1024,
+        .max_size = 32 * 1024
+    };
+    FastCDC cdc(cfg);
+    auto base_chunks = cdc.chunk_buffer(base_data);
+
+    // Create modified data with 256 bytes prepended
+    std::vector<uint8_t> modified_data(256, 0xAA);
+    modified_data.insert(modified_data.end(), base_data.begin(), base_data.end());
+
+    auto mod_chunks = cdc.chunk_buffer(modified_data);
+
+    // There should be matching chunk hashes across the two sets despite the shifted offset
+    size_t matching_hashes = 0;
+    for (const auto& bc : base_chunks) {
+        for (const auto& mc : mod_chunks) {
+            if (bc.hash == mc.hash) {
+                matching_hashes++;
+                break;
+            }
+        }
+    }
+
+    // A significant portion of chunks must have identical content hashes
+    EXPECT_GT(matching_hashes, 0u);
+}
+

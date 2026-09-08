@@ -525,7 +525,7 @@ public:
         auto main_renderer = Renderer(main_container, [&] {
             // Header Element
             auto header_elem = hbox({
-                text(" 🛡️ TeleVault v3.5.0 ") | bold | color(Color::Cyan),
+                text(" 🛡️ TeleVault v4.0.0 ") | bold | color(Color::Cyan),
                 text("│ Encrypted Cloud Storage via Telegram MTProto (C++23) ") | color(Color::GrayLight),
                 filler(),
                 text(" AES-256-GCM • Blake3 • Zstandard ") | color(Color::Green) | bold,

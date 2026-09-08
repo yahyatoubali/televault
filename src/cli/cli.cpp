@@ -24,11 +24,36 @@
 #include <chrono>
 #include <atomic>
 #include <filesystem>
+#include <algorithm>
+#include <cctype>
 #include <spdlog/spdlog.h>
+#include "../webdav/stream_server.hpp"
+
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/ioctl.h>
+#include <unistd.h>
+#endif
 
 namespace tv {
 
 namespace {
+
+    int get_terminal_width() {
+        int cols = 80;
+#if defined(__unix__) || defined(__APPLE__)
+        struct winsize w{};
+        if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0 && w.ws_col > 0) {
+            cols = w.ws_col;
+        } else
+#endif
+        {
+            const char* env_cols = std::getenv("COLUMNS");
+            if (env_cols) {
+                try { cols = std::stoi(env_cols); } catch (...) {}
+            }
+        }
+        return std::max(cols, 60);
+    }
 
     // ── Helpers ──────────────────────────────────────────────────────
     void print_success(const std::string& msg) {
@@ -241,7 +266,7 @@ namespace {
         else print_error(std::format("Upload failed: {}", path));
     }
 
-    void cmd_pull(AppContext& ctx, const std::string& path, const std::string& output,
+    void cmd_pull(AppContext& ctx, const std::string& query, const std::string& output,
                   const std::string& password, bool resume, bool low_resource) {
         ensure_vault(ctx);
         VaultOptions opts;
@@ -259,6 +284,83 @@ namespace {
             }
         }
 
+        std::string target_file;
+
+        if (query.empty()) {
+            // Interactive mode: list all files and let user choose
+            auto all_files = ctx.vault->list_files();
+            if (all_files.empty()) {
+                print_error("Vault is empty. Nothing to pull.");
+                return;
+            }
+            std::println("\033[1mFiles in vault:\033[0m");
+            for (size_t i = 0; i < all_files.size(); ++i) {
+                std::println("  [{}] {:<35} ({})", i + 1, all_files[i].name, format_size(all_files[i].size));
+            }
+            std::print("\033[1;36mSelect file to download [1-{}] (or 'q' to cancel): \033[0m", all_files.size());
+            std::string selection;
+            if (!std::getline(std::cin, selection) || selection == "q" || selection == "Q" || selection.empty()) {
+                print_info("Cancelled.");
+                return;
+            }
+            try {
+                size_t idx = std::stoul(selection);
+                if (idx < 1 || idx > all_files.size()) {
+                    print_error("Invalid selection.");
+                    return;
+                }
+                target_file = all_files[idx - 1].name;
+            } catch (...) {
+                print_error("Invalid input.");
+                return;
+            }
+        } else {
+            // Check for matching files
+            auto matches = ctx.vault->find_all_matching(query);
+            if (matches.empty()) {
+                print_error(std::format("File not found matching: '{}'", query));
+                return;
+            }
+            if (matches.size() == 1) {
+                target_file = matches[0].name;
+            } else {
+                // Check if one is an exact match
+                bool found_exact = false;
+                for (const auto& m : matches) {
+                    if (m.name == query || m.id == query) {
+                        target_file = m.name;
+                        found_exact = true;
+                        break;
+                    }
+                }
+                if (!found_exact) {
+                    std::println("\033[1mMultiple files matched '{}':\033[0m", query);
+                    for (size_t i = 0; i < matches.size(); ++i) {
+                        std::println("  [{}] {:<35} ({})", i + 1, matches[i].name, format_size(matches[i].size));
+                    }
+                    std::print("\033[1;36mSelect file to download [1-{}] (or 'q' to cancel): \033[0m", matches.size());
+                    std::string selection;
+                    if (!std::getline(std::cin, selection) || selection == "q" || selection == "Q" || selection.empty()) {
+                        print_info("Cancelled.");
+                        return;
+                    }
+                    try {
+                        size_t idx = std::stoul(selection);
+                        if (idx < 1 || idx > matches.size()) {
+                            print_error("Invalid selection.");
+                            return;
+                        }
+                        target_file = matches[idx - 1].name;
+                    } catch (...) {
+                        print_error("Invalid input.");
+                        return;
+                    }
+                }
+            }
+        }
+
+        auto output_path = output.empty() ? target_file : output;
+
         ProgressBar pb;
         auto cb = [&pb](const ProgressInfo& p) {
             if (!p.stage.empty()) {
@@ -269,16 +371,27 @@ namespace {
             }
         };
 
-        auto output_path = output.empty() ? path : output;
-        bool ok = ctx.vault->pull(path, output_path, opts, cb);
+        bool ok = ctx.vault->pull(target_file, output_path, opts, cb);
         pb.finish();
-        if (ok) print_success(std::format("Downloaded: {} → {}", path, output_path));
-        else print_error(std::format("Download failed: {}", path));
+        if (ok) print_success(std::format("Downloaded: {} → {}", target_file, output_path));
+        else print_error(std::format("Download failed: {}", target_file));
     }
 
-    void cmd_ls(AppContext& ctx, bool json_output, const std::string& sort) {
+    void cmd_ls(AppContext& ctx, bool json_output, const std::string& sort, bool wide) {
         ensure_vault(ctx);
         auto files = ctx.vault->list_files();
+
+        if (!sort.empty()) {
+            if (sort == "name") {
+                std::sort(files.begin(), files.end(), [](const auto& a, const auto& b) {
+                    return a.name < b.name;
+                });
+            } else if (sort == "size") {
+                std::sort(files.begin(), files.end(), [](const auto& a, const auto& b) {
+                    return a.size > b.size;
+                });
+            }
+        }
 
         if (json_output) {
             std::println("[");
@@ -292,13 +405,36 @@ namespace {
             return;
         }
 
-        std::println("{:<20} {:<40} {:>12}", "ID", "Name", "Size");
-        std::println("{:-<20} {:-<40} {:->12}", "", "", "");
+        int term_width = get_terminal_width();
+        int name_width = 40;
+        if (wide) {
+            size_t max_name = 40;
+            for (const auto& f : files) {
+                max_name = std::max(max_name, f.name.size());
+            }
+            name_width = static_cast<int>(max_name) + 2;
+        } else {
+            name_width = std::max(25, term_width - 36);
+        }
+
+        std::string hdr_name = "Name";
+        if (static_cast<int>(hdr_name.size()) < name_width) {
+            hdr_name.append(name_width - hdr_name.size(), ' ');
+        }
+        std::string hdr_sep(name_width, '-');
+
+        std::println("{:<18} {} {:>12}", "ID", hdr_name, "Size");
+        std::println("{:-<18} {} {:->12}", "", hdr_sep, "");
         for (auto& f : files) {
             auto short_id = f.id.substr(0, 16);
-            auto disp_name = f.name.size() > 38 ? f.name.substr(0, 35) + "..." : f.name;
-            std::println("{:<20} {:<40} {:>12}",
-                         short_id, disp_name, format_size(f.size));
+            std::string disp_name = f.name;
+            if (!wide && static_cast<int>(disp_name.size()) > name_width) {
+                disp_name = disp_name.substr(0, name_width - 3) + "...";
+            }
+            if (static_cast<int>(disp_name.size()) < name_width) {
+                disp_name.append(name_width - disp_name.size(), ' ');
+            }
+            std::println("{:<18} {} {:>12}", short_id, disp_name, format_size(f.size));
         }
         std::println("\nTotal: {} files", files.size());
     }
@@ -321,15 +457,252 @@ namespace {
         }
     }
 
-    void cmd_find(AppContext& ctx, const std::string& query, bool json_output) {
+    void cmd_find(AppContext& ctx, const std::string& query, bool json_output,
+                  const std::string& ext, int64_t min_size, int64_t max_size) {
         ensure_vault(ctx);
-        auto results = ctx.vault->find_files(query);
-        for (auto& f : results) {
-            if (json_output) {
-                std::println("{{\"name\":\"{}\",\"size\":{}}}", f.name, f.size);
-            } else {
-                std::println("{} ({})", f.name, format_size(f.size));
+        auto all_files = ctx.vault->list_files();
+        std::vector<FileEntry> results;
+
+        std::string query_lower = query;
+        std::transform(query_lower.begin(), query_lower.end(), query_lower.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+
+        std::string filter_ext = ext;
+        if (!filter_ext.empty() && filter_ext[0] != '.') {
+            filter_ext = "." + filter_ext;
+        }
+        std::transform(filter_ext.begin(), filter_ext.end(), filter_ext.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+
+        for (const auto& f : all_files) {
+            // Check size filter
+            if (min_size >= 0 && static_cast<int64_t>(f.size) < min_size) continue;
+            if (max_size >= 0 && static_cast<int64_t>(f.size) > max_size) continue;
+
+            // Check extension filter
+            if (!filter_ext.empty()) {
+                auto file_ext = std::filesystem::path(f.name).extension().string();
+                std::transform(file_ext.begin(), file_ext.end(), file_ext.begin(), [](unsigned char c) {
+                    return static_cast<char>(std::tolower(c));
+                });
+                if (file_ext != filter_ext) continue;
             }
+
+            // Check query
+            if (!query.empty()) {
+                std::string fname_lower = f.name;
+                std::transform(fname_lower.begin(), fname_lower.end(), fname_lower.begin(), [](unsigned char c) {
+                    return static_cast<char>(std::tolower(c));
+                });
+                if (fname_lower.find(query_lower) == std::string::npos && f.id.find(query) == std::string::npos) {
+                    continue;
+                }
+            }
+
+            results.push_back(f);
+        }
+
+        if (json_output) {
+            std::println("[");
+            for (size_t i = 0; i < results.size(); ++i) {
+                auto& f = results[i];
+                std::println("  {{\"id\":\"{}\",\"name\":\"{}\",\"size\":{}}}", f.id, f.name, f.size);
+                if (i < results.size() - 1) std::println(",");
+            }
+            std::println("]");
+            return;
+        }
+
+        if (results.empty()) {
+            print_info("No files matched search criteria.");
+            return;
+        }
+
+        std::println("Found {} matching file(s):", results.size());
+        for (const auto& f : results) {
+            std::string disp = f.name;
+            if (!query.empty()) {
+                std::string lower = disp;
+                std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) {
+                    return static_cast<char>(std::tolower(c));
+                });
+                auto pos = lower.find(query_lower);
+                if (pos != std::string::npos) {
+                    disp = disp.substr(0, pos) + "\033[1;33m" + disp.substr(pos, query.size()) + "\033[0m" + disp.substr(pos + query.size());
+                }
+            }
+            std::println("  {} ({})", disp, format_size(f.size));
+        }
+    }
+
+    void cmd_stream(AppContext& ctx, const std::string& path, uint16_t port, const std::string& password) {
+        ensure_vault(ctx);
+        auto meta = ctx.vault->get_file_info(path);
+        if (!meta) {
+            print_error("File not found in vault: " + path);
+            return;
+        }
+
+        StreamOptions s_opts;
+        s_opts.host = "127.0.0.1";
+        s_opts.port = port;
+        s_opts.password = resolve_password(password, false);
+
+        StreamServer server(*ctx.vault);
+        std::println("\033[1;32m=== TeleVault Media Stream Server ===\033[0m");
+        std::println("Streaming:   \033[1m{}\033[0m ({})", meta->name, format_size(meta->size));
+        std::println("Stream URL:  \033[1;34m{}\033[0m", server.stream_url(meta->name));
+        std::println("\nPlay in VLC, MPV, or your browser:");
+        std::println("  \033[36mvlc {}\033[0m", server.stream_url(meta->name));
+        std::println("  \033[36mmpv {}\033[0m\n", server.stream_url(meta->name));
+        std::println("Press Ctrl+C to stop streaming.\n");
+
+        if (!server.start(s_opts, true)) {
+            print_error("Failed to start streaming server on port " + std::to_string(port));
+        }
+    }
+
+    void cmd_completion(const std::string& shell) {
+        if (shell == "bash") {
+            std::cout << R"BASH(# TeleVault Bash Completion
+_televault() {
+    local cur prev words cword
+    _init_completion || return
+
+    local commands="login logout setup whoami push pull ls cat find search info stat rm verify recover gc tui preview stream mount serve backup schedule watch completion"
+
+    if [[ $cword -eq 1 ]]; then
+        COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
+        return 0
+    fi
+
+    local subcmd="${words[1]}"
+    case "$subcmd" in
+        pull|cat|info|rm|verify|preview|stream)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "-p --password -o --output" -- "$cur") )
+            else
+                local files
+                files=$(tvt __complete_files 2>/dev/null)
+                COMPREPLY=( $(compgen -W "$files" -- "$cur") )
+            fi
+            ;;
+        push)
+            _filedir
+            ;;
+        ls)
+            COMPREPLY=( $(compgen -W "--json --sort -w --wide" -- "$cur") )
+            ;;
+        completion)
+            COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") )
+            ;;
+        *)
+            ;;
+    esac
+}
+complete -F _televault tvt televault
+)BASH" << std::endl;
+        } else if (shell == "zsh") {
+            std::cout << R"ZSH(#compdef tvt televault
+# TeleVault Zsh Completion
+
+_televault() {
+    local -a commands
+    commands=(
+        'login:Authenticate with Telegram'
+        'logout:Log out and clear session'
+        'setup:Select or create storage channel'
+        'whoami:Display current user'
+        'push:Upload a file or directory'
+        'pull:Download a file from vault'
+        'ls:List files in vault'
+        'cat:Stream file content to stdout'
+        'find:Search files by name or pattern'
+        'search:Search files by name or pattern'
+        'info:Display detailed file info'
+        'stat:Display vault statistics'
+        'rm:Delete a file from vault'
+        'verify:Verify file integrity'
+        'recover:Recover vault index from channel history'
+        'gc:Garbage collection'
+        'tui:Launch terminal user interface'
+        'preview:Preview a file'
+        'stream:Stream media file with HTTP Range'
+        'mount:Mount FUSE filesystem'
+        'serve:Start WebDAV server'
+        'backup:Snapshot backup management'
+        'schedule:Backup scheduling'
+        'watch:Watch directory for changes'
+        'completion:Generate shell autocompletion'
+    )
+
+    _arguments -C \
+        '1: :->command' \
+        '*: :->args'
+
+    case $state in
+        command)
+            _describe -t commands 'televault commands' commands
+            ;;
+        args)
+            case $words[2] in
+                pull|cat|info|rm|verify|preview|stream)
+                    local -a vfiles
+                    vfiles=(${(f)"$(tvt __complete_files 2>/dev/null)"})
+                    _describe 'vault files' vfiles
+                    ;;
+                push)
+                    _files
+                    ;;
+                ls)
+                    _arguments \
+                        '--json[Output JSON]' \
+                        '(-w --wide)'{-w,--wide}'[Disable name truncation]' \
+                        '--sort[Sort field]:field:(name size)'
+                    ;;
+                completion)
+                    _values 'shell' bash zsh fish
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+_televault "$@"
+)ZSH" << std::endl;
+        } else if (shell == "fish") {
+            std::cout << R"FISH(# TeleVault Fish Completion
+set -l commands login logout setup whoami push pull ls cat find search info stat rm verify recover gc tui preview stream mount serve backup schedule watch completion
+
+complete -c tvt -f -n "not __fish_seen_subcommand_from $commands" -a "$commands"
+complete -c televault -f -n "not __fish_seen_subcommand_from $commands" -a "$commands"
+
+function __tvt_vault_files
+    tvt __complete_files 2>/dev/null
+end
+
+for cmd in pull cat info rm verify preview stream
+    complete -c tvt -f -n "__fish_seen_subcommand_from $cmd" -a "(__tvt_vault_files)"
+    complete -c televault -f -n "__fish_seen_subcommand_from $cmd" -a "(__tvt_vault_files)"
+end
+
+complete -c tvt -n "__fish_seen_subcommand_from completion" -a "bash zsh fish"
+complete -c televault -n "__fish_seen_subcommand_from completion" -a "bash zsh fish"
+complete -c tvt -n "__fish_seen_subcommand_from ls" -l json -d "JSON output"
+complete -c tvt -n "__fish_seen_subcommand_from ls" -s w -l wide -d "Disable truncation"
+)FISH" << std::endl;
+        } else {
+            print_error("Unsupported shell: " + shell + ". Supported: bash, zsh, fish");
+        }
+    }
+
+    void cmd_complete_files(AppContext& ctx) {
+        if (!ctx.ensure_vault()) return;
+        auto files = ctx.vault->list_files();
+        for (const auto& f : files) {
+            std::println("{}", f.name);
         }
     }
 
@@ -729,8 +1102,8 @@ void build_cli(CLI::App& app, AppContext& ctx) {
         bool low{};
     };
     auto pull_args = std::make_shared<PullArgs>();
-    auto* pull = app.add_subcommand("pull", "Download a file");
-    pull->add_option("path", pull_args->path, "File path in vault")->required();
+    auto* pull = app.add_subcommand("pull", "Download a file from vault (interactive if no file specified)");
+    pull->add_option("path", pull_args->path, "File name, ID, or substring to download");
     pull->add_option("-o,--output", pull_args->output, "Output path (use '-' for stdout)");
     pull->add_option("-p,--password", pull_args->password, "Decryption password (or set TELEVAULT_PASSWORD)");
     pull->add_flag("--resume", pull_args->resume, "Resume interrupted download");
@@ -743,12 +1116,14 @@ void build_cli(CLI::App& app, AppContext& ctx) {
     struct LsArgs {
         bool json{};
         std::string sort;
+        bool wide{};
     };
     auto ls_args = std::make_shared<LsArgs>();
     auto* ls = app.add_subcommand("ls", "List files");
     ls->add_flag("--json", ls_args->json, "JSON output");
-    ls->add_option("--sort", ls_args->sort, "Sort field");
-    ls->callback([&ctx, ls_args]() { cmd_ls(ctx, ls_args->json, ls_args->sort); });
+    ls->add_flag("-w,--wide", ls_args->wide, "Disable name truncation");
+    ls->add_option("--sort", ls_args->sort, "Sort field (name, size)");
+    ls->callback([&ctx, ls_args]() { cmd_ls(ctx, ls_args->json, ls_args->sort, ls_args->wide); });
 
     struct CatArgs {
         std::string path;
@@ -763,12 +1138,52 @@ void build_cli(CLI::App& app, AppContext& ctx) {
     struct FindArgs {
         std::string query;
         bool json{};
+        std::string ext;
+        int64_t min_size{-1};
+        int64_t max_size{-1};
     };
     auto find_args = std::make_shared<FindArgs>();
-    auto* find = app.add_subcommand("find", "Search files by name");
-    find->add_option("query", find_args->query, "Search query")->required();
+    auto* find = app.add_subcommand("find", "Search files by name or pattern");
+    find->alias("search");
+    find->add_option("query", find_args->query, "Search query");
     find->add_flag("--json", find_args->json, "JSON output");
-    find->callback([&ctx, find_args]() { cmd_find(ctx, find_args->query, find_args->json); });
+    find->add_option("-e,--ext", find_args->ext, "Filter by file extension (e.g. .mp4 or mp4)");
+    find->add_option("--min-size", find_args->min_size, "Filter by minimum file size in bytes");
+    find->add_option("--max-size", find_args->max_size, "Filter by maximum file size in bytes");
+    find->callback([&ctx, find_args]() {
+        cmd_find(ctx, find_args->query, find_args->json, find_args->ext, find_args->min_size, find_args->max_size);
+    });
+
+    // ── Streaming subcommand ──────────────────────────────────────────
+    struct StreamArgs {
+        std::string path;
+        uint16_t port{8080};
+        std::string password;
+    };
+    auto stream_args = std::make_shared<StreamArgs>();
+    auto* stream = app.add_subcommand("stream", "Stream media file with HTTP Range support");
+    stream->add_option("path", stream_args->path, "File path in vault to stream")->required();
+    stream->add_option("--port", stream_args->port, "HTTP port (default: 8080)");
+    stream->add_option("-p,--password", stream_args->password, "Decryption password (or set TELEVAULT_PASSWORD)");
+    stream->callback([&ctx, stream_args]() {
+        cmd_stream(ctx, stream_args->path, stream_args->port, stream_args->password);
+    });
+
+    // ── Completion subcommand ─────────────────────────────────────────
+    struct CompletionArgs {
+        std::string shell{"bash"};
+    };
+    auto comp_args = std::make_shared<CompletionArgs>();
+    auto* completion = app.add_subcommand("completion", "Generate shell autocompletion script (bash, zsh, fish)");
+    completion->add_option("shell", comp_args->shell, "Shell type: bash, zsh, fish")->check(CLI::IsMember({"bash", "zsh", "fish"}));
+    completion->callback([comp_args]() {
+        cmd_completion(comp_args->shell);
+    });
+
+    auto* complete_files = app.add_subcommand("__complete_files", "")->group("");
+    complete_files->callback([&ctx]() {
+        cmd_complete_files(ctx);
+    });
 
     struct InfoArgs {
         std::string path;

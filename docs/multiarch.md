@@ -1,6 +1,6 @@
 # Multi-CPU Architecture Support
 
-TeleVault v3.5.0 is engineered from the ground up in standard ISO C++23 to run natively and portably across diverse CPU architectures with zero code changes or emulation overhead.
+TeleVault v4.0.0 is engineered from the ground up in standard ISO C++23 to run natively and portably across diverse CPU architectures with zero code changes or emulation overhead.
 
 ## Supported Architectures & Operating Systems
 

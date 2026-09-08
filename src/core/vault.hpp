@@ -27,6 +27,8 @@ struct VaultOptions {
     bool compressed{true};
     bool low_resource{};
     bool resume{};
+    bool deduplicate{true};
+    bool fastcdc{true};
     std::string password;
 };
 
@@ -59,10 +61,12 @@ public:
               const VaultOptions& opts, ProgressCallback cb = {});
     bool cat(const std::string& vault_path, const VaultOptions& opts = {}, ProgressCallback cb = {});
     [[nodiscard]] std::optional<std::vector<uint8_t>> read_first_chunk(const std::string& vault_path, const VaultOptions& opts = {});
+    [[nodiscard]] std::optional<std::vector<uint8_t>> read_byte_range(const std::string& vault_path, uint64_t start_byte, uint64_t end_byte, const VaultOptions& opts = {});
 
     // Listing & querying
     [[nodiscard]] std::vector<FileEntry> list_files() const;
     [[nodiscard]] std::vector<FileEntry> find_files(const std::string& query) const;
+    [[nodiscard]] std::vector<FileMetadata> find_all_matching(const std::string& query) const;
     [[nodiscard]] std::optional<FileMetadata> get_file_info(const std::string& path) const;
 
     // Management

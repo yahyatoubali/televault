@@ -2,6 +2,7 @@
 #include "index.hpp"
 #include "../telegram/client.hpp"
 #include "../chunker/chunker.hpp"
+#include "../chunker/fastcdc.hpp"
 #include "../chunker/hash.hpp"
 #include "../compress/zstd.hpp"
 #include "../crypto/aes256gcm.hpp"
@@ -80,8 +81,6 @@ public:
             ? static_cast<uint64_t>(32) * 1024 * 1024
             : static_cast<uint64_t>(256) * 1024 * 1024;
 
-        uint64_t total_chunks = file_size == 0 ? 1 : ((file_size + chunk_size - 1) / chunk_size);
-
         // Send initial thread-root metadata message
         FileMetadata meta;
         meta.id = file_hash.substr(0, 16);
@@ -108,14 +107,33 @@ public:
             return false;
         }
 
-        uint64_t bytes_processed = 0;
+        // Determine chunk boundaries (FastCDC content-defined if enabled, else fixed-size)
+        std::vector<std::pair<uint64_t, uint64_t>> chunk_ranges; // {offset, length}
+        if (opts.fastcdc && file_size > (low_resource_ ? 1024 * 1024 : 4 * 1024 * 1024)) {
+            FastCDCConfig cdc_cfg = low_resource_
+                ? FastCDCConfig::low_resource()
+                : FastCDCConfig::default_config();
+            FastCDC cdc(cdc_cfg);
+            cdc.chunk_file(local_path, [&](const FastCDCChunk& c, std::span<const uint8_t>) {
+                chunk_ranges.emplace_back(c.offset, c.length);
+                return true;
+            });
+        }
+        if (chunk_ranges.empty()) {
+            for (uint64_t offset = 0; offset < file_size || (file_size == 0 && offset == 0); offset += chunk_size) {
+                uint64_t len = (file_size > offset) ? std::min(chunk_size, file_size - offset) : 0;
+                chunk_ranges.emplace_back(offset, len);
+                if (file_size == 0) break;
+            }
+        }
+
+        uint64_t total_chunks = chunk_ranges.size();
         meta.chunks.reserve(total_chunks);
+        uint64_t bytes_processed = 0;
+        uint64_t deduplicated_bytes = 0;
 
         for (uint64_t chunk_idx = 0; chunk_idx < total_chunks; ++chunk_idx) {
-            uint64_t current_offset = chunk_idx * chunk_size;
-            uint64_t this_chunk_size = (file_size > current_offset)
-                ? std::min(chunk_size, file_size - current_offset)
-                : 0;
+            auto [current_offset, this_chunk_size] = chunk_ranges[chunk_idx];
 
             std::vector<uint8_t> chunk_data(this_chunk_size);
             if (this_chunk_size > 0) {
@@ -131,6 +149,29 @@ public:
             ci.index = static_cast<int64_t>(chunk_idx);
             ci.offset = current_offset;
             ci.original_hash = hash_data(chunk_data);
+
+            // Check global chunk deduplication
+            if (opts.deduplicate && this_chunk_size > 0) {
+                auto existing = find_existing_chunk(ci.original_hash);
+                if (existing) {
+                    ci.message_id = existing->message_id;
+                    ci.file_id = existing->file_id;
+                    ci.size = existing->size;
+                    ci.hash = existing->hash;
+                    meta.chunks.push_back(std::move(ci));
+
+                    bytes_processed += this_chunk_size;
+                    deduplicated_bytes += this_chunk_size;
+                    spdlog::info("Deduplicated chunk {}/{} (reused msg_id {}, saved {})",
+                                 chunk_idx + 1, total_chunks, existing->message_id, format_size(this_chunk_size));
+                    if (cb) {
+                        cb({bytes_processed, file_size,
+                            std::format("Deduplicated chunk {}/{} (saved {})",
+                                        chunk_idx + 1, total_chunks, format_size(this_chunk_size)), 0});
+                    }
+                    continue;
+                }
+            }
 
             if (opts.compressed && should_compress(file_name)) {
                 chunk_data = compress_data(chunk_data);
@@ -194,6 +235,13 @@ public:
         if (!index_mgr->save(channel_id_)) {
             spdlog::error("Failed to save index");
             return false;
+        }
+
+        if (deduplicated_bytes > 0) {
+            spdlog::info("Global deduplication saved {} ({:.1f}%) for {}",
+                         format_size(deduplicated_bytes),
+                         file_size > 0 ? (100.0 * deduplicated_bytes / file_size) : 0.0,
+                         file_name);
         }
 
         if (cb) cb({file_size, file_size, "Complete", 0});
@@ -544,7 +592,6 @@ public:
         return true;
     }
 
-private:
     // ── Helpers ─────────────────────────────────────────────────────
     std::optional<FileMetadata> get_metadata(int64_t msg_id) const {
         auto try_parse = [this](int64_t id) -> std::optional<FileMetadata> {
@@ -576,17 +623,138 @@ private:
         return std::nullopt;
     }
 
-    std::optional<FileMetadata> find_metadata(const std::string& path) const {
+    std::optional<ChunkInfo> find_existing_chunk(const std::string& original_hash) const {
+        if (original_hash.empty()) return std::nullopt;
         for (auto& [fid, mid] : index_mgr->index().files) {
             auto meta = get_metadata(mid);
             if (meta) {
-                if (meta->name == path || meta->id == path || fid == path ||
-                    (path.size() >= 6 && meta->id.starts_with(path))) {
-                    return meta;
+                for (const auto& c : meta->chunks) {
+                    if (!c.original_hash.empty() && c.original_hash == original_hash && c.message_id != 0) {
+                        return c;
+                    }
                 }
             }
         }
         return std::nullopt;
+    }
+
+    static std::string to_lower(std::string_view s) {
+        std::string res(s);
+        std::transform(res.begin(), res.end(), res.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        return res;
+    }
+
+    std::vector<FileMetadata> find_all_matching(const std::string& query) const {
+        std::vector<FileMetadata> matches;
+        std::string q_lower = to_lower(query);
+
+        for (auto& [fid, mid] : index_mgr->index().files) {
+            auto meta = get_metadata(mid);
+            if (!meta) continue;
+
+            if (query.empty() || meta->name == query || meta->id == query || fid == query) {
+                matches.push_back(*meta);
+                continue;
+            }
+            if (meta->id.starts_with(query)) {
+                matches.push_back(*meta);
+                continue;
+            }
+            std::string name_lower = to_lower(meta->name);
+            if (name_lower.find(q_lower) != std::string::npos) {
+                matches.push_back(*meta);
+            }
+        }
+        return matches;
+    }
+
+    std::optional<FileMetadata> find_metadata(const std::string& path) const {
+        // Pass 1: exact matches
+        for (auto& [fid, mid] : index_mgr->index().files) {
+            auto meta = get_metadata(mid);
+            if (meta) {
+                if (meta->name == path || meta->id == path || fid == path) {
+                    return meta;
+                }
+            }
+        }
+        // Pass 2: ID prefix or exact case-insensitive name match
+        std::string path_lower = to_lower(path);
+        for (auto& [fid, mid] : index_mgr->index().files) {
+            auto meta = get_metadata(mid);
+            if (meta) {
+                if ((path.size() >= 4 && meta->id.starts_with(path)) ||
+                    to_lower(meta->name) == path_lower) {
+                    return meta;
+                }
+            }
+        }
+        // Pass 3: substring match
+        auto matches = find_all_matching(path);
+        if (matches.size() == 1) {
+            return matches[0];
+        }
+        return std::nullopt;
+    }
+
+    std::optional<std::vector<uint8_t>> read_byte_range(
+        const std::string& vault_path, uint64_t start_byte, uint64_t end_byte,
+        const VaultOptions& opts)
+    {
+        auto meta = find_metadata(vault_path);
+        if (!meta || meta->chunks.empty()) return std::nullopt;
+
+        if (start_byte >= meta->size) return std::vector<uint8_t>{};
+        end_byte = std::min(end_byte, meta->size > 0 ? meta->size - 1 : 0);
+        if (start_byte > end_byte) return std::vector<uint8_t>{};
+
+        std::vector<uint8_t> result;
+        result.reserve(end_byte - start_byte + 1);
+
+        std::string salt_str = "televault" + std::to_string(channel_id_);
+        std::span<const uint8_t> fallback_salt(
+            reinterpret_cast<const uint8_t*>(salt_str.data()), salt_str.size());
+
+        for (const auto& ci : meta->chunks) {
+            uint64_t chunk_start = ci.offset;
+            if (chunk_start > end_byte) break;
+
+            int64_t chunk_mid = (ci.message_id != 0) ? ci.message_id : meta->metadata_message_id;
+            if (!tg.download_file_by_message(channel_id_, chunk_mid)) continue;
+            auto msg = tg.get_message(channel_id_, chunk_mid);
+            auto finfo = tg.get_file_info(msg.file_id);
+            if (!finfo || finfo->local_path.empty()) continue;
+
+            std::ifstream f(finfo->local_path, std::ios::binary);
+            if (!f) continue;
+            std::vector<uint8_t> cdata((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+
+            if (meta->encrypted) {
+                std::string pw = opts.password;
+                if (pw.empty() && have_key) {
+                    cdata = decrypt_chunk(cdata, std::span<const uint8_t>(master_key));
+                } else {
+                    cdata = decrypt_chunk(cdata, pw, fallback_salt);
+                }
+            }
+            if (meta->compressed) {
+                cdata = decompress_data(cdata);
+            }
+
+            uint64_t pt_start = ci.offset;
+            uint64_t pt_end = pt_start + cdata.size();
+            if (pt_start <= end_byte && pt_end > start_byte) {
+                uint64_t slice_start = (start_byte > pt_start) ? (start_byte - pt_start) : 0;
+                uint64_t slice_end = std::min(static_cast<uint64_t>(cdata.size()), end_byte - pt_start + 1);
+                if (slice_end > slice_start) {
+                    result.insert(result.end(), cdata.begin() + slice_start, cdata.begin() + slice_end);
+                }
+            }
+            if (pt_end > end_byte) break;
+        }
+        return result;
     }
 
     static FileEntry make_entry(const FileMetadata& meta) {
@@ -628,12 +796,21 @@ std::optional<std::vector<uint8_t>> TeleVault::read_first_chunk(const std::strin
     return impl_->read_first_chunk(path, opts);
 }
 
+std::optional<std::vector<uint8_t>> TeleVault::read_byte_range(
+    const std::string& path, uint64_t start_byte, uint64_t end_byte, const VaultOptions& opts) {
+    return impl_->read_byte_range(path, start_byte, end_byte, opts);
+}
+
 std::vector<FileEntry> TeleVault::list_files() const {
     return impl_->list_files();
 }
 
 std::vector<FileEntry> TeleVault::find_files(const std::string& query) const {
     return impl_->find_files(query);
+}
+
+std::vector<FileMetadata> TeleVault::find_all_matching(const std::string& query) const {
+    return impl_->find_all_matching(query);
 }
 
 std::optional<FileMetadata> TeleVault::get_file_info(const std::string& path) const {
