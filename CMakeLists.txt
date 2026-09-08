@@ -1,4 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
+# TDLib v1.8.0 still declares cmake_minimum_required(<3.5), which CMake 4.x
+# rejects unless policy floor is lowered. Required for FetchContent tdlib.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "Minimum CMake policy version for fetched deps")
 project(televault
     VERSION 4.0.0
     DESCRIPTION "Encrypted cloud storage on Telegram channels"
