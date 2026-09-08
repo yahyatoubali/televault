@@ -16,6 +16,8 @@ RUN apt-get update -qq && \
         cmake \
         git \
         pkg-config \
+        gperf \
+        zlib1g-dev \
         libssl-dev \
         libzstd-dev \
         libboost-dev \
