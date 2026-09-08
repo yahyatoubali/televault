@@ -11,6 +11,7 @@ struct FuseOptions {
     std::string mount_point;
     bool read_only{true};
     uint64_t cache_size_mb{256};
+    std::string password;
 };
 
 class TeleVaultFuse {

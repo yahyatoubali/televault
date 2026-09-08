@@ -29,6 +29,16 @@
 #include <spdlog/spdlog.h>
 #include "../webdav/stream_server.hpp"
 
+#if defined(TV_BUILD_FUSE)
+#include "../fuse/fuse_ops.hpp"
+#endif
+
+#if defined(TV_BUILD_WEBDAV)
+#include "../webdav/server.hpp"
+#include "../webdav/s3_server.hpp"
+#include "../webdav/share_server.hpp"
+#endif
+
 #if defined(__unix__) || defined(__APPLE__)
 #include <sys/ioctl.h>
 #include <unistd.h>
@@ -232,11 +242,18 @@ namespace {
     }
 
     void cmd_push(AppContext& ctx, const std::string& path, const std::string& password,
-                  bool recursive, bool resume, bool low_resource, bool no_encryption) {
+                  bool recursive, bool resume, bool low_resource, bool no_encryption,
+                  bool delta = false, const std::vector<int64_t>& shards = {}) {
         ensure_vault(ctx);
         VaultOptions opts;
         opts.low_resource = low_resource;
         opts.resume = resume;
+        opts.delta = delta;
+        opts.channel_ids = shards;
+
+        if (!shards.empty()) {
+            ctx.vault->set_shards(shards);
+        }
 
         auto& cfg = ConfigManager::instance().get();
         opts.encrypted = !no_encryption && cfg.encryption;
@@ -571,7 +588,7 @@ _televault() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="login logout setup whoami push pull ls cat find search info stat rm verify recover gc tui preview stream mount serve backup schedule watch completion"
+    local commands="login logout setup whoami push pull ls cat find search info stat rm verify recover gc tui preview stream mount serve serve-s3 share trash restore versions backup schedule watch completion"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
@@ -580,7 +597,7 @@ _televault() {
 
     local subcmd="${words[1]}"
     case "$subcmd" in
-        pull|cat|info|rm|verify|preview|stream)
+        pull|cat|info|rm|verify|preview|stream|share|versions|restore)
             if [[ "$cur" == -* ]]; then
                 COMPREPLY=( $(compgen -W "-p --password -o --output" -- "$cur") )
             else
@@ -591,6 +608,9 @@ _televault() {
             ;;
         push)
             _filedir
+            ;;
+        trash)
+            COMPREPLY=( $(compgen -W "list empty" -- "$cur") )
             ;;
         ls)
             COMPREPLY=( $(compgen -W "--json --sort -w --wide" -- "$cur") )
@@ -632,6 +652,11 @@ _televault() {
         'stream:Stream media file with HTTP Range'
         'mount:Mount FUSE filesystem'
         'serve:Start WebDAV server'
+        'serve-s3:Start S3-compatible storage gateway'
+        'share:Generate ephemeral direct share link'
+        'trash:Encrypted trash bin management'
+        'restore:Restore file from encrypted trash'
+        'versions:List file version history'
         'backup:Snapshot backup management'
         'schedule:Backup scheduling'
         'watch:Watch directory for changes'
@@ -648,13 +673,16 @@ _televault() {
             ;;
         args)
             case $words[2] in
-                pull|cat|info|rm|verify|preview|stream)
+                pull|cat|info|rm|verify|preview|stream|share|versions|restore)
                     local -a vfiles
                     vfiles=(${(f)"$(tvt __complete_files 2>/dev/null)"})
                     _describe 'vault files' vfiles
                     ;;
                 push)
                     _files
+                    ;;
+                trash)
+                    _values 'subcmd' list empty
                     ;;
                 ls)
                     _arguments \
@@ -674,7 +702,7 @@ _televault "$@"
 )ZSH" << std::endl;
         } else if (shell == "fish") {
             std::cout << R"FISH(# TeleVault Fish Completion
-set -l commands login logout setup whoami push pull ls cat find search info stat rm verify recover gc tui preview stream mount serve backup schedule watch completion
+set -l commands login logout setup whoami push pull ls cat find search info stat rm verify recover gc tui preview stream mount serve serve-s3 share trash restore versions backup schedule watch completion
 
 complete -c tvt -f -n "not __fish_seen_subcommand_from $commands" -a "$commands"
 complete -c televault -f -n "not __fish_seen_subcommand_from $commands" -a "$commands"
@@ -742,10 +770,14 @@ complete -c tvt -n "__fish_seen_subcommand_from ls" -s w -l wide -d "Disable tru
         }
     }
 
-    void cmd_rm(AppContext& ctx, const std::string& path) {
+    void cmd_rm(AppContext& ctx, const std::string& path, bool purge = false) {
         ensure_vault(ctx);
-        if (ctx.vault->delete_file(path)) {
-            print_success("Deleted: " + path);
+        if (ctx.vault->delete_file(path, purge)) {
+            if (purge) {
+                print_success("Permanently purged: " + path);
+            } else {
+                print_success("Moved to encrypted trash: " + path + " (use 'tvt restore " + path + "' to recover)");
+            }
         } else {
             print_error("Delete failed: " + path);
         }
@@ -1038,13 +1070,163 @@ complete -c tvt -n "__fish_seen_subcommand_from ls" -s w -l wide -d "Disable tru
         print_success("Watcher stopped cleanly.");
     }
 
-    // ── Advanced commands (stubs) ─────────────────────────────────────
-    void cmd_mount(AppContext& ctx) {
-        print_info("FUSE mount — not yet implemented");
+    // ── Advanced commands ─────────────────────────────────────────────
+    void cmd_mount(AppContext& ctx, const std::string& mountpoint, const std::string& password,
+                   uint64_t cache_mb, bool read_only) {
+#if defined(TV_BUILD_FUSE)
+        ensure_vault(ctx);
+        FuseOptions opts;
+        opts.mount_point = mountpoint;
+        opts.read_only = read_only;
+        opts.cache_size_mb = cache_mb;
+        opts.password = resolve_password(password);
+
+        print_info(std::format("Mounting TeleVault on '{}' (cache: {} MB, read-only: {})...",
+                               mountpoint, cache_mb, read_only ? "yes" : "no"));
+        TeleVaultFuse fuse(*ctx.vault);
+        if (!fuse.mount(opts)) {
+            print_error("Failed to mount FUSE filesystem.");
+        }
+#else
+        print_error("TeleVault was built without FUSE support.");
+#endif
     }
 
-    void cmd_serve(AppContext& ctx) {
-        print_info("WebDAV server — not yet implemented");
+    void cmd_serve(AppContext& ctx, const std::string& host, uint16_t port,
+                   const std::string& password, bool read_only) {
+#if defined(TV_BUILD_WEBDAV)
+        ensure_vault(ctx);
+        WebDAVOptions opts;
+        opts.host = host;
+        opts.port = port;
+        opts.read_only = read_only;
+        opts.password = resolve_password(password);
+
+        print_info(std::format("Starting WebDAV server on http://{}:{} (read-only: {})...",
+                               host, port, read_only ? "yes" : "no"));
+        WebDAVServer server(*ctx.vault);
+        if (!server.start(opts)) {
+            print_error("Failed to start WebDAV server.");
+        }
+#else
+        print_error("TeleVault was built without WebDAV support.");
+#endif
+    }
+
+    void cmd_serve_s3(AppContext& ctx, const std::string& host, uint16_t port,
+                      const std::string& password) {
+#if defined(TV_BUILD_WEBDAV)
+        ensure_vault(ctx);
+        S3Options opts;
+        opts.host = host;
+        opts.port = port;
+        opts.password = resolve_password(password);
+
+        print_info(std::format("Starting S3-compatible gateway on http://{}:{} ...", host, port));
+        print_info("Access Key: televault | Secret Key: televaultadmin");
+        S3Server server(*ctx.vault);
+        if (!server.start(opts)) {
+            print_error("Failed to start S3 server.");
+        }
+#else
+        print_error("TeleVault was built without WebDAV/S3 support.");
+#endif
+    }
+
+    void cmd_share(AppContext& ctx, const std::string& path, const std::string& host,
+                   uint16_t port, const std::string& expires_str, const std::string& pin,
+                   const std::string& password) {
+#if defined(TV_BUILD_WEBDAV)
+        ensure_vault(ctx);
+        ShareOptions opts;
+        opts.remote_path = path;
+        opts.host = host;
+        opts.port = port;
+        opts.pin = pin;
+
+        uint64_t seconds = 3600;
+        if (!expires_str.empty()) {
+            if (expires_str == "0" || expires_str == "never") {
+                seconds = 0;
+            } else if (expires_str.ends_with("h") || expires_str.ends_with("H")) {
+                seconds = std::stoull(expires_str.substr(0, expires_str.size() - 1)) * 3600;
+            } else if (expires_str.ends_with("m") || expires_str.ends_with("M")) {
+                seconds = std::stoull(expires_str.substr(0, expires_str.size() - 1)) * 60;
+            } else if (expires_str.ends_with("d") || expires_str.ends_with("D")) {
+                seconds = std::stoull(expires_str.substr(0, expires_str.size() - 1)) * 86400;
+            } else if (expires_str.ends_with("s") || expires_str.ends_with("S")) {
+                seconds = std::stoull(expires_str.substr(0, expires_str.size() - 1));
+            } else {
+                seconds = std::stoull(expires_str);
+            }
+        }
+        opts.expires_in = std::chrono::seconds(seconds);
+
+        ShareServer server(*ctx.vault);
+        std::println("\033[36m╭──────────────────────────────────────────────────╮\033[0m");
+        std::println("\033[36m│\033[0m  \033[1;32mTeleVault Ephemeral Direct Share Link\033[0m           \033[36m│\033[0m");
+        std::println("\033[36m╰──────────────────────────────────────────────────╯\033[0m");
+        std::println("  File:       \033[1m{}\033[0m", path);
+        if (seconds > 0) {
+            std::println("  Expires in: \033[33m{}\033[0m", expires_str);
+        } else {
+            std::println("  Expires:    \033[33mNever\033[0m");
+        }
+        if (!pin.empty()) {
+            std::println("  PIN code:   \033[35m{}\033[0m", pin);
+        }
+
+        server.start(opts, true);
+#else
+        print_error("TeleVault was built without WebDAV/Share support.");
+#endif
+    }
+
+    void cmd_trash_list(AppContext& ctx) {
+        ensure_vault(ctx);
+        auto trashed = ctx.vault->list_trash();
+        if (trashed.empty()) {
+            print_info("Encrypted trash is empty.");
+            return;
+        }
+
+        std::println("{:<40} {:<12} {:<24} {:<6}", "ORIGINAL PATH", "SIZE", "TRASHED AT", "VERSION");
+        std::println("{:-<40} {:-<12} {:-<24} {:-<6}", "", "", "", "");
+        for (const auto& f : trashed) {
+            std::println("{:<40} {:<12} {:<24} v{:<5}",
+                         f.name, format_size(f.size), f.created_at, f.version);
+        }
+        print_info(std::format("Total trashed files: {}", trashed.size()));
+    }
+
+    void cmd_trash_empty(AppContext& ctx) {
+        ensure_vault(ctx);
+        size_t count = ctx.vault->empty_trash();
+        print_success(std::format("Emptied trash: permanently removed {} files.", count));
+    }
+
+    void cmd_restore(AppContext& ctx, const std::string& path) {
+        ensure_vault(ctx);
+        if (ctx.vault->restore_file(path)) {
+            print_success(std::format("Restored file from trash: {}", path));
+        } else {
+            print_error(std::format("Could not restore '{}' (file not found in trash).", path));
+        }
+    }
+
+    void cmd_versions(AppContext& ctx, const std::string& path) {
+        ensure_vault(ctx);
+        auto fi = ctx.vault->get_file_info(path);
+        if (!fi) {
+            print_error("File not found in vault: " + path);
+            return;
+        }
+        std::println("\033[1;36mVersions for '{}':\033[0m", path);
+        std::println("  Version:      v{}", fi->version);
+        std::println("  Current Size: {}", format_size(fi->size));
+        std::println("  Created:      {}", fi->created_at);
+        std::println("  Encrypted:    {}", fi->encrypted ? "Yes (AES-256-GCM)" : "No");
+        std::println("  Chunks:       {}", fi->chunk_count());
     }
 
     void cmd_schedule(AppContext& ctx) {
@@ -1080,6 +1262,8 @@ void build_cli(CLI::App& app, AppContext& ctx) {
         bool resume{};
         bool low{};
         bool no_encryption{};
+        bool delta{};
+        std::vector<int64_t> shards{};
     };
     auto push_args = std::make_shared<PushArgs>();
     auto* push = app.add_subcommand("push", "Upload a file");
@@ -1089,9 +1273,12 @@ void build_cli(CLI::App& app, AppContext& ctx) {
     push->add_flag("--resume", push_args->resume, "Resume interrupted upload");
     push->add_flag("--low-resource", push_args->low, "Low-resource mode");
     push->add_flag("--no-encryption", push_args->no_encryption, "Disable encryption");
+    push->add_flag("--delta", push_args->delta, "Client-side delta sync (reuse unchanged chunks)");
+    push->add_option("--shards", push_args->shards, "Additional storage channel IDs for RAID-0 striping");
     push->callback([&ctx, push_args]() {
         cmd_push(ctx, push_args->path, push_args->password, push_args->recursive,
-                 push_args->resume, push_args->low, push_args->no_encryption);
+                 push_args->resume, push_args->low, push_args->no_encryption,
+                 push_args->delta, push_args->shards);
     });
 
     struct PullArgs {
@@ -1200,10 +1387,15 @@ void build_cli(CLI::App& app, AppContext& ctx) {
     stat->add_flag("--json", *stat_json, "JSON output");
     stat->callback([&ctx, stat_json]() { cmd_stat(ctx, *stat_json); });
 
-    auto rm_path = std::make_shared<std::string>();
+    struct RmArgs {
+        std::string path;
+        bool purge{};
+    };
+    auto rm_args = std::make_shared<RmArgs>();
     auto* rm = app.add_subcommand("rm", "Delete a file");
-    rm->add_option("path", *rm_path, "File path in vault")->required();
-    rm->callback([&ctx, rm_path]() { cmd_rm(ctx, *rm_path); });
+    rm->add_option("path", rm_args->path, "File path in vault")->required();
+    rm->add_flag("--purge", rm_args->purge, "Permanently delete file instead of moving to trash");
+    rm->callback([&ctx, rm_args]() { cmd_rm(ctx, rm_args->path, rm_args->purge); });
 
     auto verify_path = std::make_shared<std::string>();
     auto* verify_cmd = app.add_subcommand("verify", "Verify file integrity");
@@ -1240,11 +1432,88 @@ void build_cli(CLI::App& app, AppContext& ctx) {
     preview->callback([&ctx, prev_args]() { cmd_preview(ctx, prev_args->path, prev_args->password); });
 
     // ── Advanced subcommands ──────────────────────────────────────────
+    struct MountArgs {
+        std::string mountpoint;
+        std::string password;
+        uint64_t cache_mb{256};
+        bool read_only{true};
+    };
+    auto mount_args = std::make_shared<MountArgs>();
     auto* mount = app.add_subcommand("mount", "Mount FUSE filesystem");
-    mount->callback([&ctx]() { cmd_mount(ctx); });
+    mount->add_option("mountpoint", mount_args->mountpoint, "Local directory mount point")->required();
+    mount->add_option("-p,--password", mount_args->password, "Decryption password");
+    mount->add_option("--cache-size", mount_args->cache_mb, "Chunk cache size in MB (default: 256)");
+    mount->add_flag("--read-only", mount_args->read_only, "Mount as read-only (default: true)");
+    mount->callback([&ctx, mount_args]() {
+        cmd_mount(ctx, mount_args->mountpoint, mount_args->password, mount_args->cache_mb, mount_args->read_only);
+    });
 
+    struct ServeArgs {
+        std::string host{"127.0.0.1"};
+        uint16_t port{8080};
+        std::string password;
+        bool read_only{true};
+    };
+    auto serve_args = std::make_shared<ServeArgs>();
     auto* serve = app.add_subcommand("serve", "Start WebDAV server");
-    serve->callback([&ctx]() { cmd_serve(ctx); });
+    serve->add_option("-H,--host", serve_args->host, "Host address (default: 127.0.0.1)");
+    serve->add_option("-p,--port", serve_args->port, "Port number (default: 8080)");
+    serve->add_option("--password", serve_args->password, "Decryption password");
+    serve->add_flag("--read-only", serve_args->read_only, "Read only mode (default: true)");
+    serve->callback([&ctx, serve_args]() {
+        cmd_serve(ctx, serve_args->host, serve_args->port, serve_args->password, serve_args->read_only);
+    });
+
+    struct S3Args {
+        std::string host{"0.0.0.0"};
+        uint16_t port{9000};
+        std::string password;
+    };
+    auto s3_args = std::make_shared<S3Args>();
+    auto* s3 = app.add_subcommand("serve-s3", "Start S3-compatible storage gateway");
+    s3->add_option("-H,--host", s3_args->host, "Host address (default: 0.0.0.0)");
+    s3->add_option("-p,--port", s3_args->port, "Port number (default: 9000)");
+    s3->add_option("--password", s3_args->password, "Encryption/decryption password");
+    s3->callback([&ctx, s3_args]() {
+        cmd_serve_s3(ctx, s3_args->host, s3_args->port, s3_args->password);
+    });
+
+    struct ShareArgs {
+        std::string path;
+        std::string host{"0.0.0.0"};
+        uint16_t port{8080};
+        std::string expires{"1h"};
+        std::string pin;
+        std::string password;
+    };
+    auto share_args = std::make_shared<ShareArgs>();
+    auto* share = app.add_subcommand("share", "Generate ephemeral direct share link");
+    share->add_option("path", share_args->path, "File path in vault to share")->required();
+    share->add_option("-H,--host", share_args->host, "Host address (default: 0.0.0.0)");
+    share->add_option("--port", share_args->port, "Port number (default: 8080)");
+    share->add_option("--expires", share_args->expires, "Link expiration time (e.g. 1h, 30m, 24h, 0 for never)");
+    share->add_option("--pin", share_args->pin, "Optional PIN code protection");
+    share->add_option("-p,--password", share_args->password, "Decryption password");
+    share->callback([&ctx, share_args]() {
+        cmd_share(ctx, share_args->path, share_args->host, share_args->port, share_args->expires, share_args->pin, share_args->password);
+    });
+
+    auto* trash = app.add_subcommand("trash", "Encrypted trash bin management");
+    auto* trash_list = trash->add_subcommand("list", "List files in trash");
+    trash_list->callback([&ctx]() { cmd_trash_list(ctx); });
+    auto* trash_empty = trash->add_subcommand("empty", "Permanently remove all files in trash");
+    trash_empty->callback([&ctx]() { cmd_trash_empty(ctx); });
+    trash->callback([&ctx]() { cmd_trash_list(ctx); });
+
+    auto restore_path = std::make_shared<std::string>();
+    auto* restore = app.add_subcommand("restore", "Restore file from encrypted trash");
+    restore->add_option("path", *restore_path, "File path to restore")->required();
+    restore->callback([&ctx, restore_path]() { cmd_restore(ctx, *restore_path); });
+
+    auto versions_path = std::make_shared<std::string>();
+    auto* versions = app.add_subcommand("versions", "List file version history");
+    versions->add_option("path", *versions_path, "File path in vault")->required();
+    versions->callback([&ctx, versions_path]() { cmd_versions(ctx, *versions_path); });
 
     auto* backup = app.add_subcommand("backup", "Snapshot backup management");
     backup->require_subcommand(1);

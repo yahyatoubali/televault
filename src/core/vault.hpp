@@ -29,7 +29,10 @@ struct VaultOptions {
     bool resume{};
     bool deduplicate{true};
     bool fastcdc{true};
+    bool delta{false};
+    bool purge{false};
     std::string password;
+    std::vector<int64_t> channel_ids;
 };
 
 struct FileEntry {
@@ -40,6 +43,8 @@ struct FileEntry {
     bool encrypted{};
     bool compressed{};
     int chunk_count{};
+    bool is_trashed{false};
+    int32_t version{1};
     std::chrono::system_clock::time_point created_at;
 };
 
@@ -54,6 +59,7 @@ public:
     TeleVault& operator=(const TeleVault&) = delete;
 
     bool initialize(int64_t channel_id, bool low_resource = false);
+    void set_shards(std::vector<int64_t> shard_channel_ids);
 
     // File operations
     bool push(const std::string& local_path, const VaultOptions& opts, ProgressCallback cb = {});
@@ -65,12 +71,15 @@ public:
 
     // Listing & querying
     [[nodiscard]] std::vector<FileEntry> list_files() const;
+    [[nodiscard]] std::vector<FileEntry> list_trash() const;
     [[nodiscard]] std::vector<FileEntry> find_files(const std::string& query) const;
     [[nodiscard]] std::vector<FileMetadata> find_all_matching(const std::string& query) const;
     [[nodiscard]] std::optional<FileMetadata> get_file_info(const std::string& path) const;
 
     // Management
-    bool delete_file(const std::string& path);
+    bool delete_file(const std::string& path, bool purge = false);
+    bool restore_file(const std::string& path);
+    bool empty_trash();
     bool verify_file(const std::string& path);
     bool recover_index();
 

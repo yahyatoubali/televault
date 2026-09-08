@@ -16,6 +16,7 @@ struct ChunkInfo {
     uint64_t offset{0};        // byte offset in the original file
     std::string hash;          // hash of the ciphertext / chunk
     std::string original_hash; // hash of the plaintext
+    int64_t channel_id{0};     // shard / storage channel ID
 
     auto operator<=>(const ChunkInfo&) const = default;
 };
@@ -27,6 +28,9 @@ inline void to_json(nlohmann::json& j, const ChunkInfo& c) {
         {"size", c.size},
         {"hash", c.hash}
     };
+    if (c.channel_id != 0) {
+        j["channel_id"] = c.channel_id;
+    }
     if (!c.original_hash.empty()) {
         j["original_hash"] = c.original_hash;
     }
@@ -57,6 +61,11 @@ inline void from_json(const nlohmann::json& j, ChunkInfo& c) {
         c.offset = j["offset"].get<uint64_t>();
     } else {
         c.offset = 0;
+    }
+    if (j.contains("channel_id") && !j["channel_id"].is_null()) {
+        c.channel_id = j["channel_id"].get<int64_t>();
+    } else {
+        c.channel_id = 0;
     }
 }
 
@@ -91,6 +100,10 @@ struct FileMetadata {
     bool compressed{false};
     std::optional<double> compression_ratio;
     std::optional<std::string> mime_type;
+
+    bool is_trashed{false};
+    int64_t trashed_at{0};
+    int32_t version{1};
 
     std::chrono::system_clock::time_point created_at{std::chrono::system_clock::now()};
     std::chrono::system_clock::time_point modified_at{created_at};
@@ -139,6 +152,13 @@ inline void to_json(nlohmann::json& j, const FileMetadata& m) {
     }
     if (m.metadata_message_id != 0) {
         j["message_id"] = m.metadata_message_id;
+    }
+    if (m.is_trashed) {
+        j["is_trashed"] = true;
+        j["trashed_at"] = m.trashed_at;
+    }
+    if (m.version > 1) {
+        j["version"] = m.version;
     }
 }
 
@@ -201,6 +221,24 @@ inline void from_json(const nlohmann::json& j, FileMetadata& m) {
         m.metadata_message_id = j["metadata_message_id"].get<int64_t>();
     } else {
         m.metadata_message_id = 0;
+    }
+
+    if (j.contains("is_trashed") && !j["is_trashed"].is_null()) {
+        m.is_trashed = j["is_trashed"].get<bool>();
+    } else {
+        m.is_trashed = false;
+    }
+
+    if (j.contains("trashed_at") && !j["trashed_at"].is_null()) {
+        m.trashed_at = j["trashed_at"].get<int64_t>();
+    } else {
+        m.trashed_at = 0;
+    }
+
+    if (j.contains("version") && !j["version"].is_null()) {
+        m.version = j["version"].get<int32_t>();
+    } else {
+        m.version = 1;
     }
 }
 

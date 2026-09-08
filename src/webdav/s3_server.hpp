@@ -2,24 +2,24 @@
 
 #include <string>
 #include <memory>
+#include <cstdint>
 
 namespace tv {
 
 class TeleVault;
 
-struct WebDAVOptions {
+struct S3Options {
     std::string host{"127.0.0.1"};
-    uint16_t port{8080};
-    bool read_only{true};
+    uint16_t port{9000};
     std::string password;
 };
 
-class WebDAVServer {
+class S3Server {
 public:
-    explicit WebDAVServer(TeleVault& vault);
-    ~WebDAVServer();
+    explicit S3Server(TeleVault& vault);
+    ~S3Server();
 
-    bool start(const WebDAVOptions& opts);
+    bool start(const S3Options& opts);
     void stop();
     bool is_running() const;
 

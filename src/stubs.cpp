@@ -80,11 +80,15 @@ bool TeleVault::push(const std::string&, const VaultOptions&, ProgressCallback) 
 bool TeleVault::pull(const std::string&, const std::string&, const VaultOptions&, ProgressCallback) { return false; }
 bool TeleVault::cat(const std::string&, const VaultOptions&, ProgressCallback) { return false; }
 std::vector<FileEntry> TeleVault::list_files() const { return {}; }
+std::vector<FileEntry> TeleVault::list_trash() const { return {}; }
 std::vector<FileEntry> TeleVault::find_files(const std::string&) const { return {}; }
 std::vector<FileMetadata> TeleVault::find_all_matching(const std::string&) const { return {}; }
 std::optional<std::vector<uint8_t>> TeleVault::read_byte_range(const std::string&, uint64_t, uint64_t, const VaultOptions&) { return std::nullopt; }
 std::optional<FileMetadata> TeleVault::get_file_info(const std::string&) const { return std::nullopt; }
-bool TeleVault::delete_file(const std::string&) { return false; }
+bool TeleVault::delete_file(const std::string&, bool) { return false; }
+bool TeleVault::restore_file(const std::string&) { return false; }
+bool TeleVault::empty_trash() { return false; }
+void TeleVault::set_shards(std::vector<int64_t>) {}
 bool TeleVault::verify_file(const std::string&) { return false; }
 
 } // namespace tv

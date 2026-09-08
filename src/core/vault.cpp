@@ -40,6 +40,11 @@ public:
 
     explicit Impl(TelegramClient& tg_client) : tg(tg_client) {}
 
+    std::vector<int64_t> shard_channel_ids_;
+    void set_shards(std::vector<int64_t> ids) {
+        shard_channel_ids_ = std::move(ids);
+    }
+
     bool initialize(int64_t channel_id, bool low_resource) {
         channel_id_ = channel_id;
         low_resource_ = low_resource;
@@ -81,6 +86,26 @@ public:
             ? static_cast<uint64_t>(32) * 1024 * 1024
             : static_cast<uint64_t>(256) * 1024 * 1024;
 
+        if (!opts.channel_ids.empty()) {
+            shard_channel_ids_ = opts.channel_ids;
+        }
+
+        std::unordered_map<std::string, ChunkInfo> delta_chunks;
+        int32_t current_version = 1;
+        if (opts.delta) {
+            auto old_meta = find_metadata(file_name);
+            if (old_meta) {
+                current_version = old_meta->version + 1;
+                for (const auto& c : old_meta->chunks) {
+                    if (!c.original_hash.empty()) {
+                        delta_chunks[c.original_hash] = c;
+                    }
+                }
+                spdlog::info("Delta sync enabled: found previous version {} with {} chunks",
+                             old_meta->version, old_meta->chunks.size());
+            }
+        }
+
         // Send initial thread-root metadata message
         FileMetadata meta;
         meta.id = file_hash.substr(0, 16);
@@ -89,6 +114,7 @@ public:
         meta.hash = file_hash;
         meta.encrypted = opts.encrypted;
         meta.compressed = opts.compressed;
+        meta.version = current_version;
         meta.created_at = std::chrono::system_clock::now();
         meta.updated_at = meta.created_at;
 
@@ -150,6 +176,30 @@ public:
             ci.offset = current_offset;
             ci.original_hash = hash_data(chunk_data);
 
+            // Check delta sync chunk reuse
+            if (opts.delta && this_chunk_size > 0) {
+                auto it = delta_chunks.find(ci.original_hash);
+                if (it != delta_chunks.end()) {
+                    ci.message_id = it->second.message_id;
+                    ci.file_id = it->second.file_id;
+                    ci.size = it->second.size;
+                    ci.hash = it->second.hash;
+                    ci.channel_id = it->second.channel_id;
+                    meta.chunks.push_back(std::move(ci));
+
+                    bytes_processed += this_chunk_size;
+                    deduplicated_bytes += this_chunk_size;
+                    spdlog::info("Delta reused chunk {}/{} (msg_id {}, saved {})",
+                                 chunk_idx + 1, total_chunks, it->second.message_id, format_size(this_chunk_size));
+                    if (cb) {
+                        cb({bytes_processed, file_size,
+                            std::format("Delta reused chunk {}/{} (saved {})",
+                                        chunk_idx + 1, total_chunks, format_size(this_chunk_size)), 0});
+                    }
+                    continue;
+                }
+            }
+
             // Check global chunk deduplication
             if (opts.deduplicate && this_chunk_size > 0) {
                 auto existing = find_existing_chunk(ci.original_hash);
@@ -158,6 +208,7 @@ public:
                     ci.file_id = existing->file_id;
                     ci.size = existing->size;
                     ci.hash = existing->hash;
+                    ci.channel_id = existing->channel_id;
                     meta.chunks.push_back(std::move(ci));
 
                     bytes_processed += this_chunk_size;
@@ -204,7 +255,12 @@ public:
                     std::format("Uploading chunk {}/{}...", chunk_idx + 1, total_chunks), 0});
             }
 
-            auto send_result = tg.send_file_with_id(channel_id_, tmp.string(), meta_msg_id);
+            int64_t target_channel = channel_id_;
+            if (!shard_channel_ids_.empty()) {
+                target_channel = shard_channel_ids_[chunk_idx % shard_channel_ids_.size()];
+            }
+
+            auto send_result = tg.send_file_with_id(target_channel, tmp.string(), meta_msg_id);
             std::filesystem::remove(tmp);
 
             if (send_result.message_id == 0) {
@@ -214,6 +270,7 @@ public:
 
             ci.message_id = send_result.message_id;
             ci.file_id = send_result.file_id;
+            ci.channel_id = target_channel;
             meta.chunks.push_back(std::move(ci));
 
             bytes_processed += this_chunk_size;
@@ -292,14 +349,15 @@ public:
                     std::format("Chunk {}/{}...", ci.index + 1, meta->chunks.size()), 0});
             }
 
+            int64_t chunk_channel = (ci.channel_id != 0) ? ci.channel_id : channel_id_;
             int64_t chunk_mid = (ci.message_id != 0) ? ci.message_id : meta->metadata_message_id;
-            if (!tg.download_file_by_message(channel_id_, chunk_mid)) {
+            if (!tg.download_file_by_message(chunk_channel, chunk_mid)) {
                 spdlog::error("Failed to download chunk {}", ci.index);
                 std::filesystem::remove(temp_output);
                 return false;
             }
 
-            auto msg = tg.get_message(channel_id_, chunk_mid);
+            auto msg = tg.get_message(chunk_channel, chunk_mid);
             auto finfo = tg.get_file_info(msg.file_id);
             if (!finfo || finfo->local_path.empty()) {
                 spdlog::error("Cannot locate downloaded file for chunk {}", ci.index);
@@ -402,10 +460,11 @@ public:
             reinterpret_cast<const uint8_t*>(salt_str.data()), salt_str.size());
 
         for (auto& ci : meta->chunks) {
+            int64_t chunk_channel = (ci.channel_id != 0) ? ci.channel_id : channel_id_;
             int64_t chunk_mid = (ci.message_id != 0) ? ci.message_id : meta->metadata_message_id;
-            if (!tg.download_file_by_message(channel_id_, chunk_mid)) break;
+            if (!tg.download_file_by_message(chunk_channel, chunk_mid)) break;
 
-            auto msg = tg.get_message(channel_id_, chunk_mid);
+            auto msg = tg.get_message(chunk_channel, chunk_mid);
             auto finfo = tg.get_file_info(msg.file_id);
             if (!finfo || finfo->local_path.empty()) break;
 
@@ -451,10 +510,11 @@ public:
             reinterpret_cast<const uint8_t*>(salt_str.data()), salt_str.size());
 
         auto& ci = meta->chunks[0];
+        int64_t chunk_channel = (ci.channel_id != 0) ? ci.channel_id : channel_id_;
         int64_t chunk_mid = (ci.message_id != 0) ? ci.message_id : meta->metadata_message_id;
-        if (!tg.download_file_by_message(channel_id_, chunk_mid)) return std::nullopt;
+        if (!tg.download_file_by_message(chunk_channel, chunk_mid)) return std::nullopt;
 
-        auto msg = tg.get_message(channel_id_, chunk_mid);
+        auto msg = tg.get_message(chunk_channel, chunk_mid);
         auto finfo = tg.get_file_info(msg.file_id);
         if (!finfo || finfo->local_path.empty()) return std::nullopt;
 
@@ -520,6 +580,8 @@ public:
                 spdlog::warn("list_files: get_metadata failed for fid={} mid={}", fid, mid);
                 continue;
             }
+            if (meta->is_trashed) continue; // Skip trashed files
+
             if (meta->metadata_message_id != 0 && meta->metadata_message_id != mid) {
                 const_cast<IndexManager&>(*index_mgr).add_file(fid, meta->metadata_message_id);
                 index_updated = true;
@@ -533,6 +595,16 @@ public:
         return entries;
     }
 
+    std::vector<FileEntry> list_trash() const {
+        std::vector<FileEntry> entries;
+        for (auto& [fid, mid] : index_mgr->index().files) {
+            auto meta = get_metadata(mid);
+            if (!meta || !meta->is_trashed) continue;
+            entries.push_back(make_entry(*meta));
+        }
+        return entries;
+    }
+
     std::vector<FileEntry> find_files(const std::string& query) const {
         std::vector<FileEntry> results;
         auto lq = query;
@@ -540,7 +612,7 @@ public:
 
         for (auto& [fid, mid] : index_mgr->index().files) {
             auto meta = get_metadata(mid);
-            if (!meta) continue;
+            if (!meta || meta->is_trashed) continue;
             auto ln = meta->name;
             std::ranges::transform(ln, ln.begin(), [](char c) { return static_cast<char>(std::tolower(c)); });
             if (ln.find(lq) != std::string::npos || meta->id.find(lq) != std::string::npos) {
@@ -554,7 +626,7 @@ public:
         return find_metadata(path);
     }
 
-    bool delete_file(const std::string& path) {
+    bool delete_file(const std::string& path, bool purge = false) {
         for (auto& [fid, mid] : index_mgr->index().files) {
             auto meta = get_metadata(mid);
             if (!meta) continue;
@@ -564,17 +636,94 @@ public:
             }
 
             int64_t target_mid = meta->metadata_message_id != 0 ? meta->metadata_message_id : mid;
+
+            if (!purge && !meta->is_trashed) {
+                // Soft delete: flag as trashed
+                meta->is_trashed = true;
+                meta->trashed_at = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count();
+                nlohmann::json j = *meta;
+                tg.edit_message(channel_id_, target_mid, j.dump());
+                spdlog::info("Moved file {} to encrypted trash", meta->name);
+                return true;
+            }
+
+            // Permanent purge
             std::vector<int64_t> ids{target_mid};
             for (auto& ci : meta->chunks) {
                 int64_t chunk_mid = (ci.message_id != 0) ? ci.message_id : meta->metadata_message_id;
-                if (chunk_mid != 0 && chunk_mid != target_mid) ids.push_back(chunk_mid);
+                int64_t chunk_channel = (ci.channel_id != 0) ? ci.channel_id : channel_id_;
+                if (chunk_mid != 0 && chunk_mid != target_mid) {
+                    if (chunk_channel == channel_id_) {
+                        ids.push_back(chunk_mid);
+                    } else {
+                        tg.delete_messages(chunk_channel, {chunk_mid});
+                    }
+                }
             }
             tg.delete_messages(channel_id_, ids);
             index_mgr->remove_file(fid);
             index_mgr->save(channel_id_);
+            spdlog::info("Permanently purged file {}", meta->name);
             return true;
         }
         return false;
+    }
+
+    bool restore_file(const std::string& path) {
+        for (auto& [fid, mid] : index_mgr->index().files) {
+            auto meta = get_metadata(mid);
+            if (!meta) continue;
+            if (meta->name != path && meta->id != path && fid != path &&
+                !(path.size() >= 6 && meta->id.starts_with(path))) {
+                continue;
+            }
+            if (!meta->is_trashed) {
+                spdlog::warn("File {} is not in trash", meta->name);
+                return false;
+            }
+
+            int64_t target_mid = meta->metadata_message_id != 0 ? meta->metadata_message_id : mid;
+            meta->is_trashed = false;
+            meta->trashed_at = 0;
+            nlohmann::json j = *meta;
+            tg.edit_message(channel_id_, target_mid, j.dump());
+            spdlog::info("Restored file {} from trash", meta->name);
+            return true;
+        }
+        return false;
+    }
+
+    bool empty_trash() {
+        std::vector<std::string> to_remove;
+        for (auto& [fid, mid] : index_mgr->index().files) {
+            auto meta = get_metadata(mid);
+            if (!meta || !meta->is_trashed) continue;
+
+            int64_t target_mid = meta->metadata_message_id != 0 ? meta->metadata_message_id : mid;
+            std::vector<int64_t> ids{target_mid};
+            for (auto& ci : meta->chunks) {
+                int64_t chunk_mid = (ci.message_id != 0) ? ci.message_id : meta->metadata_message_id;
+                int64_t chunk_channel = (ci.channel_id != 0) ? ci.channel_id : channel_id_;
+                if (chunk_mid != 0 && chunk_mid != target_mid) {
+                    if (chunk_channel == channel_id_) {
+                        ids.push_back(chunk_mid);
+                    } else {
+                        tg.delete_messages(chunk_channel, {chunk_mid});
+                    }
+                }
+            }
+            tg.delete_messages(channel_id_, ids);
+            to_remove.push_back(fid);
+        }
+        for (const auto& fid : to_remove) {
+            index_mgr->remove_file(fid);
+        }
+        if (!to_remove.empty()) {
+            index_mgr->save(channel_id_);
+        }
+        spdlog::info("Emptied trash: {} files permanently deleted", to_remove.size());
+        return true;
     }
 
     bool verify_file(const std::string& path) {
@@ -652,7 +801,7 @@ public:
 
         for (auto& [fid, mid] : index_mgr->index().files) {
             auto meta = get_metadata(mid);
-            if (!meta) continue;
+            if (!meta || meta->is_trashed) continue;
 
             if (query.empty() || meta->name == query || meta->id == query || fid == query) {
                 matches.push_back(*meta);
@@ -674,7 +823,7 @@ public:
         // Pass 1: exact matches
         for (auto& [fid, mid] : index_mgr->index().files) {
             auto meta = get_metadata(mid);
-            if (meta) {
+            if (meta && !meta->is_trashed) {
                 if (meta->name == path || meta->id == path || fid == path) {
                     return meta;
                 }
@@ -684,7 +833,7 @@ public:
         std::string path_lower = to_lower(path);
         for (auto& [fid, mid] : index_mgr->index().files) {
             auto meta = get_metadata(mid);
-            if (meta) {
+            if (meta && !meta->is_trashed) {
                 if ((path.size() >= 4 && meta->id.starts_with(path)) ||
                     to_lower(meta->name) == path_lower) {
                     return meta;
@@ -721,9 +870,10 @@ public:
             uint64_t chunk_start = ci.offset;
             if (chunk_start > end_byte) break;
 
+            int64_t chunk_channel = (ci.channel_id != 0) ? ci.channel_id : channel_id_;
             int64_t chunk_mid = (ci.message_id != 0) ? ci.message_id : meta->metadata_message_id;
-            if (!tg.download_file_by_message(channel_id_, chunk_mid)) continue;
-            auto msg = tg.get_message(channel_id_, chunk_mid);
+            if (!tg.download_file_by_message(chunk_channel, chunk_mid)) continue;
+            auto msg = tg.get_message(chunk_channel, chunk_mid);
             auto finfo = tg.get_file_info(msg.file_id);
             if (!finfo || finfo->local_path.empty()) continue;
 
@@ -766,6 +916,8 @@ public:
         e.encrypted = meta.encrypted;
         e.compressed = meta.compressed;
         e.chunk_count = static_cast<int>(meta.chunks.size());
+        e.is_trashed = meta.is_trashed;
+        e.version = meta.version;
         e.created_at = meta.created_at;
         return e;
     }
@@ -777,6 +929,10 @@ TeleVault::~TeleVault() = default;
 
 bool TeleVault::initialize(int64_t channel_id, bool low_resource) {
     return impl_->initialize(channel_id, low_resource);
+}
+
+void TeleVault::set_shards(std::vector<int64_t> shard_channel_ids) {
+    impl_->set_shards(std::move(shard_channel_ids));
 }
 
 bool TeleVault::push(const std::string& path, const VaultOptions& opts, ProgressCallback cb) {
@@ -805,6 +961,10 @@ std::vector<FileEntry> TeleVault::list_files() const {
     return impl_->list_files();
 }
 
+std::vector<FileEntry> TeleVault::list_trash() const {
+    return impl_->list_trash();
+}
+
 std::vector<FileEntry> TeleVault::find_files(const std::string& query) const {
     return impl_->find_files(query);
 }
@@ -817,8 +977,16 @@ std::optional<FileMetadata> TeleVault::get_file_info(const std::string& path) co
     return impl_->get_file_info(path);
 }
 
-bool TeleVault::delete_file(const std::string& path) {
-    return impl_->delete_file(path);
+bool TeleVault::delete_file(const std::string& path, bool purge) {
+    return impl_->delete_file(path, purge);
+}
+
+bool TeleVault::restore_file(const std::string& path) {
+    return impl_->restore_file(path);
+}
+
+bool TeleVault::empty_trash() {
+    return impl_->empty_trash();
 }
 
 bool TeleVault::verify_file(const std::string& path) {

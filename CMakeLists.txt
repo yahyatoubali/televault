@@ -12,8 +12,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ── Options ────────────────────────────────────────────────────────────
 option(TV_BUILD_TDLIB "Build with tdlib Telegram support" OFF)
-option(TV_BUILD_FUSE  "Build FUSE support"  OFF)
-option(TV_BUILD_WEBDAV "Build WebDAV support" OFF)
+option(TV_BUILD_FUSE  "Build FUSE support"  ON)
+option(TV_BUILD_WEBDAV "Build WebDAV support" ON)
 option(TV_BUILD_TUI   "Build TUI support"   ON)
 option(TV_BUILD_TESTS "Build tests"         ON)
 option(TV_LOW_RESOURCE "Low-resource defaults" OFF)

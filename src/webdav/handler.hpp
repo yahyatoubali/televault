@@ -12,10 +12,11 @@ namespace http = boost::beast::http;
 
 class WebDAVHandler {
 public:
-    explicit WebDAVHandler(TeleVault& vault);
+    explicit WebDAVHandler(TeleVault& vault, std::string password = "");
+    ~WebDAVHandler();
 
     http::response<http::string_body> handle(const http::request<http::string_body>& req);
-    http::response<http::dynamic_body> handle_body(const http::request<http::string_body>& req);
+    void set_password(std::string password);
 
 private:
     class Impl;

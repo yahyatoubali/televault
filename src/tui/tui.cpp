@@ -1,6 +1,7 @@
 #include "tui.hpp"
 #include "../core/vault.hpp"
 #include "../util/format.hpp"
+#include "../webdav/stream_server.hpp"
 
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/event.hpp>
@@ -397,6 +398,25 @@ public:
             }
         });
 
+        auto btn_stream = Button("▶  Stream (s)", [&] {
+            auto* selected = get_selected_file();
+            if (selected) {
+                std::string fname = selected->name;
+                if (!stream_server_) {
+                    stream_server_ = std::make_unique<StreamServer>(vault_);
+                    StreamOptions s_opts;
+                    s_opts.port = 8080;
+                    stream_server_->start(s_opts, false);
+                }
+                std::string url = stream_server_->stream_url(fname);
+                status_message_ = "▶ Streaming: " + fname + " on " + url;
+                std::string cmd = "(mpv '" + url + "' >/dev/null 2>&1 || vlc '" + url + "' >/dev/null 2>&1 || xdg-open '" + url + "' >/dev/null 2>&1) &";
+                (void)std::system(cmd.c_str());
+            } else {
+                status_message_ = "Select a media file to stream first";
+            }
+        });
+
         auto btn_delete = Button("✕  Delete (x)", [&] {
             auto* selected = get_selected_file();
             if (selected) {
@@ -424,6 +444,7 @@ public:
             btn_upload,
             btn_download,
             btn_preview,
+            btn_stream,
             btn_delete,
             btn_refresh,
             btn_help,
@@ -491,13 +512,46 @@ public:
         });
 
         auto preview_modal_renderer = Renderer(btn_preview_close, [&] {
-            return vbox({
-                text(std::format("👁  Preview Chunk 0: {}", preview_title)) | bold | color(Color::Cyan),
-                separator(),
-                paragraph(preview_content) | color(Color::White) | size(HEIGHT, GREATER_THAN, 12) | size(HEIGHT, LESS_THAN, 22),
-                separator(),
-                btn_preview_close->Render()
-            }) | borderRounded | size(WIDTH, GREATER_THAN, 70) | bgcolor(Color::RGB(20, 24, 32));
+            bool is_md = preview_title.ends_with(".md") || preview_title.ends_with(".markdown");
+            if (is_md) {
+                Elements md_rows;
+                std::istringstream stream(preview_content);
+                std::string line;
+                int count = 0;
+                while (std::getline(stream, line) && count < 25) {
+                    if (line.starts_with("# ")) {
+                        md_rows.push_back(text("  " + line.substr(2)) | bold | color(Color::CyanLight));
+                    } else if (line.starts_with("## ")) {
+                        md_rows.push_back(text("   " + line.substr(3)) | bold | color(Color::YellowLight));
+                    } else if (line.starts_with("### ")) {
+                        md_rows.push_back(text("    " + line.substr(4)) | bold | color(Color::GreenLight));
+                    } else if (line.starts_with("- ") || line.starts_with("* ")) {
+                        md_rows.push_back(text("  • " + line.substr(2)) | color(Color::White));
+                    } else if (line.starts_with("> ")) {
+                        md_rows.push_back(text("  │ " + line.substr(2)) | dim | color(Color::GrayLight));
+                    } else if (line.starts_with("```")) {
+                        md_rows.push_back(text(line) | color(Color::MagentaLight));
+                    } else {
+                        md_rows.push_back(text(line) | color(Color::White));
+                    }
+                    count++;
+                }
+                return vbox({
+                    text(std::format("👁  Markdown Viewer: {}", preview_title)) | bold | color(Color::Cyan),
+                    separator(),
+                    vbox(std::move(md_rows)) | size(HEIGHT, GREATER_THAN, 12) | size(HEIGHT, LESS_THAN, 22),
+                    separator(),
+                    btn_preview_close->Render()
+                }) | borderRounded | size(WIDTH, GREATER_THAN, 75) | bgcolor(Color::RGB(20, 24, 32));
+            } else {
+                return vbox({
+                    text(std::format("👁  Preview Chunk 0: {}", preview_title)) | bold | color(Color::Cyan),
+                    separator(),
+                    paragraph(preview_content) | color(Color::White) | size(HEIGHT, GREATER_THAN, 12) | size(HEIGHT, LESS_THAN, 22),
+                    separator(),
+                    btn_preview_close->Render()
+                }) | borderRounded | size(WIDTH, GREATER_THAN, 70) | bgcolor(Color::RGB(20, 24, 32));
+            }
         });
 
         auto help_modal_renderer = Renderer(btn_help_close, [&] {
@@ -511,7 +565,8 @@ public:
                 hbox({text("  [/]         ") | bold | color(Color::Yellow), text("Focus search filter box")}),
                 hbox({text("  [u]         ") | bold | color(Color::Yellow), text("Upload local file to vault")}),
                 hbox({text("  [d]         ") | bold | color(Color::Yellow), text("Download selected vault file")}),
-                hbox({text("  [p]         ") | bold | color(Color::Yellow), text("Instant preview (chunk 0)")}),
+                hbox({text("  [p]         ") | bold | color(Color::Yellow), text("Instant preview / Markdown viewer")}),
+                hbox({text("  [s]         ") | bold | color(Color::Yellow), text("Stream media file (VLC/mpv)")}),
                 hbox({text("  [x / Del]   ") | bold | color(Color::Yellow), text("Delete selected vault file")}),
                 hbox({text("  [r]         ") | bold | color(Color::Yellow), text("Refresh vault index from Telegram")}),
                 hbox({text("  [Esc]       ") | bold | color(Color::Yellow), text("Close modal / clear search")}),
@@ -549,6 +604,7 @@ public:
                 btn_upload->Render(),
                 btn_download->Render(),
                 btn_preview->Render(),
+                btn_stream->Render(),
                 btn_delete->Render(),
                 separator(),
                 btn_refresh->Render(),
@@ -735,6 +791,10 @@ public:
                 btn_preview->OnEvent(Event::Return);
                 return true;
             }
+            if (event == Event::Character('s') || event == Event::Character('S')) {
+                btn_stream->OnEvent(Event::Return);
+                return true;
+            }
             if (event == Event::Character('x') || event == Event::Character('X') || event == Event::Delete) {
                 auto* selected = get_selected_file();
                 if (selected) {
@@ -824,6 +884,7 @@ private:
     std::string search_query_;
     std::string status_message_{"Ready"};
     int modal_mode_{ModalNone};
+    std::unique_ptr<StreamServer> stream_server_;
 };
 
 TUI::TUI(TeleVault& vault) : impl_(std::make_unique<Impl>(vault)) {}
