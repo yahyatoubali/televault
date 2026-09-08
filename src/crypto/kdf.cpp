@@ -10,6 +10,17 @@
 #include <openssl/params.h>
 #include <openssl/core_names.h>
 
+// OpenSSL 3.0 (Ubuntu 24.04, Debian 12) lacks ARGON2 OSSL names added in
+// 3.2. Define fallbacks so portable release builds still compile; at
+// runtime EVP_KDF_fetch("ARGON2ID") returns nullptr on 3.0 and the
+// function throws, with scrypt/PBKDF2 as the working default.
+#ifndef OSSL_KDF_PARAM_ARGON2_MEMCOST
+#define OSSL_KDF_PARAM_ARGON2_MEMCOST "memcost"
+#endif
+#ifndef OSSL_KDF_PARAM_ARGON2_LANES
+#define OSSL_KDF_PARAM_ARGON2_LANES "lanes"
+#endif
+
 namespace tv {
 
 static constexpr uint64_t SCRYPT_N = 1 << 17;  // 131072
