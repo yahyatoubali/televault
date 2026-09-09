@@ -27,10 +27,10 @@ jobs:
       - name: Run clang-tidy
         run: |
           cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DTV_BUILD_TESTS=ON -DTV_BUILD_FUSE=ON
-          # Only lint files present in the compilation database (TDLib-gated
-          # sources like telegram/client.cpp have no entry otherwise and
-          # fail with missing td/ headers).
-          clang-tidy -p build --quiet $(jq -r '.[].file' build/compile_commands.json | sort -u)
+          # Only lint first-party files present in the compilation database:
+          # TDLib-gated sources have no entry (missing td/ headers), and
+          # FetchContent _deps (blake3 asm, gtest, ...) must never be linted.
+          clang-tidy -p build --quiet $(jq -r '.[].file' build/compile_commands.json | grep -v '_deps' | sort -u)
 
   build:
     runs-on: ubuntu-24.04
