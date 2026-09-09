@@ -1,0 +1,192 @@
+name: Release Binaries (multi-arch)
+
+# Builds portable native binaries for Linux (x86_64, aarch64) and
+# macOS (arm64, x86_64), packages them with scripts/package_release.sh,
+# and uploads to the GitHub Release for the pushed tag.
+# The universal installer (scripts/install.sh) consumes these assets:
+#   televault-v<ver>-linux-x86_64.tar.gz
+#   televault-v<ver>-linux-aarch64.tar.gz
+#   televault-v<ver>-darwin-arm64.tar.gz
+#   televault-v<ver>-darwin-x86_64.tar.gz
+# plus per-asset .sha256 sidecars.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to package (e.g. 4.0.0, without leading v)"
+        required: false
+        default: "4.0.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux-x86_64:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++-14 cmake pkg-config libssl-dev libzstd-dev libblake3-dev libboost-dev libfuse3-dev
+
+      - name: Configure (portable release)
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DTV_BUILD_TDLIB=ON -DTV_BUILD_TUI=ON \
+            -DTV_BUILD_FUSE=ON -DTV_BUILD_WEBDAV=ON \
+            -DTV_BUILD_TESTS=ON -DTV_PORTABLE=ON
+
+      - name: Build
+        run: cmake --build build --target televault -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Package
+        run: |
+          VER="${{ github.ref_name }}"
+          VER="${VER#v}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then VER="${{ inputs.version }}"; fi
+          SKIP_BUILD=1 ./scripts/package_release.sh "$VER" "x86_64" "./build/src/televault"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: |
+            dist/televault-v*-linux-x86_64.tar.gz
+            dist/televault-v*-linux-x86_64.tar.gz.sha256
+
+  build-linux-aarch64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++-14 cmake pkg-config libssl-dev libzstd-dev libblake3-dev libboost-dev libfuse3-dev
+
+      - name: Configure (portable release)
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DTV_BUILD_TDLIB=ON -DTV_BUILD_TUI=ON \
+            -DTV_BUILD_FUSE=ON -DTV_BUILD_WEBDAV=ON \
+            -DTV_BUILD_TESTS=ON -DTV_PORTABLE=ON
+
+      - name: Build
+        run: cmake --build build --target televault -j$(nproc)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Package
+        run: |
+          VER="${{ github.ref_name }}"
+          VER="${VER#v}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then VER="${{ inputs.version }}"; fi
+          SKIP_BUILD=1 ./scripts/package_release.sh "$VER" "aarch64" "./build/src/televault"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-aarch64
+          path: |
+            dist/televault-v*-linux-aarch64.tar.gz
+            dist/televault-v*-linux-aarch64.tar.gz.sha256
+
+  build-darwin-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install cmake boost openssl@3 zstd pkg-config
+
+      - name: Configure
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DTV_BUILD_TDLIB=ON -DTV_BUILD_TUI=ON \
+            -DTV_BUILD_FUSE=OFF -DTV_BUILD_WEBDAV=ON \
+            -DTV_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --target televault -j$(sysctl -n hw.ncpu)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Package
+        run: |
+          VER="${{ github.ref_name }}"
+          VER="${VER#v}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then VER="${{ inputs.version }}"; fi
+          SKIP_BUILD=1 ./scripts/package_release.sh "$VER" "arm64" "./build/src/televault"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: darwin-arm64
+          path: |
+            dist/televault-v*-darwin-arm64.tar.gz
+            dist/televault-v*-darwin-arm64.tar.gz.sha256
+
+  build-darwin-x86_64:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: brew install cmake boost openssl@3 zstd pkg-config
+
+      - name: Configure
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DTV_BUILD_TDLIB=ON -DTV_BUILD_TUI=ON \
+            -DTV_BUILD_FUSE=OFF -DTV_BUILD_WEBDAV=ON \
+            -DTV_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --target televault -j$(sysctl -n hw.ncpu)
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Package
+        run: |
+          VER="${{ github.ref_name }}"
+          VER="${VER#v}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then VER="${{ inputs.version }}"; fi
+          SKIP_BUILD=1 ./scripts/package_release.sh "$VER" "x86_64" "./build/src/televault"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: darwin-x86_64
+          path: |
+            dist/televault-v*-darwin-x86_64.tar.gz
+            dist/televault-v*-darwin-x86_64.tar.gz.sha256
+
+  publish:
+    needs: [build-linux-x86_64, build-linux-aarch64, build-darwin-arm64, build-darwin-x86_64]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/televault-v*.tar.gz
+            dist/televault-v*.tar.gz.sha256

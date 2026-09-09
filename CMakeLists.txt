@@ -1,4 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
+# TDLib v1.8.0 still declares cmake_minimum_required(<3.5), which CMake 4.x
+# rejects unless policy floor is lowered. Required for FetchContent tdlib.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "Minimum CMake policy version for fetched deps")
 project(televault
     VERSION 4.0.0
     DESCRIPTION "Encrypted cloud storage on Telegram channels"
@@ -18,6 +21,7 @@ option(TV_BUILD_TUI   "Build TUI support"   ON)
 option(TV_BUILD_TESTS "Build tests"         ON)
 option(TV_LOW_RESOURCE "Low-resource defaults" OFF)
 option(TV_ENABLE_SANITIZERS "Enable AddressSanitizer (ASan) and UndefinedBehaviorSanitizer (UBSan)" OFF)
+option(TV_PORTABLE "Portable release: statically link libstdc++/libgcc and prefer static zstd/blake3/fuse" OFF)
 
 # ── Darwin / macOS Homebrew Path Support ─────────────────────────────
 if(APPLE)
@@ -89,6 +93,14 @@ if(NOT BLAKE3_FOUND)
 endif()
 
 # ── Fetched dependencies ──────────────────────────────────────────────
+# TDLib v1.8.0 predates C++20 char8_t: u8"..." is const char8_t[N] in
+# C++20+, breaking td::Slice conversion with GCC 13+/Clang 16+.
+# -fno-char8_t restores C++17 u8 behavior. Must be set BEFORE
+# FetchContent_MakeAvailable(tdlib) so it applies to tdlib targets.
+# Our code does not use char8_t, so this is safe globally.
+if(TV_BUILD_TDLIB AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-fno-char8_t)
+endif()
 include(FetchContent)
 include(cmake/FetchDependencies.cmake)
 
@@ -146,6 +158,26 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
             -fsanitize=address,undefined
             -fno-sanitize=vptr
         )
+    endif()
+endif()
+
+# ── Portable release (static libstdc++/libgcc for multi-distro compat) ──
+# Pre-built release binaries must run on Ubuntu 24.04 (glibc 2.39),
+# Fedora 40+, and Arch without `GLIBCXX_3.4.36 not found` or
+# `libblake3.so.0: cannot open shared object` errors.
+if(TV_PORTABLE AND NOT APPLE)
+    message(STATUS "TeleVault: portable release mode (static libstdc++/libgcc)")
+    add_link_options(-static-libstdc++ -static-libgcc)
+    # Prefer static archives for zstd/fuse3 when available, so the
+    # release binary does not require libfuse3.so.3 vs .so.4 or
+    # libzstd.so.1 on minimal installs. BLAKE3 already static via
+    # FetchContent fallback; TBB not needed for portable blake3_c.
+    find_library(TV_ZSTD_STATIC libzstd.a HINTS /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/lib /usr/local/lib)
+    if(TV_ZSTD_STATIC)
+        message(STATUS "TeleVault: portable static zstd: ${TV_ZSTD_STATIC}")
+        if(TARGET PkgConfig::ZSTD)
+            set_target_properties(PkgConfig::ZSTD PROPERTIES IMPORTED_LOCATION "${TV_ZSTD_STATIC}")
+        endif()
     endif()
 endif()
 

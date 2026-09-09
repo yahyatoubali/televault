@@ -1,4 +1,9 @@
 # Multi-architecture build image for TeleVault
+# Ubuntu 24.04 (glibc 2.39) balances modern C++23 compilers (g++-14)
+# against portability: binaries run on Ubuntu 24.04+, Fedora 40+,
+# and Arch. Older LTS (Ubuntu 22.04 glibc 2.35, Debian 12 glibc 2.36)
+# should build from source via scripts/install.sh fallback.
+# Always build releases with -DTV_PORTABLE=ON (-static-libstdc++).
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -7,9 +12,12 @@ RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
         build-essential \
         g++-14 \
+        gcc-14 \
         cmake \
         git \
         pkg-config \
+        gperf \
+        zlib1g-dev \
         libssl-dev \
         libzstd-dev \
         libboost-dev \
@@ -17,9 +25,11 @@ RUN apt-get update -qq && \
         ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Blake3 C library
-RUN git clone --depth 1 https://github.com/BLAKE3-team/BLAKE3.git /tmp/blake3 && \
-    cmake -B /tmp/blake3/c/build -S /tmp/blake3/c -DCMAKE_BUILD_TYPE=Release && \
+# Install Blake3 C library (static archive preferred; release links
+# statically to avoid `libblake3.so.0: cannot open shared object` on
+# minimal Ubuntu/Debian/Fedora installs).
+RUN git clone --depth 1 --branch 1.5.4 https://github.com/BLAKE3-team/BLAKE3.git /tmp/blake3 && \
+    cmake -B /tmp/blake3/c/build -S /tmp/blake3/c -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF && \
     cmake --build /tmp/blake3/c/build && \
     cmake --install /tmp/blake3/c/build && \
     rm -rf /tmp/blake3
@@ -29,6 +39,6 @@ WORKDIR /workspace
 # Set default compiler and pkg-config path
 ENV CXX=g++-14
 ENV CC=gcc-14
-ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}
+ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig
 
 ENTRYPOINT ["/bin/bash"]

@@ -85,10 +85,18 @@ To build a standalone containerized binary for any Linux architecture using Dock
 
 ```bash
 # Build for ARM64
-./scripts/build_docker.sh linux/arm64 3.5.0
+./scripts/build_docker.sh linux/arm64 4.0.0
 
 # Build for x86_64
-./scripts/build_docker.sh linux/amd64 3.5.0
+./scripts/build_docker.sh linux/amd64 4.0.0
 ```
 
 Release packages and checksums are placed into `dist/`.
+
+> **Portability note:** release binaries are built on Ubuntu 24.04
+> (glibc 2.39) with `-DTV_PORTABLE=ON` (`-static-libstdc++ -static-libgcc`)
+> so they run on Ubuntu 24.04+, Fedora 40+, and Arch.
+> Older LTS (Ubuntu 22.04 glibc 2.35, Debian 12 glibc 2.36) and
+> Alpine/musl should build from source — the universal installer now
+> detects this via `ldd` and prints per-distro hints, and falls back to
+> an automatic source build.

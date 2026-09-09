@@ -5,7 +5,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-VERSION="${1:-3.5.0}"
+VERSION="${1:-4.0.0}"
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="${2:-$(uname -m)}"
 
@@ -55,13 +55,20 @@ if [ "$SKIP_BUILD" != "1" ] && [ ! -f "$BINARY_PATH" ]; then
     echo "==> Building TeleVault v${VERSION} for ${OS}-${ARCH}..."
     mkdir -p "$ROOT_DIR/build"
     cd "$ROOT_DIR/build"
+    # TV_PORTABLE=ON statically links libstdc++/libgcc so the binary runs
+    # on Ubuntu 22.04/24.04, Debian 12, Fedora, and Arch without
+    # GLIBCXX version errors. FUSE/WEBDAV stay ON to match release assets
+    # (installer warns if libfuse3 is missing at runtime).
+    PORTABLE_FLAG="-DTV_PORTABLE=ON"
+    [ "$OS" = "darwin" ] && PORTABLE_FLAG="-DTV_PORTABLE=OFF"
     cmake .. \
         -DCMAKE_BUILD_TYPE=Release \
         -DTV_BUILD_TDLIB=ON \
         -DTV_BUILD_TESTS=ON \
-        -DTV_BUILD_FUSE=OFF \
-        -DTV_BUILD_WEBDAV=OFF \
-        -DTV_BUILD_TUI=ON
+        -DTV_BUILD_FUSE=ON \
+        -DTV_BUILD_WEBDAV=ON \
+        -DTV_BUILD_TUI=ON \
+        "$PORTABLE_FLAG"
 
     cmake --build . --target televault -j"$(get_cpu_cores)"
 fi

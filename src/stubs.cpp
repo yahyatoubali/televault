@@ -5,6 +5,9 @@
 #include "telegram/session.hpp"
 #include "core/app_context.hpp"
 #include "core/vault.hpp"
+#include "backup/engine.hpp"
+#include "watcher/watcher.hpp"
+#include "webdav/stream_server.hpp"
 
 #include <stdexcept>
 
@@ -13,6 +16,9 @@ namespace tv {
 // Ensure Impl types are complete for unique_ptr
 struct TelegramClient::Impl {};
 struct TeleVault::Impl {};
+struct BackupEngine::Impl {};
+struct FileWatcher::Impl {};
+struct StreamServer::Impl {};
 
 // ── TelegramClient stubs ──────────────────────────────────────────────
 
@@ -90,6 +96,39 @@ bool TeleVault::restore_file(const std::string&) { return false; }
 bool TeleVault::empty_trash() { return false; }
 void TeleVault::set_shards(std::vector<int64_t>) {}
 bool TeleVault::verify_file(const std::string&) { return false; }
+std::optional<std::vector<uint8_t>> TeleVault::read_first_chunk(const std::string&, const VaultOptions&) { return std::nullopt; }
+bool TeleVault::recover_index() { return false; }
+
+// ── BackupEngine stubs (no Telegram backend when TDLIB off) ────────────
+
+BackupEngine::BackupEngine(TeleVault&, TelegramClient&) : impl_(std::make_unique<Impl>()) {}
+BackupEngine::~BackupEngine() = default;
+bool BackupEngine::create_snapshot(const std::string&, const std::vector<std::string>&, const std::string&, bool, ProgressCallback) { return false; }
+bool BackupEngine::restore_snapshot(const std::string&, const std::string&, const std::string&, ProgressCallback) { return false; }
+std::vector<Snapshot> BackupEngine::list_snapshots() const { return {}; }
+bool BackupEngine::delete_snapshot(const std::string&) { return false; }
+bool BackupEngine::prune_snapshots(const RetentionPolicy&) { return false; }
+bool BackupEngine::verify_snapshot(const std::string&, const std::string&) { return false; }
+
+// ── FileWatcher stubs ───────────────────────────────────────────────────
+
+FileWatcher::FileWatcher(std::string) : impl_(std::make_unique<Impl>()) {}
+FileWatcher::~FileWatcher() = default;
+void FileWatcher::start(ChangeCallback) {}
+void FileWatcher::stop() {}
+void FileWatcher::set_exclusions(const std::vector<std::string>&) {}
+void FileWatcher::save_state() const {}
+void FileWatcher::load_state() {}
+
+// ── StreamServer stubs ──────────────────────────────────────────────────
+
+StreamServer::StreamServer(TeleVault&) : impl_(std::make_unique<Impl>()) {}
+StreamServer::~StreamServer() = default;
+bool StreamServer::start(const StreamOptions&, bool) { return false; }
+void StreamServer::stop() {}
+bool StreamServer::is_running() const noexcept { return false; }
+uint16_t StreamServer::port() const noexcept { return 0; }
+std::string StreamServer::stream_url(const std::string&) const { return {}; }
 
 } // namespace tv
 
