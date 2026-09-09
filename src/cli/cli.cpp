@@ -1033,6 +1033,25 @@ complete -c tvt -n "__fish_seen_subcommand_from ls" -s w -l wide -d "Disable tru
         }
     }
 
+    // Blocks until Ctrl+C, then stops the given server. `tvt serve` /
+    // `tvt serve-s3` previously returned right after non-blocking start(),
+    // so the process exited and the servers never actually served.
+    template <typename Server>
+    void serve_until_interrupted(Server& server, std::string_view label) {
+        g_stop_watching.store(false);
+        auto prev_handler = std::signal(SIGINT, watch_sig_handler);
+        auto prev_term = std::signal(SIGTERM, watch_sig_handler);
+        std::println("Press Ctrl+C to stop the {} server.", label);
+        while (!g_stop_watching.load(std::memory_order_relaxed)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+        print_info(std::format("Stopping {} server...", label));
+        server.stop();
+        std::signal(SIGINT, prev_handler);
+        std::signal(SIGTERM, prev_term);
+        print_success(std::format("{} server stopped cleanly.", label));
+    }
+
     void cmd_watch(AppContext& ctx, const std::string& dir, const std::string& password,
                    const std::vector<std::string>& exclusions) {
         ensure_vault(ctx);
@@ -1133,7 +1152,9 @@ complete -c tvt -n "__fish_seen_subcommand_from ls" -s w -l wide -d "Disable tru
         WebDAVServer server(*ctx.vault);
         if (!server.start(opts)) {
             print_error("Failed to start WebDAV server.");
+            return;
         }
+        serve_until_interrupted(server, "WebDAV");
 #else
         print_error("TeleVault was built without WebDAV support.");
 #endif
@@ -1153,7 +1174,9 @@ complete -c tvt -n "__fish_seen_subcommand_from ls" -s w -l wide -d "Disable tru
         S3Server server(*ctx.vault);
         if (!server.start(opts)) {
             print_error("Failed to start S3 server.");
+            return;
         }
+        serve_until_interrupted(server, "S3");
 #else
         print_error("TeleVault was built without WebDAV/S3 support.");
 #endif
@@ -1187,6 +1210,29 @@ complete -c tvt -n "__fish_seen_subcommand_from ls" -s w -l wide -d "Disable tru
             }
         }
         opts.expires_in = std::chrono::seconds(seconds);
+
+        auto meta = ctx.vault->get_file_info(path);
+        if (!meta) {
+            print_error("File not found in vault: " + path);
+            return;
+        }
+        // The -p flag was previously accepted but silently dropped, so
+        // shares of encrypted files always failed decrypt with HTTP 500.
+        opts.password = resolve_password(password);
+        if (meta->encrypted && opts.password.empty()) {
+            print_error("Password required to share encrypted file");
+            return;
+        }
+        // Preflight so a wrong password fails here, not per-request.
+        {
+            VaultOptions vopts;
+            vopts.password = opts.password;
+            if (!ctx.vault->read_byte_range(meta->name, 0, 0, vopts)) {
+                print_error("Cannot decrypt '" + meta->name +
+                            "': wrong password or corrupted chunk.");
+                return;
+            }
+        }
 
         ShareServer server(*ctx.vault);
         std::println("\033[36m╭──────────────────────────────────────────────────╮\033[0m");

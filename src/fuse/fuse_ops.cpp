@@ -49,11 +49,13 @@ public:
             cache_.set_max_bytes(opts.cache_size_mb * 1024 * 1024);
         }
 
+        // NOTE: the mountpoint must NOT appear in fuse_new() args —
+        // libfuse3 rejects bare operands with "unknown option(s)". It is
+        // passed separately to fuse_mount() below.
         std::vector<std::string> args_vec = {
             "televault",
             "-o", "ro",
             "-o", "default_permissions",
-            opts.mount_point
         };
 
         std::vector<char*> argv;
@@ -226,25 +228,32 @@ public:
         auto* self = get_self();
         if (!self) return -EIO;
 
-        std::string rel = strip_slash(path);
-        auto meta = self->vault_.get_file_info(rel);
-        if (!meta || meta->is_trashed) return -ENOENT;
+        try {
+            std::string rel = strip_slash(path);
+            auto meta = self->vault_.get_file_info(rel);
+            if (!meta || meta->is_trashed) return -ENOENT;
 
-        if (static_cast<uint64_t>(offset) >= meta->size) return 0;
-        size_t to_read = std::min(size, static_cast<size_t>(meta->size - offset));
-        if (to_read == 0) return 0;
+            if (static_cast<uint64_t>(offset) >= meta->size) return 0;
+            size_t to_read = std::min(size, static_cast<size_t>(meta->size - offset));
+            if (to_read == 0) return 0;
 
-        VaultOptions vopts;
-        vopts.password = self->opts_.password;
-        auto data = self->vault_.read_byte_range(
-            rel, static_cast<uint64_t>(offset),
-            static_cast<uint64_t>(offset + to_read - 1), vopts);
+            VaultOptions vopts;
+            vopts.password = self->opts_.password;
+            auto data = self->vault_.read_byte_range(
+                rel, static_cast<uint64_t>(offset),
+                static_cast<uint64_t>(offset + to_read - 1), vopts);
 
-        if (!data || data->empty()) return -EIO;
+            if (!data || data->empty()) return -EIO;
 
-        size_t actual = std::min(to_read, data->size());
-        std::memcpy(buf, data->data(), actual);
-        return static_cast<int>(actual);
+            size_t actual = std::min(to_read, data->size());
+            std::memcpy(buf, data->data(), actual);
+            return static_cast<int>(actual);
+        } catch (const std::exception& e) {
+            // FUSE callbacks cross a C ABI boundary: an exception here
+            // would call std::terminate. Report EIO instead.
+            spdlog::error("FUSE read failed for {}: {}", path ? path : "?", e.what());
+            return -EIO;
+        }
     }
 
     static int op_statfs(const char*, struct statvfs* stbuf) {

@@ -175,6 +175,40 @@ public:
         http::read(socket, buffer, req, ec);
         if (ec) return;
 
+        try {
+            serve_connection(socket, req);
+        } catch (const std::exception& e) {
+            // Never let request errors escape the detached thread as an
+            // uncaught exception (std::terminate aborts the server).
+            spdlog::error("Share request failed: {}", e.what());
+            try {
+                http::response<http::string_body> res{http::status::internal_server_error, req.version()};
+                res.set(http::field::content_type, "text/plain");
+                res.body() = std::string("Share failed: ") + e.what();
+                res.prepare_payload();
+                http::write(socket, res, ec);
+            } catch (...) {}
+        }
+    }
+
+    // Parses decimal byte counts from Range headers without throwing on
+    // overflow/garbage (std::stoull throws out_of_range/invalid_argument).
+    static bool parse_range_num(const std::string& s, uint64_t& out) {
+        if (s.empty() || s.size() > 19) return false;
+        for (char c : s) {
+            if (c < '0' || c > '9') return false;
+        }
+        try {
+            out = std::stoull(s);
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    void serve_connection(tcp::socket& socket, const http::request<http::string_body>& req) {
+        beast::error_code ec;
+
         if (opts_.expires_in.count() > 0) {
             auto now = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - start_time_);
@@ -322,11 +356,22 @@ body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMac
         http::write(socket, res, ec);
     }
 
+    void range_unsatisfiable(tcp::socket& socket,
+                             const http::request<http::string_body>& req,
+                             uint64_t total_size) {
+        beast::error_code ec;
+        http::response<http::string_body> res{http::status::range_not_satisfiable, req.version()};
+        res.set(http::field::content_range, "bytes */" + std::to_string(total_size));
+        res.prepare_payload();
+        http::write(socket, res, ec);
+    }
+
     void serve_file_content(tcp::socket& socket, const http::request<http::string_body>& req, const FileMetadata& file_info, bool download_attachment) {
         beast::error_code ec;
         uint64_t total_size = file_info.size;
         std::string mime = guess_mime(file_info.name);
         VaultOptions vopts;
+        vopts.password = opts_.password;
 
         auto range_it = req.find(http::field::range);
         if (range_it != req.end()) {
@@ -338,19 +383,16 @@ body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMac
                 uint64_t start = 0;
                 uint64_t end = (total_size > 0) ? total_size - 1 : 0;
 
-                if (!match[1].str().empty()) {
-                    start = std::stoull(match[1].str());
+                if (!match[1].str().empty() && !parse_range_num(match[1].str(), start)) {
+                    return range_unsatisfiable(socket, req, total_size);
                 }
-                if (!match[2].str().empty()) {
-                    end = std::stoull(match[2].str());
+                if (!match[2].str().empty() && !parse_range_num(match[2].str(), end)) {
+                    return range_unsatisfiable(socket, req, total_size);
                 }
+                end = std::min(end, (total_size > 0) ? total_size - 1 : 0);
 
                 if (start > end || start >= total_size) {
-                    http::response<http::string_body> res{http::status::range_not_satisfiable, req.version()};
-                    res.set(http::field::content_range, "bytes */" + std::to_string(total_size));
-                    res.prepare_payload();
-                    http::write(socket, res, ec);
-                    return;
+                    return range_unsatisfiable(socket, req, total_size);
                 }
 
                 uint64_t length = end - start + 1;
@@ -360,7 +402,8 @@ body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMac
                     end = start + length - 1;
                 }
 
-                auto chunk_res = vault.read_byte_range(opts_.remote_path, start, length, vopts);
+                // NOTE: read_byte_range takes (path, start_byte, END_byte).
+                auto chunk_res = vault.read_byte_range(opts_.remote_path, start, end, vopts);
                 if (!chunk_res) {
                     http::response<http::string_body> res{http::status::internal_server_error, req.version()};
                     res.body() = "Failed to read byte range from vault";
@@ -384,7 +427,9 @@ body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMac
         }
 
         if (total_size <= 16 * 1024 * 1024) {
-            auto chunk_res = vault.read_byte_range(opts_.remote_path, 0, total_size, vopts);
+            auto chunk_res = total_size > 0
+                ? vault.read_byte_range(opts_.remote_path, 0, total_size - 1, vopts)
+                : std::optional<std::vector<uint8_t>>(std::vector<uint8_t>{});
             if (chunk_res) {
                 http::response<http::vector_body<uint8_t>> res{http::status::ok, req.version()};
                 res.set(http::field::content_type, mime);
@@ -400,7 +445,9 @@ body { background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMac
         }
 
         uint64_t chunk_len = std::min(total_size, static_cast<uint64_t>(8 * 1024 * 1024));
-        auto chunk_res = vault.read_byte_range(opts_.remote_path, 0, chunk_len, vopts);
+        auto chunk_res = chunk_len > 0
+            ? vault.read_byte_range(opts_.remote_path, 0, chunk_len - 1, vopts)
+            : std::optional<std::vector<uint8_t>>(std::vector<uint8_t>{});
         if (!chunk_res) {
             http::response<http::string_body> res{http::status::internal_server_error, req.version()};
             res.body() = "Failed to read file from vault";

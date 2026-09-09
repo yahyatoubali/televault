@@ -16,6 +16,7 @@ struct ShareOptions {
     std::string pin;
     std::chrono::seconds expires_in{3600}; // default 1 hour (0 = no expiry)
     std::string token;                     // if empty, auto-generated
+    std::string password;                  // vault decryption password (required for encrypted files)
 };
 
 class ShareServer {
