@@ -72,8 +72,13 @@ FetchContent_MakeAvailable(
     CLI11
     nlohmann_json
     spdlog
-    googletest
 )
+
+# Only fetch GTest when tests are enabled; otherwise its install() rules
+# pollute `cmake --install` (Homebrew, ~/.local prefix) and slow configure.
+if(TV_BUILD_TESTS)
+    FetchContent_MakeAvailable(googletest)
+endif()
 
 if(TV_BUILD_TDLIB AND NOT Td_FOUND)
     FetchContent_MakeAvailable(tdlib)
