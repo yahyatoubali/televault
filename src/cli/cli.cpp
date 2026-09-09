@@ -566,6 +566,32 @@ namespace {
         s_opts.host = "127.0.0.1";
         s_opts.port = port;
         s_opts.password = resolve_password(password);
+        if (meta->encrypted && s_opts.password.empty()) {
+            print_error("Password required to stream encrypted file");
+            return;
+        }
+
+        // Preflight: decrypt 1 byte before binding the port. A wrong
+        // password or corrupted chunk previously crashed the server with
+        // an uncaught std::runtime_error (SIGABRT) on the first HTTP
+        // request; fail fast here with a clear message instead.
+        {
+            VaultOptions vopts;
+            vopts.password = s_opts.password;
+            auto probe = ctx.vault->read_byte_range(meta->name, 0, 0, vopts);
+            if (!probe) {
+                if (meta->encrypted) {
+                    print_error("Cannot decrypt '" + meta->name +
+                                "': wrong password or corrupted chunk. "
+                                "Verify with 'tvt pull' before streaming.");
+                } else {
+                    print_error("Cannot read '" + meta->name +
+                                "' from vault (corrupted chunk). "
+                                "Verify with 'tvt pull' before streaming.");
+                }
+                return;
+            }
+        }
 
         StreamServer server(*ctx.vault);
         std::println("\033[1;32m=== TeleVault Media Stream Server ===\033[0m");

@@ -113,7 +113,12 @@ public:
         meta.size = file_size;
         meta.hash = file_hash;
         meta.encrypted = opts.encrypted;
-        meta.compressed = opts.compressed;
+        // Record the ACTUAL per-file decision: incompressible media (.mp4,
+        // .mkv, .zip, ...) bypass compression even when globally enabled.
+        // Storing the global flag here marked raw bytes as compressed and
+        // broke every read path (pull/cat/stream/preview) with
+        // "Invalid or corrupted zstd frame".
+        meta.compressed = opts.compressed && should_compress(file_name);
         meta.version = current_version;
         meta.created_at = std::chrono::system_clock::now();
         meta.updated_at = meta.created_at;
@@ -390,9 +395,15 @@ public:
                 }
             }
 
-            // Decompress
+            // Decompress (tolerant: legacy mis-flagged raw chunks pass through)
             if (meta->compressed) {
-                data = decompress_data(data);
+                try {
+                    data = decompress_data_tolerant(data, true);
+                } catch (const std::exception& e) {
+                    spdlog::error("Decompression failed on chunk {}: {}", ci.index, e.what());
+                    std::filesystem::remove(temp_output);
+                    return false;
+                }
             }
 
             // Verify original hash
@@ -485,7 +496,12 @@ public:
             }
 
             if (meta->compressed) {
-                data = decompress_data(data);
+                try {
+                    data = decompress_data_tolerant(data, true);
+                } catch (const std::exception& e) {
+                    spdlog::error("Decompression failed for chunk {}: {}", ci.index, e.what());
+                    return false;
+                }
             }
             std::cout.write(reinterpret_cast<const char*>(data.data()), data.size());
             if (!std::cout) {
@@ -534,7 +550,12 @@ public:
         }
 
         if (meta->compressed) {
-            data = decompress_data(data);
+            try {
+                data = decompress_data_tolerant(data, true);
+            } catch (const std::exception& e) {
+                spdlog::error("Decompression failed for chunk 0: {}", e.what());
+                return std::nullopt;
+            }
         }
 
         return data;
@@ -881,16 +902,26 @@ public:
             if (!f) continue;
             std::vector<uint8_t> cdata((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 
-            if (meta->encrypted) {
-                std::string pw = opts.password;
-                if (pw.empty() && have_key) {
-                    cdata = decrypt_chunk(cdata, std::span<const uint8_t>(master_key));
-                } else {
-                    cdata = decrypt_chunk(cdata, pw, fallback_salt);
+            try {
+                if (meta->encrypted) {
+                    std::string pw = opts.password;
+                    if (pw.empty() && have_key) {
+                        cdata = decrypt_chunk(cdata, std::span<const uint8_t>(master_key));
+                    } else {
+                        cdata = decrypt_chunk(cdata, pw, fallback_salt);
+                    }
                 }
-            }
-            if (meta->compressed) {
-                cdata = decompress_data(cdata);
+                if (meta->compressed) {
+                    cdata = decompress_data_tolerant(cdata, true);
+                }
+            } catch (const std::exception& e) {
+                // Never let per-chunk crypto errors escape as uncaught
+                // exceptions (they aborted the HTTP stream thread via
+                // std::terminate). Log once and signal failure so the
+                // server returns HTTP 500 instead of core-dumping.
+                spdlog::error("Chunk {} decode failed (wrong password or corrupted data): {}",
+                              ci.index, e.what());
+                return std::nullopt;
             }
 
             uint64_t pt_start = ci.offset;

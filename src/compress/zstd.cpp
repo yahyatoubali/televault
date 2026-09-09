@@ -2,6 +2,7 @@
 #include "stream.hpp"
 #include <zstd.h>
 #include <zstd_errors.h>
+#include <spdlog/spdlog.h>
 #include <array>
 #include <algorithm>
 #include <cstring>
@@ -122,6 +123,26 @@ std::vector<uint8_t> decompress_data(std::span<const uint8_t> data) {
 
     decompressed.resize(size);
     return decompressed;
+}
+
+bool is_zstd_frame(std::span<const uint8_t> data) noexcept {
+    if (data.size() < 4) return false;
+    return ZSTD_getFrameContentSize(data.data(), data.size()) != ZSTD_CONTENTSIZE_ERROR;
+}
+
+std::vector<uint8_t> decompress_data_tolerant(std::span<const uint8_t> data,
+                                              bool compressed_flag) {
+    if (!compressed_flag || data.empty()) {
+        return {data.begin(), data.end()};
+    }
+    if (!is_zstd_frame(data)) {
+        // Legacy vault files (e.g. .mp4 pushed before the bypass-flag fix)
+        // were stored raw but marked compressed=true. Return bytes as-is.
+        spdlog::warn("Chunk marked compressed but missing zstd frame magic; "
+                     "treating {} bytes as stored raw", data.size());
+        return {data.begin(), data.end()};
+    }
+    return decompress_data(data);
 }
 
 uint64_t estimate_compressed_size(uint64_t original_size, std::string_view filename) {
