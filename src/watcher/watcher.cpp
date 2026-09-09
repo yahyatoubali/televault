@@ -39,8 +39,10 @@ public:
 
             WatchedFile wf;
             wf.path = path;
-            wf.modified_at = std::chrono::file_clock::to_sys(
-                std::filesystem::last_write_time(entry));
+            // file_clock may tick finer than system_clock's duration;
+            // cast explicitly (libc++ rejects the implicit conversion).
+            wf.modified_at = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+                std::chrono::file_clock::to_sys(std::filesystem::last_write_time(entry)));
             current[path] = wf;
         }
 
