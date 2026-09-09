@@ -183,5 +183,5 @@ TEST(CompressionTest, TolerantDecompressPassesRawMediaThrough) {
     EXPECT_EQ(decompress_data_tolerant(ct, true), pt);
 
     // Strict API behavior is unchanged (still throws on raw input)
-    EXPECT_THROW(decompress_data(raw), std::runtime_error);
+    EXPECT_THROW((void)decompress_data(raw), std::runtime_error);
 }

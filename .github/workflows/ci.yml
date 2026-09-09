@@ -27,7 +27,9 @@ jobs:
       - name: Run clang-tidy
         run: |
           cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DTV_BUILD_TESTS=ON -DTV_BUILD_FUSE=ON
-          clang-tidy src/*.cpp src/**/*.cpp -- -I src
+          # Use the compilation database so third-party includes (spdlog,
+          # nlohmann/json) and -std= resolve; bare `-I src` cannot compile.
+          clang-tidy -p build --quiet $(git ls-files 'src/*.cpp' 'src/**/*.cpp')
 
   build:
     runs-on: ubuntu-24.04
