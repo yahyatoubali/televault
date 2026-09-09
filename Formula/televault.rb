@@ -2,7 +2,7 @@ class Televault < Formula
   desc "Encrypted, high-performance cloud storage powered by Telegram"
   homepage "https://github.com/yahyatoubali/televault"
   url "https://github.com/yahyatoubali/televault/archive/refs/tags/v4.0.0.tar.gz"
-  sha256 "e31ce66494524783fa55a3362c1eb0c0cc36ddb267f443368a53f2c64a9ee23f"
+  sha256 "a6bfe3d1f0ce5dcf07a5c517736bf2c1faea73e8c5dd2c26288e9c3f13e3fbce"
   license "MIT"
   head "https://github.com/yahyatoubali/televault.git", branch: "main"
 
