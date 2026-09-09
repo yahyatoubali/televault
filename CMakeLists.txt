@@ -103,7 +103,8 @@ if(TV_BUILD_TDLIB AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     # TDLib's gperf-generated sources use the `register` keyword, which
     # AppleClang promotes to an error (-Werror in TDLib's build). Downgrade
     # just that diagnostic back; more-specific wins over -Werror anywhere.
-    add_compile_options(-Wno-error=register)
+    # (The C++14 spelling of the same diagnostic is covered too.)
+    add_compile_options(-Wno-error=register -Wno-error=deprecated-register)
 endif()
 include(FetchContent)
 include(cmake/FetchDependencies.cmake)
