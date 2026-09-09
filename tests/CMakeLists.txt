@@ -15,6 +15,7 @@ add_tv_test(test_async_stress)
 add_tv_test(test_m2_stress)
 add_tv_test(test_schedule)
 add_tv_test(test_gc)
+add_tv_test(test_qr)
 # ScheduleManager::run() drives BackupEngine, and gc drives TeleVault /
 # TelegramClient (tv_app in TDLib builds, stubs otherwise).
 if(TV_BUILD_TDLIB)

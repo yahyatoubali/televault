@@ -37,6 +37,25 @@ AuthFlow::State AuthFlow::execute(const std::string& phone, CodeCallback code_cb
     return state_;
 }
 
+AuthFlow::State AuthFlow::execute_qr(PasswordCallback pw_cb) {
+    state_ = State::Connecting;
+
+    if (!client_.connect()) {
+        spdlog::error("Failed to connect to Telegram");
+        state_ = State::Failed;
+        return state_;
+    }
+
+    if (client_.is_authorized()) {
+        state_ = State::Done;
+        return state_;
+    }
+
+    bool success = client_.login_qr(std::move(pw_cb));
+    state_ = success ? State::Done : State::Failed;
+    return state_;
+}
+
 void AuthFlow::logout() {
     client_.logout();
     state_ = State::Idle;

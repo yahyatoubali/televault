@@ -81,7 +81,7 @@ namespace {
     }
 
     // ── Auth commands ───────────────────────────────────────────────
-    void cmd_login(AppContext& ctx) {
+    void cmd_login(AppContext& ctx, bool use_qr) {
         SessionManager sm;
 
         if (sm.has_api_credentials()) {
@@ -115,11 +115,13 @@ namespace {
 
         std::print("Enter phone number (with country code): ");
         std::string phone;
-        std::getline(std::cin, phone);
+        if (!use_qr) {
+            std::getline(std::cin, phone);
 
-        if (phone.empty()) {
-            print_error("Phone number cannot be empty");
-            return;
+            if (phone.empty()) {
+                print_error("Phone number cannot be empty");
+                return;
+            }
         }
 
         AuthFlow auth(ctx.tg_client);
@@ -137,6 +139,17 @@ namespace {
             std::getline(std::cin, pw);
             return pw;
         };
+
+        if (use_qr) {
+            print_info("QR login: scan the code below with Telegram (Settings → Devices → Link Desktop Device).");
+            auto state = auth.execute_qr(pw_cb);
+            if (state == AuthFlow::State::Done) {
+                print_success("Successfully authenticated as " + ctx.tg_client.get_my_username());
+            } else {
+                print_error("QR authentication failed (code expired or not confirmed in time).");
+            }
+            return;
+        }
 
         auto state = auth.execute(phone, code_cb, pw_cb);
         if (state == AuthFlow::State::Done) {
@@ -1447,7 +1460,9 @@ void build_cli(CLI::App& app, AppContext& ctx) {
 
     // ── Auth subcommands ──────────────────────────────────────────────
     auto* login = app.add_subcommand("login", "Authenticate with Telegram");
-    login->callback([&ctx]() { cmd_login(ctx); });
+    auto login_qr = std::make_shared<bool>(false);
+    login->add_flag("--qr", *login_qr, "Log in by scanning a QR code (no SMS code needed)");
+    login->callback([&ctx, login_qr]() { cmd_login(ctx, *login_qr); });
 
     auto* logout = app.add_subcommand("logout", "Clear stored session");
     logout->callback([&ctx]() { cmd_logout(ctx); });

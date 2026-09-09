@@ -19,6 +19,8 @@ public:
     ~AuthFlow() = default;
 
     State execute(const std::string& phone, CodeCallback code_cb, PasswordCallback pw_cb);
+    // QR-code login: no phone number needed. Renders the code in-terminal.
+    State execute_qr(PasswordCallback pw_cb);
     void logout();
     State state() const { return state_; }
 

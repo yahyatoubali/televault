@@ -1,5 +1,6 @@
 #include "client.hpp"
 #include "session.hpp"
+#include "qr.hpp"
 #include "../util/logging.hpp"
 #include "../util/config.hpp"
 
@@ -317,6 +318,80 @@ public:
                     {
                         std::unique_lock lock(mutex_);
                         cv_.wait_for(lock, std::chrono::seconds(120), [this] {
+                            return auth_state_.load() != AuthState::WaitOtherDevice;
+                        });
+                    }
+                    break;
+                case AuthState::Ready:
+                    return true;
+                case AuthState::Failed:
+                    return false;
+                default:
+                    break;
+            }
+        }
+    }
+
+    // QR-code login: request the QR payload directly instead of going
+    // through the phone-number/SMS path (which Telegram increasingly
+    // rejects with UPDATE_APP_TO_LOGIN). The QR graphic itself is rendered
+    // by handle_auth_state via print_login_qr().
+    bool login_qr(AuthPasswordCallback pw_cb) {
+        if (!ready_ && !connect()) return false;
+
+        pw_cb_ = std::move(pw_cb);
+
+        {
+            std::unique_lock lock(mutex_);
+            cv_.wait_for(lock, std::chrono::seconds(30), [this] {
+                return auth_state_.load() != AuthState::None;
+            });
+            if (auth_state_.load() == AuthState::Ready) return true;
+        }
+
+        bool qr_requested = false;
+        while (true) {
+            AuthState current_state;
+            {
+                std::unique_lock lock(mutex_);
+                if (!cv_.wait_for(lock, std::chrono::seconds(60), [this] {
+                    return auth_state_.load() != AuthState::None;
+                })) {
+                    spdlog::error("Timed out waiting for Telegram authorization state update");
+                    std::println("\033[31m✗ Timed out waiting for Telegram response\033[0m");
+                    return false;
+                }
+                current_state = auth_state_.load();
+            }
+
+            switch (current_state) {
+                case AuthState::WaitPhone:
+                    if (!qr_requested) {
+                        std::println("\033[1;36mRequesting QR code login...\033[0m");
+                        if (!request_qr_code()) {
+                            return false;
+                        }
+                        qr_requested = true;
+                    }
+                    break;
+                case AuthState::WaitCode:
+                    spdlog::error("Server asked for an SMS code during QR login");
+                    std::println("\033[31m✗ Server unexpectedly asked for an SMS code; retry `tvt login --qr`\033[0m");
+                    return false;
+                case AuthState::WaitPassword:
+                    if (!pw_cb_) {
+                        spdlog::error("2FA password required but no callback provided");
+                        std::println("\033[31m✗ 2FA password required\033[0m");
+                        return false;
+                    }
+                    if (!send_password(pw_cb_())) {
+                        return false;
+                    }
+                    break;
+                case AuthState::WaitOtherDevice:
+                    {
+                        std::unique_lock lock(mutex_);
+                        cv_.wait_for(lock, std::chrono::seconds(300), [this] {
                             return auth_state_.load() != AuthState::WaitOtherDevice;
                         });
                     }
@@ -961,18 +1036,9 @@ private:
                 auto& wait_other = static_cast<tda::authorizationStateWaitOtherDeviceConfirmation&>(*state);
                 std::string link = wait_other.link_;
                 spdlog::info("Confirm login on another device or scan QR code: {}", link);
-                std::println("\n\033[1;36m┌─────────────────────────────────────────────────────────────┐\033[0m");
-                std::println("\033[1;36m│ Scan QR code with Telegram on your phone:                   │\033[0m");
-                std::println("\033[1;36m│ Settings → Devices → Link Desktop Device                    │\033[0m");
-                std::println("\033[1;36m└─────────────────────────────────────────────────────────────┘\033[0m\n");
-                std::string cmd = "qrencode -t ANSIUTF8 '" + link + "' 2>/dev/null";
-                int ret = std::system(cmd.c_str());
-                if (ret != 0) {
-                    std::println("Or open this link on a device with Telegram: {}", link);
-                } else {
-                    std::println("\nLink: {}", link);
-                }
-                std::println("Waiting for confirmation from your Telegram device...");
+                // Native in-terminal QR rendering (no external `qrencode`
+                // dependency); always falls back to the raw link.
+                print_login_qr(link);
                 new_state = AuthState::WaitOtherDevice;
                 break;
             }
@@ -1216,6 +1282,9 @@ bool TelegramClient::connect() { return impl_->connect(); }
 bool TelegramClient::is_authorized() const { return impl_->is_authorized(); }
 bool TelegramClient::login(AuthCodeCallback code, AuthPasswordCallback pw) {
     return impl_->login(std::move(code), std::move(pw));
+}
+bool TelegramClient::login_qr(AuthPasswordCallback pw) {
+    return impl_->login_qr(std::move(pw));
 }
 void TelegramClient::logout() { impl_->logout(); }
 int32_t TelegramClient::api_id() const { return impl_->api_id(); }

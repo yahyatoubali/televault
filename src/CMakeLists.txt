@@ -19,6 +19,7 @@ set(CORE_SOURCES
     gc/gc.cpp
     schedule/schedule.cpp
     schedule/systemd.cpp
+    telegram/qr.cpp
 )
 
 set(CORE_HEADERS
@@ -41,6 +42,7 @@ set(CORE_HEADERS
     gc/gc.hpp
     schedule/schedule.hpp
     schedule/systemd.hpp
+    telegram/qr.hpp
     models/file_metadata.hpp
     models/vault_index.hpp
     models/snapshot.hpp
@@ -57,6 +59,7 @@ target_link_libraries(tv_core PUBLIC
     CLI11::CLI11
     nlohmann_json::nlohmann_json
     spdlog::spdlog
+    qrcodegen
     OpenSSL::SSL
     OpenSSL::Crypto
     PkgConfig::ZSTD

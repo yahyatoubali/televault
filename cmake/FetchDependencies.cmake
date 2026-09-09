@@ -67,6 +67,35 @@ else()
     message(FATAL_ERROR "Boost headers not found — install boost or set BOOST_ROOT")
 endif()
 
+# ── Nayuki QR-Code-generator (MIT; terminal QR rendering for login) ──
+# Only qrcodegen.{hpp,cpp} are needed; fetch the pinned files directly.
+set(QRGEN_DIR "${CMAKE_BINARY_DIR}/_qrgen")
+set(QRGEN_HPP "${QRGEN_DIR}/qrcodegen.hpp")
+set(QRGEN_CPP "${QRGEN_DIR}/qrcodegen.cpp")
+# A previous failed fetch may have left 0-byte files; refetch those too.
+foreach(_f IN ITEMS "${QRGEN_HPP}" "${QRGEN_CPP}")
+    if(EXISTS "${_f}")
+        file(SIZE "${_f}" _sz)
+        if(_sz LESS 1000)
+            file(REMOVE "${_f}")
+        endif()
+    endif()
+endforeach()
+if(NOT EXISTS "${QRGEN_HPP}" OR NOT EXISTS "${QRGEN_CPP}")
+    message(STATUS "Downloading Nayuki QR-Code-generator v1.8.0...")
+    file(DOWNLOAD
+        "https://raw.githubusercontent.com/nayuki/QR-Code-generator/v1.8.0/cpp/qrcodegen.hpp"
+        "${QRGEN_HPP}" TLS_VERIFY ON)
+    file(DOWNLOAD
+        "https://raw.githubusercontent.com/nayuki/QR-Code-generator/v1.8.0/cpp/qrcodegen.cpp"
+        "${QRGEN_CPP}" TLS_VERIFY ON)
+endif()
+if(NOT EXISTS "${QRGEN_HPP}" OR NOT EXISTS "${QRGEN_CPP}")
+    message(FATAL_ERROR "Could not fetch Nayuki QR-Code-generator; check network or vendor cpp/qrcodegen.{hpp,cpp}")
+endif()
+add_library(qrcodegen STATIC "${QRGEN_CPP}")
+target_include_directories(qrcodegen PUBLIC "${QRGEN_DIR}")
+
 # ── Make available ─────────────────────────────────────────────────────
 FetchContent_MakeAvailable(
     CLI11

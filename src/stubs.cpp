@@ -28,6 +28,7 @@ TelegramClient::~TelegramClient() = default;
 bool TelegramClient::connect() { return false; }
 bool TelegramClient::is_authorized() const { return false; }
 bool TelegramClient::login(AuthCodeCallback, AuthPasswordCallback) { return false; }
+bool TelegramClient::login_qr(AuthPasswordCallback) { return false; }
 void TelegramClient::logout() {}
 int32_t TelegramClient::api_id() const { return 0; }
 std::string TelegramClient::api_hash() const { return {}; }
@@ -59,6 +60,7 @@ void TelegramClient::set_api_params(int32_t, const std::string&) {}
 
 AuthFlow::AuthFlow(TelegramClient& client) : client_(client) {}
 AuthFlow::State AuthFlow::execute(const std::string&, CodeCallback, PasswordCallback) { return State::Failed; }
+AuthFlow::State AuthFlow::execute_qr(PasswordCallback) { return State::Failed; }
 void AuthFlow::logout() {}
 
 // ── SessionManager stubs ──────────────────────────────────────────────
