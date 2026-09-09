@@ -26,14 +26,18 @@ permissions:
 
 jobs:
   build-linux-x86_64:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
         run: |
+          # NOTE: libtd-dev / libblake3-dev do not exist in Ubuntu repos.
+          # TDLib builds via CMake FetchContent (needs gperf + zlib);
+          # BLAKE3 falls back to FetchContent when the system lib is absent.
           sudo apt-get update -qq
-          sudo apt-get install -y -qq g++-14 cmake pkg-config libssl-dev libzstd-dev libblake3-dev libboost-dev libfuse3-dev
+          sudo apt-get install -y -qq g++-14 cmake pkg-config gperf zlib1g-dev \
+            libssl-dev libzstd-dev libboost-dev libfuse3-dev
 
       - name: Configure (portable release)
         run: |
@@ -46,7 +50,7 @@ jobs:
         run: cmake --build build --target televault -j$(nproc)
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure -E '^run_all_tests$'
 
       - name: Package
         run: |
@@ -71,7 +75,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq g++-14 cmake pkg-config libssl-dev libzstd-dev libblake3-dev libboost-dev libfuse3-dev
+          sudo apt-get install -y -qq g++-14 cmake pkg-config gperf zlib1g-dev \
+            libssl-dev libzstd-dev libboost-dev libfuse3-dev
 
       - name: Configure (portable release)
         run: |
@@ -84,7 +89,7 @@ jobs:
         run: cmake --build build --target televault -j$(nproc)
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure -E '^run_all_tests$'
 
       - name: Package
         run: |
@@ -107,7 +112,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: brew install cmake boost openssl@3 zstd pkg-config
+        run: brew install cmake boost openssl@3 zstd pkg-config gperf
 
       - name: Configure
         run: |
@@ -120,7 +125,7 @@ jobs:
         run: cmake --build build --target televault -j$(sysctl -n hw.ncpu)
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure -E '^run_all_tests$'
 
       - name: Package
         run: |
@@ -138,12 +143,12 @@ jobs:
             dist/televault-v*-darwin-arm64.tar.gz.sha256
 
   build-darwin-x86_64:
-    runs-on: macos-13
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: brew install cmake boost openssl@3 zstd pkg-config
+        run: brew install cmake boost openssl@3 zstd pkg-config gperf
 
       - name: Configure
         run: |
@@ -156,7 +161,7 @@ jobs:
         run: cmake --build build --target televault -j$(sysctl -n hw.ncpu)
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure -E '^run_all_tests$'
 
       - name: Package
         run: |

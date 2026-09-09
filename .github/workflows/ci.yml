@@ -2,9 +2,9 @@ name: CI (C++)
 
 on:
   push:
-    branches: [needspeed, master, dev]
+    branches: [needspeed, main, master, dev]
   pull_request:
-    branches: [needspeed, master, dev]
+    branches: [needspeed, main, master, dev]
 
 jobs:
   lint:
@@ -17,8 +17,11 @@ jobs:
 
       - name: Install dependencies
         run: |
+          # NOTE: libtd-dev / libblake3-dev do not exist in Ubuntu repos.
+          # TDLib builds via CMake FetchContent (needs gperf + zlib);
+          # BLAKE3 falls back to FetchContent when the system lib is absent.
           sudo apt-get install -y -qq \
-            cmake libtd-dev libssl-dev libzstd-dev libblake3-dev \
+            cmake pkg-config gperf zlib1g-dev libssl-dev libzstd-dev \
             libboost-dev libfuse3-dev
 
       - name: Run clang-tidy
@@ -40,8 +43,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            g++-14 clang++-18 cmake \
-            libtd-dev libssl-dev libzstd-dev libblake3-dev \
+            g++-14 clang++-18 cmake pkg-config gperf zlib1g-dev \
+            libssl-dev libzstd-dev \
             libboost-dev libfuse3-dev libncurses-dev
 
       - name: Configure
@@ -71,7 +74,7 @@ jobs:
       - name: Install minimal deps
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq \
-            g++-14 cmake libtd-dev libssl-dev libzstd-dev libblake3-dev
+            g++-14 cmake pkg-config gperf zlib1g-dev libssl-dev libzstd-dev libboost-dev
 
       - name: Configure (no optional features)
         run: |
