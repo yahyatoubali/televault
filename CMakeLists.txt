@@ -100,6 +100,10 @@ endif()
 # Our code does not use char8_t, so this is safe globally.
 if(TV_BUILD_TDLIB AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-fno-char8_t)
+    # TDLib's gperf-generated sources use the `register` keyword, which
+    # AppleClang promotes to an error (-Werror in TDLib's build). Downgrade
+    # just that diagnostic back; more-specific wins over -Werror anywhere.
+    add_compile_options(-Wno-error=register)
 endif()
 include(FetchContent)
 include(cmake/FetchDependencies.cmake)
