@@ -83,6 +83,12 @@ public:
     bool verify_file(const std::string& path);
     bool recover_index();
 
+    // Index introspection & maintenance (used by gc)
+    [[nodiscard]] std::vector<std::pair<std::string, int64_t>> index_entries() const;
+    [[nodiscard]] std::optional<FileMetadata> get_metadata_by_id(int64_t metadata_msg_id) const;
+    bool remove_index_entry(const std::string& file_id);
+    bool save_index();
+
 private:
     class Impl;
     std::unique_ptr<Impl> impl_;

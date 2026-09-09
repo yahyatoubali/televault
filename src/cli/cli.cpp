@@ -10,6 +10,8 @@
 #include "../preview/preview.hpp"
 #include "../backup/engine.hpp"
 #include "../watcher/watcher.hpp"
+#include "../schedule/schedule.hpp"
+#include "../gc/gc.hpp"
 #if defined(TV_BUILD_TUI)
 #include "../tui/tui.hpp"
 #endif
@@ -830,10 +832,40 @@ complete -c tvt -n "__fish_seen_subcommand_from ls" -s w -l wide -d "Disable tru
 
     // ── GC ────────────────────────────────────────────────────────────
     void cmd_gc(AppContext& ctx, bool force, bool clean_partials) {
-        ctx.initialize();
-        print_info("GC: dry-run=" + std::string(!force ? "true" : "false") +
-                   " clean_partials=" + std::string(clean_partials ? "true" : "false"));
-        // GC implementation goes here
+        ensure_vault(ctx);
+        auto& cfg = ConfigManager::instance().get();
+        if (cfg.channel_id == 0) {
+            print_error("No channel configured. Use 'setup' first.");
+            return;
+        }
+        bool dry_run = !force;
+        print_info(std::format("Scanning channel for orphans (dry-run: {})...", dry_run ? "yes" : "NO — deleting"));
+
+        auto res = collect_garbage(ctx.tg_client, *ctx.vault, cfg.channel_id, dry_run);
+        std::println("Scanned messages: {}", res.scanned_messages);
+        if (res.orphans.empty()) {
+            print_success("No orphaned messages found.");
+        } else {
+            std::println("{:<20} {:<16}", "MESSAGE ID", "TYPE");
+            std::println("{:-<20} {:-<16}", "", "");
+            for (auto& o : res.orphans) {
+                std::println("{:<20} {:<16}", o.message_id, o.type);
+            }
+            if (dry_run) {
+                print_info("Re-run with --force to delete these orphans (snapshots are never auto-deleted).");
+            } else {
+                print_success(std::format("GC complete: {} orphan(s) processed.", res.orphans.size()));
+            }
+        }
+
+        if (clean_partials) {
+            auto partials = cleanup_partial_uploads(ctx.tg_client, *ctx.vault, cfg.channel_id, dry_run);
+            if (partials.empty()) {
+                print_success("No partial uploads found.");
+            } else if (dry_run) {
+                print_info("Re-run with --force to drop these partial index entries.");
+            }
+        }
     }
 
     // ── TUI ───────────────────────────────────────────────────────────
@@ -1301,8 +1333,111 @@ complete -c tvt -n "__fish_seen_subcommand_from ls" -s w -l wide -d "Disable tru
         std::println("  Chunks:       {}", fi->chunk_count());
     }
 
-    void cmd_schedule(AppContext& ctx) {
-        print_info("Schedule commands — not yet fully implemented");
+    void cmd_schedule_create(AppContext& ctx, const std::string& name, const std::string& path,
+                             const std::string& interval, const std::string& password,
+                             bool incremental, const std::vector<std::string>& excludes, bool install) {
+        ensure_vault(ctx);
+        Interval iv = Interval::Daily;
+        if (!interval_from_string(interval, iv)) {
+            print_error("Invalid interval '" + interval + "' (use hourly, daily, weekly, monthly)");
+            return;
+        }
+        ScheduleEntry e;
+        e.name = name;
+        e.path = path;
+        e.interval = iv;
+        // Prompt when neither -p nor TELEVAULT_PASSWORD is set, so timer
+        // runs have a stored password (kept in a 0600 .env companion file).
+        e.password = password.empty() ? resolve_password("") : password;
+        e.incremental = incremental;
+        e.exclude_patterns = excludes;
+        if (install && e.password.empty()) {
+            print_error("A password (-p or TELEVAULT_PASSWORD) is required to install a timer run.");
+            return;
+        }
+
+        ScheduleManager mgr;
+        if (!mgr.create(e)) {
+            print_error("Failed to create schedule '" + name + "'");
+            return;
+        }
+        print_success("Schedule '" + name + "' created (" + interval_to_string(iv) + ").");
+        if (install) {
+            if (mgr.install_systemd_timer(e)) {
+                print_success("Systemd timer installed and started.");
+            } else {
+                print_info("Cron fallback — add this line with 'crontab -e':");
+                std::println("  {}", mgr.generate_cron_entry(e));
+            }
+        } else {
+            print_info("Run 'tvt schedule install " + name + "' to enable automatic runs.");
+        }
+    }
+
+    void cmd_schedule_list(AppContext&) {
+        ScheduleManager mgr;
+        auto entries = mgr.list();
+        if (entries.empty()) {
+            print_info("No schedules defined. Create one with 'tvt schedule create'.");
+            return;
+        }
+        std::println("{:<20} {:<10} {:<30} {:<12}", "NAME", "INTERVAL", "PATH", "LAST RUN");
+        std::println("{:-<20} {:-<10} {:-<30} {:-<12}", "", "", "", "");
+        for (auto& e : entries) {
+            std::string last = "never";
+            if (e.last_run.time_since_epoch().count() > 0) {
+                auto t = std::chrono::system_clock::to_time_t(e.last_run);
+                std::tm tm_buf{};
+                localtime_r(&t, &tm_buf);
+                char buf[32];
+                std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm_buf);
+                last = buf;
+            }
+            std::println("{:<20} {:<10} {:<30} {:<12}", e.name, interval_to_string(e.interval), e.path, last);
+        }
+    }
+
+    void cmd_schedule_run(AppContext& ctx, const std::string& name) {
+        ensure_vault(ctx);
+        ScheduleManager mgr;
+        if (mgr.run(name, *ctx.vault, ctx.tg_client)) {
+            print_success("Scheduled snapshot '" + name + "' completed.");
+        } else {
+            print_error("Scheduled run '" + name + "' failed.");
+        }
+    }
+
+    void cmd_schedule_remove(AppContext&, const std::string& name) {
+        ScheduleManager mgr;
+        if (mgr.remove(name)) {
+            print_success("Schedule '" + name + "' removed.");
+        } else {
+            print_error("Schedule '" + name + "' not found.");
+        }
+    }
+
+    void cmd_schedule_install(AppContext&, const std::string& name) {
+        ScheduleManager mgr;
+        ScheduleEntry e;
+        if (!mgr.load(name, e)) {
+            print_error("Schedule '" + name + "' not found.");
+            return;
+        }
+        if (mgr.install_systemd_timer(e)) {
+            print_success("Systemd timer installed and started.");
+        } else {
+            print_info("Cron fallback — add this line with 'crontab -e':");
+            std::println("  {}", mgr.generate_cron_entry(e));
+        }
+    }
+
+    void cmd_schedule_uninstall(AppContext&, const std::string& name) {
+        ScheduleManager mgr;
+        if (mgr.uninstall_systemd_timer(name)) {
+            print_success("Systemd timer removed.");
+        } else {
+            print_error("No timer found for schedule '" + name + "'.");
+        }
     }
 
 } // anonymous namespace
@@ -1647,7 +1782,56 @@ void build_cli(CLI::App& app, AppContext& ctx) {
     bk_del->callback([&ctx, bd_args]() { cmd_backup_delete(ctx, bd_args->id); });
 
     auto* schedule = app.add_subcommand("schedule", "Backup scheduling");
-    schedule->callback([&ctx]() { cmd_schedule(ctx); });
+    schedule->require_subcommand(1);
+
+    struct ScheduleCreateArgs {
+        std::string name;
+        std::string path;
+        std::string interval{"daily"};
+        std::string password;
+        bool incremental{true};
+        bool full{};
+        std::vector<std::string> excludes;
+        bool no_install{};
+    };
+    auto sc_args = std::make_shared<ScheduleCreateArgs>();
+    auto* sc_create = schedule->add_subcommand("create", "Create a backup schedule");
+    sc_create->add_option("-n,--name", sc_args->name, "Schedule name")->required();
+    sc_create->add_option("--path", sc_args->path, "Directory to back up")->required();
+    sc_create->add_option("--interval", sc_args->interval, "hourly, daily, weekly, monthly");
+    sc_create->add_option("-p,--password", sc_args->password, "Encryption password (or set TELEVAULT_PASSWORD)");
+    sc_create->add_flag("--incremental", sc_args->incremental, "Incremental snapshots (default)");
+    sc_create->add_flag("--full", sc_args->full, "Full snapshots instead of incremental");
+    sc_create->add_option("--exclude", sc_args->excludes, "Exclude pattern (repeatable)");
+    sc_create->add_flag("--no-install", sc_args->no_install, "Only save the schedule, do not install the timer");
+    sc_create->callback([&ctx, sc_args]() {
+        cmd_schedule_create(ctx, sc_args->name, sc_args->path, sc_args->interval,
+                            sc_args->password, !sc_args->full, sc_args->excludes,
+                            !sc_args->no_install);
+    });
+
+    auto* sc_list = schedule->add_subcommand("list", "List schedules");
+    sc_list->callback([&ctx]() { cmd_schedule_list(ctx); });
+
+    auto sc_name = std::make_shared<std::string>();
+    auto* sc_run = schedule->add_subcommand("run", "Run a schedule now");
+    sc_run->add_option("name", *sc_name, "Schedule name")->required();
+    sc_run->callback([&ctx, sc_name]() { cmd_schedule_run(ctx, *sc_name); });
+
+    auto sc_rm = std::make_shared<std::string>();
+    auto* sc_remove = schedule->add_subcommand("remove", "Delete a schedule");
+    sc_remove->add_option("name", *sc_rm, "Schedule name")->required();
+    sc_remove->callback([&ctx, sc_rm]() { cmd_schedule_remove(ctx, *sc_rm); });
+
+    auto sc_in = std::make_shared<std::string>();
+    auto* sc_install = schedule->add_subcommand("install", "Install systemd timer (or show cron line)");
+    sc_install->add_option("name", *sc_in, "Schedule name")->required();
+    sc_install->callback([&ctx, sc_in]() { cmd_schedule_install(ctx, *sc_in); });
+
+    auto sc_un = std::make_shared<std::string>();
+    auto* sc_uninstall = schedule->add_subcommand("uninstall", "Remove systemd timer");
+    sc_uninstall->add_option("name", *sc_un, "Schedule name")->required();
+    sc_uninstall->callback([&ctx, sc_un]() { cmd_schedule_uninstall(ctx, *sc_un); });
 
     struct WatchArgs {
         std::string dir;

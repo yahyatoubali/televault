@@ -17,6 +17,8 @@ set(CORE_SOURCES
     chunker/writer.cpp
     preview/preview.cpp
     gc/gc.cpp
+    schedule/schedule.cpp
+    schedule/systemd.cpp
 )
 
 set(CORE_HEADERS
@@ -37,6 +39,8 @@ set(CORE_HEADERS
     chunker/writer.hpp
     preview/preview.hpp
     gc/gc.hpp
+    schedule/schedule.hpp
+    schedule/systemd.hpp
     models/file_metadata.hpp
     models/vault_index.hpp
     models/snapshot.hpp
@@ -83,8 +87,6 @@ if(TV_BUILD_TDLIB)
         backup/engine.cpp
         backup/snapshot.cpp
         watcher/watcher.cpp
-        schedule/schedule.cpp
-        schedule/systemd.cpp
         webdav/stream_server.cpp
     )
     list(APPEND APP_HEADERS
@@ -98,8 +100,6 @@ if(TV_BUILD_TDLIB)
         backup/engine.hpp
         backup/snapshot.hpp
         watcher/watcher.hpp
-        schedule/schedule.hpp
-        schedule/systemd.hpp
         webdav/stream_server.hpp
     )
 else()

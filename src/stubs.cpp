@@ -98,6 +98,10 @@ void TeleVault::set_shards(std::vector<int64_t>) {}
 bool TeleVault::verify_file(const std::string&) { return false; }
 std::optional<std::vector<uint8_t>> TeleVault::read_first_chunk(const std::string&, const VaultOptions&) { return std::nullopt; }
 bool TeleVault::recover_index() { return false; }
+std::vector<std::pair<std::string, int64_t>> TeleVault::index_entries() const { return {}; }
+std::optional<FileMetadata> TeleVault::get_metadata_by_id(int64_t) const { return std::nullopt; }
+bool TeleVault::remove_index_entry(const std::string&) { return false; }
+bool TeleVault::save_index() { return false; }
 
 // ── BackupEngine stubs (no Telegram backend when TDLIB off) ────────────
 

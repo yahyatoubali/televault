@@ -762,6 +762,28 @@ public:
         return true;
     }
 
+    // ── Index introspection & maintenance (gc support) ──────────────
+    std::vector<std::pair<std::string, int64_t>> index_entries() const {
+        std::vector<std::pair<std::string, int64_t>> out;
+        for (auto& [fid, mid] : index_mgr->index().files) {
+            out.emplace_back(fid, mid);
+        }
+        return out;
+    }
+
+    std::optional<FileMetadata> get_metadata_by_id(int64_t metadata_msg_id) const {
+        return get_metadata(metadata_msg_id);
+    }
+
+    bool remove_index_entry(const std::string& file_id) {
+        index_mgr->remove_file(file_id);
+        return index_mgr->save(channel_id_);
+    }
+
+    bool save_index() {
+        return index_mgr->save(channel_id_);
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────
     std::optional<FileMetadata> get_metadata(int64_t msg_id) const {
         auto try_parse = [this](int64_t id) -> std::optional<FileMetadata> {
@@ -986,6 +1008,22 @@ std::optional<std::vector<uint8_t>> TeleVault::read_first_chunk(const std::strin
 std::optional<std::vector<uint8_t>> TeleVault::read_byte_range(
     const std::string& path, uint64_t start_byte, uint64_t end_byte, const VaultOptions& opts) {
     return impl_->read_byte_range(path, start_byte, end_byte, opts);
+}
+
+std::vector<std::pair<std::string, int64_t>> TeleVault::index_entries() const {
+    return impl_->index_entries();
+}
+
+std::optional<FileMetadata> TeleVault::get_metadata_by_id(int64_t metadata_msg_id) const {
+    return impl_->get_metadata_by_id(metadata_msg_id);
+}
+
+bool TeleVault::remove_index_entry(const std::string& file_id) {
+    return impl_->remove_index_entry(file_id);
+}
+
+bool TeleVault::save_index() {
+    return impl_->save_index();
 }
 
 std::vector<FileEntry> TeleVault::list_files() const {
