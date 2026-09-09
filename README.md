@@ -143,6 +143,8 @@ cmake --install build --prefix ~/.local
 ```bash
 # 1) Authenticate with Telegram (phone code, 2FA, or interactive QR code)
 tvt login
+# ...or skip the SMS round-trip entirely:
+tvt login --qr
 
 # 2) Setup storage channel (interactive channel creator & validator)
 tvt setup

@@ -111,6 +111,9 @@ tvt push secret-archive.tar.gz
 # Authenticate with phone code, 2FA, or interactive terminal QR code
 tvt login
 
+# ...or skip the SMS round-trip entirely (recommended: no code needed)
+tvt login --qr
+
 # Create and configure the encrypted Telegram storage channel
 tvt setup
 ```
