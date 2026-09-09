@@ -7,7 +7,7 @@
 
 #include "util/logging.hpp"
 #include "util/config.hpp"
-#include "cli/cli.hpp"
+#include "cmdline/cli.hpp"
 #include "core/app_context.hpp"
 
 using namespace tv;
