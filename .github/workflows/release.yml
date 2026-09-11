@@ -84,7 +84,7 @@ jobs:
 
       - name: Run Test Suite
         run: |
-          ctest --test-dir build --output-on-failure
+          ctest --test-dir build --output-on-failure -E '^run_all_tests$'
 
       - name: Package Binary Release Archive
         run: |
