@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-4.0.0-blue?style=flat-square" alt="version">
+  <img src="https://img.shields.io/badge/version-4.0.2-blue?style=flat-square" alt="version">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license">
   <img src="https://img.shields.io/badge/C++-23-yellow?style=flat-square" alt="cpp">
   <img src="https://img.shields.io/badge/os-Linux%20%7C%20macOS-informational?style=flat-square" alt="os">
@@ -39,7 +39,7 @@
 
 ## Why TeleVault?
 
-| Feature | TeleVault v4.0.0 | Traditional Cloud Storage |
+| Feature | TeleVault v4.0.2 | Traditional Cloud Storage |
 |---|---|---|
 | **Cost** | 100% Free (your Telegram account) | $5 - $30 / month |
 | **Storage Limit** | Unlimited | 15 GB - 2 TB |
@@ -73,24 +73,31 @@ curl -fsSL https://raw.githubusercontent.com/yahyatoubali/televault/main/scripts
 ### Manual Download
 
 ```bash
-# Auto-detect your OS and CPU architecture
+# Auto-detect your OS and CPU architecture (robust case statement)
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
-[ "$ARCH" = "x86_64" ] && [ "$OS" = "linux" ] && TARGET="linux-x86_64"
-[ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ] && [ "$OS" = "linux" ] && TARGET="linux-aarch64"
-[ "$ARCH" = "arm64" ] && [ "$OS" = "darwin" ] && TARGET="darwin-arm64"
-[ "$ARCH" = "x86_64" ] && [ "$OS" = "darwin" ] && TARGET="darwin-x86_64"
+case "${OS}-${ARCH}" in
+  linux-x86_64|linux-amd64)   TARGET="linux-x86_64" ;;
+  linux-aarch64|linux-arm64)  TARGET="linux-aarch64" ;;
+  darwin-arm64)               TARGET="darwin-arm64" ;;
+  darwin-x86_64)              TARGET="darwin-x86_64" ;;
+  *) echo "Unsupported platform: ${OS}-${ARCH} — build from source instead." >&2; exit 1 ;;
+esac
 
-# Download and unpack
-curl -sLO "https://github.com/yahyatoubali/televault/releases/latest/download/televault-v4.0.0-${TARGET}.tar.gz"
-tar -xzf "televault-v4.0.0-${TARGET}.tar.gz"
-cd "televault-v4.0.0-${TARGET}"
+# Download, verify checksum, and unpack
+curl -sLO "https://github.com/yahyatoubali/televault/releases/latest/download/televault-v4.0.2-${TARGET}.tar.gz"
+curl -sLO "https://github.com/yahyatoubali/televault/releases/latest/download/televault-v4.0.2-${TARGET}.tar.gz.sha256"
+sha256sum -c "televault-v4.0.2-${TARGET}.tar.gz.sha256" || shasum -a 256 -c "televault-v4.0.2-${TARGET}.tar.gz.sha256"
+tar -xzf "televault-v4.0.2-${TARGET}.tar.gz"
+cd "televault-v4.0.2-${TARGET}"
 
 # Install to system PATH
 sudo cp televault /usr/local/bin/televault
 sudo ln -sf /usr/local/bin/televault /usr/local/bin/tvt
 
-# Verify
+# Verify (install runtime libs first if this fails:
+#   Ubuntu/Debian: sudo apt install -y libssl3 libzstd1 libfuse3-3
+#   Arch:          sudo pacman -S --needed libblake3 onetbb fuse3)
 tvt --version
 ```
 
@@ -136,6 +143,8 @@ cmake --install build --prefix ~/.local
 ```bash
 # 1) Authenticate with Telegram (phone code, 2FA, or interactive QR code)
 tvt login
+# ...or skip the SMS round-trip entirely:
+tvt login --qr
 
 # 2) Setup storage channel (interactive channel creator & validator)
 tvt setup

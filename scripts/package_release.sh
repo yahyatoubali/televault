@@ -8,7 +8,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-VERSION="${1:-4.0.1}"
+VERSION="${1:-4.0.2}"
 VERSION="${VERSION#v}"
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="${2:-$(uname -m)}"

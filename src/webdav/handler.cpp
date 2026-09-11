@@ -61,6 +61,28 @@ std::string guess_mime(const std::string& path) {
 
 } // anonymous namespace
 
+// Parses decimal Range values without throwing on overflow/garbage.
+inline bool parse_range_num(const std::string& s, uint64_t& out) {
+    if (s.empty() || s.size() > 19) return false;
+    for (char c : s) {
+        if (c < '0' || c > '9') return false;
+    }
+    try {
+        out = std::stoull(s);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+inline http::response<http::string_body> range_unsatisfiable(
+    const http::request<http::string_body>& req, uint64_t total_size) {
+    http::response<http::string_body> res{http::status::range_not_satisfiable, req.version()};
+    res.set(http::field::content_range, std::format("bytes */{}", total_size));
+    res.prepare_payload();
+    return res;
+}
+
 class WebDAVHandler::Impl {
 public:
     TeleVault& vault_;
@@ -198,15 +220,16 @@ private:
             if (std::regex_match(range_val, m, range_regex)) {
                 uint64_t start_byte = 0;
                 uint64_t end_byte = (total_size > 0) ? total_size - 1 : 0;
-                if (!m[1].str().empty()) start_byte = std::stoull(m[1].str());
-                if (!m[2].str().empty()) end_byte = std::stoull(m[2].str());
+                if (!m[1].str().empty() && !parse_range_num(m[1].str(), start_byte)) {
+                    return range_unsatisfiable(req, total_size);
+                }
+                if (!m[2].str().empty() && !parse_range_num(m[2].str(), end_byte)) {
+                    return range_unsatisfiable(req, total_size);
+                }
                 end_byte = std::min(end_byte, (total_size > 0) ? total_size - 1 : 0);
 
                 if (start_byte > end_byte || start_byte >= total_size) {
-                    http::response<http::string_body> res{http::status::range_not_satisfiable, req.version()};
-                    res.set(http::field::content_range, std::format("bytes */{}", total_size));
-                    res.prepare_payload();
-                    return res;
+                    return range_unsatisfiable(req, total_size);
                 }
 
                 auto chunk_bytes = vault_.read_byte_range(meta->name, start_byte, end_byte, vopts);

@@ -1,6 +1,6 @@
 # Maintainer: Yahya Toubali <yahyatoubali@example.com>
 pkgname=televault
-pkgver=4.0.1
+pkgver=4.0.2
 pkgrel=1
 pkgdesc="End-to-end encrypted cloud filesystem backed by unlimited Telegram storage"
 arch=('x86_64' 'aarch64')

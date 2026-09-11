@@ -13,6 +13,14 @@ add_tv_test(test_compression)
 add_tv_test(test_chunker)
 add_tv_test(test_async_stress)
 add_tv_test(test_m2_stress)
+add_tv_test(test_schedule)
+add_tv_test(test_gc)
+add_tv_test(test_qr)
+# ScheduleManager::run() drives BackupEngine, and gc drives TeleVault /
+# TelegramClient. Those live in tv_app (real defs with TDLib, stubs
+# without), so link it unconditionally — CI builds with TDLib off.
+target_link_libraries(test_schedule PRIVATE tv_app)
+target_link_libraries(test_gc PRIVATE tv_app)
 
 add_executable(m2_cross_helper m2_cross_helper.cpp)
 target_include_directories(m2_cross_helper PRIVATE ${CMAKE_SOURCE_DIR}/src)

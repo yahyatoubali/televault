@@ -146,6 +146,24 @@ public:
         http::read(socket, buffer, req, ec);
         if (ec) return;
 
+        try {
+            serve_request(socket, req);
+        } catch (const std::exception& e) {
+            // Crypto/decode failures must surface as HTTP 500, never as an
+            // uncaught exception that terminates the server process.
+            spdlog::error("Stream request failed: {}", e.what());
+            try {
+                http::response<http::string_body> res{http::status::internal_server_error, req.version()};
+                res.set(http::field::content_type, "text/plain");
+                res.body() = std::string("Stream failed: ") + e.what();
+                res.prepare_payload();
+                http::write(socket, res, ec);
+            } catch (...) {}
+        }
+    }
+
+    void serve_request(tcp::socket& socket, const http::request<http::string_body>& req) {
+        beast::error_code ec;
         std::string target(req.target());
         // Strip query string if any
         auto q_pos = target.find('?');
@@ -239,7 +257,10 @@ public:
         http::response<http::vector_body<uint8_t>> res{http::status::ok, req.version()};
         res.set(http::field::content_type, mime);
         res.set(http::field::accept_ranges, "bytes");
-        res.set(http::field::content_length, std::to_string(total_size));
+        // Body holds only the initial window (up to 16 MB); advertise its
+        // real length, not total_size, or large-file clients hang waiting
+        // for bytes that never arrive (they follow up with Range requests).
+        res.set(http::field::content_length, std::to_string(initial_data->size()));
         res.set(http::field::access_control_allow_origin, "*");
         res.body() = std::move(*initial_data);
         res.prepare_payload();

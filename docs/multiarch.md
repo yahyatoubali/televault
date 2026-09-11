@@ -1,6 +1,6 @@
 # Multi-CPU Architecture Support
 
-TeleVault v4.0.0 is engineered from the ground up in standard ISO C++23 to run natively and portably across diverse CPU architectures with zero code changes or emulation overhead.
+TeleVault v4.0.2 is engineered from the ground up in standard ISO C++23 to run natively and portably across diverse CPU architectures with zero code changes or emulation overhead.
 
 ## Supported Architectures & Operating Systems
 
@@ -85,10 +85,18 @@ To build a standalone containerized binary for any Linux architecture using Dock
 
 ```bash
 # Build for ARM64
-./scripts/build_docker.sh linux/arm64 3.5.0
+./scripts/build_docker.sh linux/arm64 4.0.2
 
 # Build for x86_64
-./scripts/build_docker.sh linux/amd64 3.5.0
+./scripts/build_docker.sh linux/amd64 4.0.2
 ```
 
 Release packages and checksums are placed into `dist/`.
+
+> **Portability note:** release binaries are built on Ubuntu 24.04
+> (glibc 2.39) with `-DTV_PORTABLE=ON` (`-static-libstdc++ -static-libgcc`)
+> so they run on Ubuntu 24.04+, Fedora 40+, and Arch.
+> Older LTS (Ubuntu 22.04 glibc 2.35, Debian 12 glibc 2.36) and
+> Alpine/musl should build from source — the universal installer now
+> detects this via `ldd` and prints per-distro hints, and falls back to
+> an automatic source build.

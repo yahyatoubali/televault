@@ -139,7 +139,12 @@ public:
         meta.size = file_size;
         meta.hash = file_hash;
         meta.encrypted = opts.encrypted;
-        meta.compressed = opts.compressed;
+        // Record the ACTUAL per-file decision: incompressible media (.mp4,
+        // .mkv, .zip, ...) bypass compression even when globally enabled.
+        // Storing the global flag here marked raw bytes as compressed and
+        // broke every read path (pull/cat/stream/preview) with
+        // "Invalid or corrupted zstd frame".
+        meta.compressed = opts.compressed && should_compress(file_name);
         meta.version = current_version;
         meta.created_at = std::chrono::system_clock::now();
         meta.updated_at = meta.created_at;
@@ -540,9 +545,15 @@ public:
                 }
             }
 
-            // Decompress
+            // Decompress (tolerant: legacy mis-flagged raw chunks pass through)
             if (meta->compressed) {
-                data = decompress_data(data);
+                try {
+                    data = decompress_data_tolerant(data, true);
+                } catch (const std::exception& e) {
+                    spdlog::error("Decompression failed on chunk {}: {}", ci.index, e.what());
+                    std::filesystem::remove(temp_output);
+                    return false;
+                }
             }
 
             // Verify original hash
@@ -642,7 +653,12 @@ public:
             }
 
             if (meta->compressed) {
-                data = decompress_data(data);
+                try {
+                    data = decompress_data_tolerant(data, true);
+                } catch (const std::exception& e) {
+                    spdlog::error("Decompression failed for chunk {}: {}", ci.index, e.what());
+                    return false;
+                }
             }
             std::cout.write(reinterpret_cast<const char*>(data.data()), data.size());
             if (!std::cout) {
@@ -699,7 +715,12 @@ public:
         }
 
         if (meta->compressed) {
-            data = decompress_data(data);
+            try {
+                data = decompress_data_tolerant(data, true);
+            } catch (const std::exception& e) {
+                spdlog::error("Decompression failed for chunk 0: {}", e.what());
+                return std::nullopt;
+            }
         }
 
         return data;
@@ -922,6 +943,28 @@ public:
             }
         }
         return true;
+    }
+
+    // ── Index introspection & maintenance (gc support) ──────────────
+    std::vector<std::pair<std::string, int64_t>> index_entries() const {
+        std::vector<std::pair<std::string, int64_t>> out;
+        for (auto& [fid, mid] : index_mgr->index().files) {
+            out.emplace_back(fid, mid);
+        }
+        return out;
+    }
+
+    std::optional<FileMetadata> get_metadata_by_id(int64_t metadata_msg_id) const {
+        return get_metadata(metadata_msg_id);
+    }
+
+    bool remove_index_entry(const std::string& file_id) {
+        index_mgr->remove_file(file_id);
+        return index_mgr->save(channel_id_);
+    }
+
+    bool save_index() {
+        return index_mgr->save(channel_id_);
     }
 
     // ── Helpers ─────────────────────────────────────────────────────
@@ -1159,16 +1202,26 @@ public:
             if (!f) continue;
             std::vector<uint8_t> cdata((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 
-            if (meta->encrypted) {
-                std::string pw = opts.password;
-                if (pw.empty() && have_key) {
-                    cdata = decrypt_chunk(cdata, std::span<const uint8_t>(master_key));
-                } else {
-                    cdata = decrypt_chunk(cdata, pw, fallback_salt);
+            try {
+                if (meta->encrypted) {
+                    std::string pw = opts.password;
+                    if (pw.empty() && have_key) {
+                        cdata = decrypt_chunk(cdata, std::span<const uint8_t>(master_key));
+                    } else {
+                        cdata = decrypt_chunk(cdata, pw, fallback_salt);
+                    }
                 }
-            }
-            if (meta->compressed) {
-                cdata = decompress_data(cdata);
+                if (meta->compressed) {
+                    cdata = decompress_data_tolerant(cdata, true);
+                }
+            } catch (const std::exception& e) {
+                // Never let per-chunk crypto errors escape as uncaught
+                // exceptions (they aborted the HTTP stream thread via
+                // std::terminate). Log once and signal failure so the
+                // server returns HTTP 500 instead of core-dumping.
+                spdlog::error("Chunk {} decode failed (wrong password or corrupted data): {}",
+                              ci.index, e.what());
+                return std::nullopt;
             }
 
             uint64_t pt_start = ci.offset;
@@ -1233,6 +1286,22 @@ std::optional<std::vector<uint8_t>> TeleVault::read_first_chunk(const std::strin
 std::optional<std::vector<uint8_t>> TeleVault::read_byte_range(
     const std::string& path, uint64_t start_byte, uint64_t end_byte, const VaultOptions& opts) {
     return impl_->read_byte_range(path, start_byte, end_byte, opts);
+}
+
+std::vector<std::pair<std::string, int64_t>> TeleVault::index_entries() const {
+    return impl_->index_entries();
+}
+
+std::optional<FileMetadata> TeleVault::get_metadata_by_id(int64_t metadata_msg_id) const {
+    return impl_->get_metadata_by_id(metadata_msg_id);
+}
+
+bool TeleVault::remove_index_entry(const std::string& file_id) {
+    return impl_->remove_index_entry(file_id);
+}
+
+bool TeleVault::save_index() {
+    return impl_->save_index();
 }
 
 std::vector<FileEntry> TeleVault::list_files() const {

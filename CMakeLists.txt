@@ -1,7 +1,9 @@
 cmake_minimum_required(VERSION 3.22)
+# TDLib v1.8.0 still declares cmake_minimum_required(<3.5), which CMake 4.x
+# rejects unless the policy floor is lowered. Required for FetchContent tdlib.
 set(CMAKE_POLICY_VERSION_MINIMUM "3.5" CACHE STRING "Minimum policy version for subprojects")
 project(televault
-    VERSION 4.0.1
+    VERSION 4.0.2
     DESCRIPTION "Encrypted cloud storage on Telegram channels"
     LANGUAGES CXX C
 )
@@ -24,6 +26,10 @@ option(TV_BUILD_TESTS "Build tests"         ON)
 option(TV_LOW_RESOURCE "Low-resource defaults" OFF)
 option(TV_ENABLE_SANITIZERS "Enable AddressSanitizer (ASan) and UndefinedBehaviorSanitizer (UBSan)" OFF)
 option(TV_STATIC_LIBSTDCXX "Statically link libstdc++ and libgcc on Linux for maximum distro portability" OFF)
+# TV_PORTABLE additionally prefers static zstd/blake3/fuse archives where
+# available; it composes with TV_STATIC_LIBSTDCXX (both retained so existing
+# release workflows keep working unchanged).
+option(TV_PORTABLE "Portable release: statically link libstdc++/libgcc and prefer static zstd/blake3/fuse" OFF)
 
 if(TV_STATIC_LIBSTDCXX AND NOT APPLE AND NOT WIN32)
     link_libraries(-static-libstdc++ -static-libgcc)
@@ -107,7 +113,8 @@ endif()
 #   char8_t and fails with "conversion from 'const char8_t[N]'" errors);
 #  -Wno-error=register* neutralizes TDLib gperf output's `register`
 #   keyword, which AppleClang promotes to an error. The C++14 spelling
-#   only exists on Clang (GCC rejects the unknown option outright).
+#   only exists on Clang (GCC rejects the unknown option outright), so
+#   each spelling is scoped to its compiler below.
 if(TV_BUILD_TDLIB AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-fno-char8_t)
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -174,6 +181,26 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
             -fsanitize=address,undefined
             -fno-sanitize=vptr
         )
+    endif()
+endif()
+
+# ── Portable release (static libstdc++/libgcc for multi-distro compat) ──
+# Pre-built release binaries must run on Ubuntu 24.04 (glibc 2.39),
+# Fedora 40+, and Arch without `GLIBCXX_3.4.36 not found` or
+# `libblake3.so.0: cannot open shared object` errors.
+if(TV_PORTABLE AND NOT APPLE)
+    message(STATUS "TeleVault: portable release mode (static libstdc++/libgcc)")
+    add_link_options(-static-libstdc++ -static-libgcc)
+    # Prefer static archives for zstd/fuse3 when available, so the
+    # release binary does not require libfuse3.so.3 vs .so.4 or
+    # libzstd.so.1 on minimal installs. BLAKE3 already static via
+    # FetchContent fallback; TBB not needed for portable blake3_c.
+    find_library(TV_ZSTD_STATIC libzstd.a HINTS /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/lib /usr/local/lib)
+    if(TV_ZSTD_STATIC)
+        message(STATUS "TeleVault: portable static zstd: ${TV_ZSTD_STATIC}")
+        if(TARGET PkgConfig::ZSTD)
+            set_target_properties(PkgConfig::ZSTD PROPERTIES IMPORTED_LOCATION "${TV_ZSTD_STATIC}")
+        endif()
     endif()
 endif()
 

@@ -1,6 +1,6 @@
 # Command Reference
 
-Complete reference for all `tvt` commands in TeleVault v4.0.0 (C++23 Native).
+Complete reference for all `tvt` commands in TeleVault v4.0.2 (C++23 Native).
 
 ## Core Vault Commands
 
@@ -68,6 +68,7 @@ tvt tui
 | Command | Description |
 |---|---|
 | `tvt login` | Interactive login (phone number, code, 2FA, or terminal visual QR code) |
+| `tvt login --qr` | QR-code login: scan in-terminal code, no SMS round-trip |
 | `tvt logout` | Clear active TDLib session |
 | `tvt setup` | Interactive storage channel creator and validator |
 | `tvt channel` | Display current storage channel info |

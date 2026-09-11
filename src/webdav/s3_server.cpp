@@ -141,11 +141,24 @@ private:
                         break;
                     }
 
-                    auto res = handle_s3_request(req);
-                    bool keep_alive = res.keep_alive();
-                    http::write(stream, res, ec);
+                    try {
+                        auto res = handle_s3_request(req);
+                        bool keep_alive = res.keep_alive();
+                        http::write(stream, res, ec);
 
-                    if (ec || !keep_alive) break;
+                        if (ec || !keep_alive) break;
+                    } catch (const std::exception& e) {
+                        // Malformed requests must not terminate the gateway.
+                        spdlog::error("S3 request failed: {}", e.what());
+                        try {
+                            http::response<http::string_body> res{http::status::internal_server_error, req.version()};
+                            res.set(http::field::content_type, "application/xml");
+                            res.body() = std::string("<Error><Code>InternalError</Code><Message>") + e.what() + "</Message></Error>";
+                            res.prepare_payload();
+                            http::write(stream, res, ec);
+                        } catch (...) {}
+                        break;
+                    }
                 }
             }).detach();
         }
@@ -252,8 +265,28 @@ private:
                 if (std::regex_match(range_val, m, range_regex)) {
                     uint64_t start = 0;
                     uint64_t end = (total_size > 0) ? total_size - 1 : 0;
-                    if (!m[1].str().empty()) start = std::stoull(m[1].str());
-                    if (!m[2].str().empty()) end = std::stoull(m[2].str());
+                    auto parse_num = [](const std::string& s, uint64_t& out) -> bool {
+                        if (s.empty() || s.size() > 19) return false;
+                        for (char c : s) {
+                            if (c < '0' || c > '9') return false;
+                        }
+                        try {
+                            out = std::stoull(s);
+                            return true;
+                        } catch (...) {
+                            return false;
+                        }
+                    };
+                    if (!m[1].str().empty() && !parse_num(m[1].str(), start)) {
+                        http::response<http::string_body> oor{http::status::range_not_satisfiable, req.version()};
+                        oor.prepare_payload();
+                        return oor;
+                    }
+                    if (!m[2].str().empty() && !parse_num(m[2].str(), end)) {
+                        http::response<http::string_body> oor{http::status::range_not_satisfiable, req.version()};
+                        oor.prepare_payload();
+                        return oor;
+                    }
                     end = std::min(end, (total_size > 0) ? total_size - 1 : 0);
 
                     auto chunk = vault_.read_byte_range(meta->name, start, end, vopts);

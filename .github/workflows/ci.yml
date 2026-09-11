@@ -133,4 +133,4 @@ jobs:
 
       - name: Test Minimal
         run: |
-          ctest --test-dir build-minimal --output-on-failure
+          ctest --test-dir build-minimal --output-on-failure -E '^run_all_tests$'

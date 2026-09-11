@@ -10,6 +10,8 @@
 #include "../preview/preview.hpp"
 #include "../backup/engine.hpp"
 #include "../watcher/watcher.hpp"
+#include "../schedule/schedule.hpp"
+#include "../gc/gc.hpp"
 #if defined(TV_BUILD_TUI)
 #include "../tui/tui.hpp"
 #endif
@@ -79,7 +81,7 @@ namespace {
     }
 
     // ── Auth commands ───────────────────────────────────────────────
-    void cmd_login(AppContext& ctx) {
+    void cmd_login(AppContext& ctx, bool use_qr) {
         SessionManager sm;
 
         if (sm.has_api_credentials()) {
@@ -113,11 +115,13 @@ namespace {
 
         std::print("Enter phone number (with country code): ");
         std::string phone;
-        std::getline(std::cin, phone);
+        if (!use_qr) {
+            std::getline(std::cin, phone);
 
-        if (phone.empty()) {
-            print_error("Phone number cannot be empty");
-            return;
+            if (phone.empty()) {
+                print_error("Phone number cannot be empty");
+                return;
+            }
         }
 
         AuthFlow auth(ctx.tg_client);
@@ -135,6 +139,17 @@ namespace {
             std::getline(std::cin, pw);
             return pw;
         };
+
+        if (use_qr) {
+            print_info("QR login: scan the code below with Telegram (Settings → Devices → Link Desktop Device).");
+            auto state = auth.execute_qr(pw_cb);
+            if (state == AuthFlow::State::Done) {
+                print_success("Successfully authenticated as " + ctx.tg_client.get_my_username());
+            } else {
+                print_error("QR authentication failed (code expired or not confirmed in time).");
+            }
+            return;
+        }
 
         auto state = auth.execute(phone, code_cb, pw_cb);
         if (state == AuthFlow::State::Done) {
@@ -578,6 +593,32 @@ namespace {
         s_opts.host = "127.0.0.1";
         s_opts.port = port;
         s_opts.password = resolve_password(password);
+        if (meta->encrypted && s_opts.password.empty()) {
+            print_error("Password required to stream encrypted file");
+            return;
+        }
+
+        // Preflight: decrypt 1 byte before binding the port. A wrong
+        // password or corrupted chunk previously crashed the server with
+        // an uncaught std::runtime_error (SIGABRT) on the first HTTP
+        // request; fail fast here with a clear message instead.
+        {
+            VaultOptions vopts;
+            vopts.password = s_opts.password;
+            auto probe = ctx.vault->read_byte_range(meta->name, 0, 0, vopts);
+            if (!probe) {
+                if (meta->encrypted) {
+                    print_error("Cannot decrypt '" + meta->name +
+                                "': wrong password or corrupted chunk. "
+                                "Verify with 'tvt pull' before streaming.");
+                } else {
+                    print_error("Cannot read '" + meta->name +
+                                "' from vault (corrupted chunk). "
+                                "Verify with 'tvt pull' before streaming.");
+                }
+                return;
+            }
+        }
 
         StreamServer server(*ctx.vault);
         std::println("\033[1;32m=== TeleVault Media Stream Server ===\033[0m");
@@ -827,10 +868,40 @@ complete -c tvt -n "__fish_seen_subcommand_from ls" -s w -l wide -d "Disable tru
 
     // ── GC ────────────────────────────────────────────────────────────
     void cmd_gc(AppContext& ctx, bool force, bool clean_partials) {
-        ctx.initialize();
-        print_info("GC: dry-run=" + std::string(!force ? "true" : "false") +
-                   " clean_partials=" + std::string(clean_partials ? "true" : "false"));
-        // GC implementation goes here
+        ensure_vault(ctx);
+        auto& cfg = ConfigManager::instance().get();
+        if (cfg.channel_id == 0) {
+            print_error("No channel configured. Use 'setup' first.");
+            return;
+        }
+        bool dry_run = !force;
+        print_info(std::format("Scanning channel for orphans (dry-run: {})...", dry_run ? "yes" : "NO — deleting"));
+
+        auto res = collect_garbage(ctx.tg_client, *ctx.vault, cfg.channel_id, dry_run);
+        std::println("Scanned messages: {}", res.scanned_messages);
+        if (res.orphans.empty()) {
+            print_success("No orphaned messages found.");
+        } else {
+            std::println("{:<20} {:<16}", "MESSAGE ID", "TYPE");
+            std::println("{:-<20} {:-<16}", "", "");
+            for (auto& o : res.orphans) {
+                std::println("{:<20} {:<16}", o.message_id, o.type);
+            }
+            if (dry_run) {
+                print_info("Re-run with --force to delete these orphans (snapshots are never auto-deleted).");
+            } else {
+                print_success(std::format("GC complete: {} orphan(s) processed.", res.orphans.size()));
+            }
+        }
+
+        if (clean_partials) {
+            auto partials = cleanup_partial_uploads(ctx.tg_client, *ctx.vault, cfg.channel_id, dry_run);
+            if (partials.empty()) {
+                print_success("No partial uploads found.");
+            } else if (dry_run) {
+                print_info("Re-run with --force to drop these partial index entries.");
+            }
+        }
     }
 
     // ── TUI ───────────────────────────────────────────────────────────
@@ -1030,6 +1101,25 @@ complete -c tvt -n "__fish_seen_subcommand_from ls" -s w -l wide -d "Disable tru
         }
     }
 
+    // Blocks until Ctrl+C, then stops the given server. `tvt serve` /
+    // `tvt serve-s3` previously returned right after non-blocking start(),
+    // so the process exited and the servers never actually served.
+    template <typename Server>
+    void serve_until_interrupted(Server& server, std::string_view label) {
+        g_stop_watching.store(false);
+        auto prev_handler = std::signal(SIGINT, watch_sig_handler);
+        auto prev_term = std::signal(SIGTERM, watch_sig_handler);
+        std::println("Press Ctrl+C to stop the {} server.", label);
+        while (!g_stop_watching.load(std::memory_order_relaxed)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        }
+        print_info(std::format("Stopping {} server...", label));
+        server.stop();
+        std::signal(SIGINT, prev_handler);
+        std::signal(SIGTERM, prev_term);
+        print_success(std::format("{} server stopped cleanly.", label));
+    }
+
     void cmd_watch(AppContext& ctx, const std::string& dir, const std::string& password,
                    const std::vector<std::string>& exclusions) {
         ensure_vault(ctx);
@@ -1130,7 +1220,9 @@ complete -c tvt -n "__fish_seen_subcommand_from ls" -s w -l wide -d "Disable tru
         WebDAVServer server(*ctx.vault);
         if (!server.start(opts)) {
             print_error("Failed to start WebDAV server.");
+            return;
         }
+        serve_until_interrupted(server, "WebDAV");
 #else
         print_error("TeleVault was built without WebDAV support.");
 #endif
@@ -1150,7 +1242,9 @@ complete -c tvt -n "__fish_seen_subcommand_from ls" -s w -l wide -d "Disable tru
         S3Server server(*ctx.vault);
         if (!server.start(opts)) {
             print_error("Failed to start S3 server.");
+            return;
         }
+        serve_until_interrupted(server, "S3");
 #else
         print_error("TeleVault was built without WebDAV/S3 support.");
 #endif
@@ -1184,6 +1278,29 @@ complete -c tvt -n "__fish_seen_subcommand_from ls" -s w -l wide -d "Disable tru
             }
         }
         opts.expires_in = std::chrono::seconds(seconds);
+
+        auto meta = ctx.vault->get_file_info(path);
+        if (!meta) {
+            print_error("File not found in vault: " + path);
+            return;
+        }
+        // The -p flag was previously accepted but silently dropped, so
+        // shares of encrypted files always failed decrypt with HTTP 500.
+        opts.password = resolve_password(password);
+        if (meta->encrypted && opts.password.empty()) {
+            print_error("Password required to share encrypted file");
+            return;
+        }
+        // Preflight so a wrong password fails here, not per-request.
+        {
+            VaultOptions vopts;
+            vopts.password = opts.password;
+            if (!ctx.vault->read_byte_range(meta->name, 0, 0, vopts)) {
+                print_error("Cannot decrypt '" + meta->name +
+                            "': wrong password or corrupted chunk.");
+                return;
+            }
+        }
 
         ShareServer server(*ctx.vault);
         std::println("\033[36m╭──────────────────────────────────────────────────╮\033[0m");
@@ -1252,8 +1369,111 @@ complete -c tvt -n "__fish_seen_subcommand_from ls" -s w -l wide -d "Disable tru
         std::println("  Chunks:       {}", fi->chunk_count());
     }
 
-    void cmd_schedule(AppContext& ctx) {
-        print_info("Schedule commands — not yet fully implemented");
+    void cmd_schedule_create(AppContext& ctx, const std::string& name, const std::string& path,
+                             const std::string& interval, const std::string& password,
+                             bool incremental, const std::vector<std::string>& excludes, bool install) {
+        ensure_vault(ctx);
+        Interval iv = Interval::Daily;
+        if (!interval_from_string(interval, iv)) {
+            print_error("Invalid interval '" + interval + "' (use hourly, daily, weekly, monthly)");
+            return;
+        }
+        ScheduleEntry e;
+        e.name = name;
+        e.path = path;
+        e.interval = iv;
+        // Prompt when neither -p nor TELEVAULT_PASSWORD is set, so timer
+        // runs have a stored password (kept in a 0600 .env companion file).
+        e.password = password.empty() ? resolve_password("") : password;
+        e.incremental = incremental;
+        e.exclude_patterns = excludes;
+        if (install && e.password.empty()) {
+            print_error("A password (-p or TELEVAULT_PASSWORD) is required to install a timer run.");
+            return;
+        }
+
+        ScheduleManager mgr;
+        if (!mgr.create(e)) {
+            print_error("Failed to create schedule '" + name + "'");
+            return;
+        }
+        print_success("Schedule '" + name + "' created (" + interval_to_string(iv) + ").");
+        if (install) {
+            if (mgr.install_systemd_timer(e)) {
+                print_success("Systemd timer installed and started.");
+            } else {
+                print_info("Cron fallback — add this line with 'crontab -e':");
+                std::println("  {}", mgr.generate_cron_entry(e));
+            }
+        } else {
+            print_info("Run 'tvt schedule install " + name + "' to enable automatic runs.");
+        }
+    }
+
+    void cmd_schedule_list(AppContext&) {
+        ScheduleManager mgr;
+        auto entries = mgr.list();
+        if (entries.empty()) {
+            print_info("No schedules defined. Create one with 'tvt schedule create'.");
+            return;
+        }
+        std::println("{:<20} {:<10} {:<30} {:<12}", "NAME", "INTERVAL", "PATH", "LAST RUN");
+        std::println("{:-<20} {:-<10} {:-<30} {:-<12}", "", "", "", "");
+        for (auto& e : entries) {
+            std::string last = "never";
+            if (e.last_run.time_since_epoch().count() > 0) {
+                auto t = std::chrono::system_clock::to_time_t(e.last_run);
+                std::tm tm_buf{};
+                localtime_r(&t, &tm_buf);
+                char buf[32];
+                std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", &tm_buf);
+                last = buf;
+            }
+            std::println("{:<20} {:<10} {:<30} {:<12}", e.name, interval_to_string(e.interval), e.path, last);
+        }
+    }
+
+    void cmd_schedule_run(AppContext& ctx, const std::string& name) {
+        ensure_vault(ctx);
+        ScheduleManager mgr;
+        if (mgr.run(name, *ctx.vault, ctx.tg_client)) {
+            print_success("Scheduled snapshot '" + name + "' completed.");
+        } else {
+            print_error("Scheduled run '" + name + "' failed.");
+        }
+    }
+
+    void cmd_schedule_remove(AppContext&, const std::string& name) {
+        ScheduleManager mgr;
+        if (mgr.remove(name)) {
+            print_success("Schedule '" + name + "' removed.");
+        } else {
+            print_error("Schedule '" + name + "' not found.");
+        }
+    }
+
+    void cmd_schedule_install(AppContext&, const std::string& name) {
+        ScheduleManager mgr;
+        ScheduleEntry e;
+        if (!mgr.load(name, e)) {
+            print_error("Schedule '" + name + "' not found.");
+            return;
+        }
+        if (mgr.install_systemd_timer(e)) {
+            print_success("Systemd timer installed and started.");
+        } else {
+            print_info("Cron fallback — add this line with 'crontab -e':");
+            std::println("  {}", mgr.generate_cron_entry(e));
+        }
+    }
+
+    void cmd_schedule_uninstall(AppContext&, const std::string& name) {
+        ScheduleManager mgr;
+        if (mgr.uninstall_systemd_timer(name)) {
+            print_success("Systemd timer removed.");
+        } else {
+            print_error("No timer found for schedule '" + name + "'.");
+        }
     }
 
 } // anonymous namespace
@@ -1263,7 +1483,9 @@ void build_cli(CLI::App& app, AppContext& ctx) {
 
     // ── Auth subcommands ──────────────────────────────────────────────
     auto* login = app.add_subcommand("login", "Authenticate with Telegram");
-    login->callback([&ctx]() { cmd_login(ctx); });
+    auto login_qr = std::make_shared<bool>(false);
+    login->add_flag("--qr", *login_qr, "Log in by scanning a QR code (no SMS code needed)");
+    login->callback([&ctx, login_qr]() { cmd_login(ctx, *login_qr); });
 
     auto* logout = app.add_subcommand("logout", "Clear stored session");
     logout->callback([&ctx]() { cmd_logout(ctx); });
@@ -1601,7 +1823,56 @@ void build_cli(CLI::App& app, AppContext& ctx) {
     bk_del->callback([&ctx, bd_args]() { cmd_backup_delete(ctx, bd_args->id); });
 
     auto* schedule = app.add_subcommand("schedule", "Backup scheduling");
-    schedule->callback([&ctx]() { cmd_schedule(ctx); });
+    schedule->require_subcommand(1);
+
+    struct ScheduleCreateArgs {
+        std::string name;
+        std::string path;
+        std::string interval{"daily"};
+        std::string password;
+        bool incremental{true};
+        bool full{};
+        std::vector<std::string> excludes;
+        bool no_install{};
+    };
+    auto sc_args = std::make_shared<ScheduleCreateArgs>();
+    auto* sc_create = schedule->add_subcommand("create", "Create a backup schedule");
+    sc_create->add_option("-n,--name", sc_args->name, "Schedule name")->required();
+    sc_create->add_option("--path", sc_args->path, "Directory to back up")->required();
+    sc_create->add_option("--interval", sc_args->interval, "hourly, daily, weekly, monthly");
+    sc_create->add_option("-p,--password", sc_args->password, "Encryption password (or set TELEVAULT_PASSWORD)");
+    sc_create->add_flag("--incremental", sc_args->incremental, "Incremental snapshots (default)");
+    sc_create->add_flag("--full", sc_args->full, "Full snapshots instead of incremental");
+    sc_create->add_option("--exclude", sc_args->excludes, "Exclude pattern (repeatable)");
+    sc_create->add_flag("--no-install", sc_args->no_install, "Only save the schedule, do not install the timer");
+    sc_create->callback([&ctx, sc_args]() {
+        cmd_schedule_create(ctx, sc_args->name, sc_args->path, sc_args->interval,
+                            sc_args->password, !sc_args->full, sc_args->excludes,
+                            !sc_args->no_install);
+    });
+
+    auto* sc_list = schedule->add_subcommand("list", "List schedules");
+    sc_list->callback([&ctx]() { cmd_schedule_list(ctx); });
+
+    auto sc_name = std::make_shared<std::string>();
+    auto* sc_run = schedule->add_subcommand("run", "Run a schedule now");
+    sc_run->add_option("name", *sc_name, "Schedule name")->required();
+    sc_run->callback([&ctx, sc_name]() { cmd_schedule_run(ctx, *sc_name); });
+
+    auto sc_rm = std::make_shared<std::string>();
+    auto* sc_remove = schedule->add_subcommand("remove", "Delete a schedule");
+    sc_remove->add_option("name", *sc_rm, "Schedule name")->required();
+    sc_remove->callback([&ctx, sc_rm]() { cmd_schedule_remove(ctx, *sc_rm); });
+
+    auto sc_in = std::make_shared<std::string>();
+    auto* sc_install = schedule->add_subcommand("install", "Install systemd timer (or show cron line)");
+    sc_install->add_option("name", *sc_in, "Schedule name")->required();
+    sc_install->callback([&ctx, sc_in]() { cmd_schedule_install(ctx, *sc_in); });
+
+    auto sc_un = std::make_shared<std::string>();
+    auto* sc_uninstall = schedule->add_subcommand("uninstall", "Remove systemd timer");
+    sc_uninstall->add_option("name", *sc_un, "Schedule name")->required();
+    sc_uninstall->callback([&ctx, sc_un]() { cmd_schedule_uninstall(ctx, *sc_un); });
 
     struct WatchArgs {
         std::string dir;

@@ -21,6 +21,16 @@ inline constexpr int DEFAULT_COMPRESSION_LEVEL = 3;
 
 [[nodiscard]] std::vector<uint8_t> decompress_data(std::span<const uint8_t> data);
 
+// Returns true if data starts with a valid zstd frame magic.
+[[nodiscard]] bool is_zstd_frame(std::span<const uint8_t> data) noexcept;
+
+// Tolerant decompress for vault reads: if compressed_flag is false (or data
+// is empty) returns data as-is. If flag is true but bytes are not a zstd
+// frame (legacy files pushed with the mp4-bypass flag mismatch), logs a
+// warning and returns data as-is instead of throwing.
+[[nodiscard]] std::vector<uint8_t> decompress_data_tolerant(std::span<const uint8_t> data,
+                                                            bool compressed_flag);
+
 [[nodiscard]] uint64_t estimate_compressed_size(uint64_t original_size,
                                                 std::string_view filename = "");
 

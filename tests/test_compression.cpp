@@ -131,8 +131,7 @@ TEST(CompressionTest, EstimateCompressedSize) {
     EXPECT_GE(compress_bound(1000), 1000);
 }
 
-TEST(CompressionTest, CompressDecompressFileRoundtrip) {
-    auto tmp_dir = std::filesystem::temp_directory_path();
+TEST(CompressionTest, CompressDecompressFileRoundtrip) {    auto tmp_dir = std::filesystem::temp_directory_path();
     auto in_file = tmp_dir / "televault_test_in.txt";
     auto cmp_file = tmp_dir / "televault_test_cmp.zst";
     auto out_file = tmp_dir / "televault_test_out.txt";
@@ -157,4 +156,32 @@ TEST(CompressionTest, CompressDecompressFileRoundtrip) {
     std::filesystem::remove(in_file);
     std::filesystem::remove(cmp_file);
     std::filesystem::remove(out_file);
+}
+
+// Regression: `tvt stream` aborted with "Invalid or corrupted zstd frame"
+// on .mp4 files. Push bypassed compression for incompressible media but
+// recorded meta.compressed=true, so every read path tried to decompress
+// raw bytes. The tolerant helper must pass raw bytes through.
+TEST(CompressionTest, TolerantDecompressPassesRawMediaThrough) {
+    // Vault-style mp4 name from the reported crash
+    EXPECT_FALSE(should_compress("f677638a-1b48-4ced-b18f-7359cbbc12f1_1080p_mp4_30_16-9.mp4"));
+    EXPECT_FALSE(should_compress("CLIP.MP4"));
+
+    // ftyp magic like a real mp4 header — not a zstd frame
+    std::vector<uint8_t> raw = {0x00, 0x00, 0x00, 0x18, 'f', 't', 'y', 'p',
+                                'm', 'p', '4', '2'};
+    EXPECT_FALSE(is_zstd_frame(raw));
+    EXPECT_EQ(decompress_data_tolerant(raw, true), raw);
+    EXPECT_EQ(decompress_data_tolerant(raw, false), raw);
+    EXPECT_TRUE(decompress_data_tolerant(std::vector<uint8_t>{}, true).empty());
+
+    // Genuine zstd payloads still round-trip through the tolerant path
+    std::string txt(5000, 'a');
+    std::vector<uint8_t> pt(txt.begin(), txt.end());
+    auto ct = compress_data(pt);
+    EXPECT_TRUE(is_zstd_frame(ct));
+    EXPECT_EQ(decompress_data_tolerant(ct, true), pt);
+
+    // Strict API behavior is unchanged (still throws on raw input)
+    EXPECT_THROW((void)decompress_data(raw), std::runtime_error);
 }

@@ -105,11 +105,25 @@ private:
                         break;
                     }
 
-                    auto res = handler.handle(req);
-                    bool keep_alive = res.keep_alive();
-                    http::write(stream, res, ec);
+                    try {
+                        auto res = handler.handle(req);
+                        bool keep_alive = res.keep_alive();
+                        http::write(stream, res, ec);
 
-                    if (ec || !keep_alive) break;
+                        if (ec || !keep_alive) break;
+                    } catch (const std::exception& e) {
+                        // Malformed requests (e.g. overflowing Range values)
+                        // must not terminate the server via std::terminate.
+                        spdlog::error("WebDAV request failed: {}", e.what());
+                        try {
+                            http::response<http::string_body> res{http::status::internal_server_error, req.version()};
+                            res.set(http::field::content_type, "text/plain");
+                            res.body() = std::string("Request failed: ") + e.what();
+                            res.prepare_payload();
+                            http::write(stream, res, ec);
+                        } catch (...) {}
+                        break;
+                    }
                 }
             }).detach();
         }

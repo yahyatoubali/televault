@@ -18,6 +18,9 @@ set(CORE_SOURCES
     preview/preview.cpp
     gc/gc.cpp
     core/journal.cpp
+    schedule/schedule.cpp
+    schedule/systemd.cpp
+    telegram/qr.cpp
 )
 
 set(CORE_HEADERS
@@ -39,6 +42,9 @@ set(CORE_HEADERS
     preview/preview.hpp
     gc/gc.hpp
     core/journal.hpp
+    schedule/schedule.hpp
+    schedule/systemd.hpp
+    telegram/qr.hpp
     models/file_metadata.hpp
     models/vault_index.hpp
     models/snapshot.hpp
@@ -55,6 +61,7 @@ target_link_libraries(tv_core PUBLIC
     CLI11::CLI11
     nlohmann_json::nlohmann_json
     spdlog::spdlog
+    qrcodegen
     OpenSSL::SSL
     OpenSSL::Crypto
     PkgConfig::ZSTD
@@ -96,8 +103,6 @@ if(TV_BUILD_TDLIB)
         backup/engine.cpp
         backup/snapshot.cpp
         watcher/watcher.cpp
-        schedule/schedule.cpp
-        schedule/systemd.cpp
         webdav/stream_server.cpp
     )
     list(APPEND APP_HEADERS
@@ -111,8 +116,6 @@ if(TV_BUILD_TDLIB)
         backup/engine.hpp
         backup/snapshot.hpp
         watcher/watcher.hpp
-        schedule/schedule.hpp
-        schedule/systemd.hpp
         webdav/stream_server.hpp
     )
 else()
@@ -124,6 +127,22 @@ if(TV_BUILD_FUSE AND NOT APPLE)
     list(APPEND APP_HEADERS fuse/fuse_ops.hpp fuse/cache.hpp)
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(FUSE3 REQUIRED IMPORTED_TARGET fuse3)
+    # Portable releases: prefer static libfuse3.a to avoid
+    # libfuse3.so.3 (Ubuntu) vs .so.4 (Arch) mismatch.
+    if(TV_PORTABLE AND NOT APPLE)
+        find_library(TV_FUSE3_STATIC libfuse3.a HINTS /usr/lib/x86_64-linux-gnu /usr/lib64 /usr/lib)
+        if(TV_FUSE3_STATIC)
+            message(STATUS "TeleVault: portable static fuse3: ${TV_FUSE3_STATIC}")
+            # Replace imported shared target with static archive
+            add_library(tv_fuse3_static STATIC IMPORTED)
+            set_target_properties(tv_fuse3_static PROPERTIES IMPORTED_LOCATION "${TV_FUSE3_STATIC}")
+            set(TV_FUSE3_TARGET tv_fuse3_static)
+        else()
+            set(TV_FUSE3_TARGET PkgConfig::FUSE3)
+        endif()
+    else()
+        set(TV_FUSE3_TARGET PkgConfig::FUSE3)
+    endif()
 endif()
 
 if(TV_BUILD_WEBDAV)
@@ -147,16 +166,37 @@ target_link_libraries(tv_app PUBLIC tv_core)
 
 if(TV_BUILD_TDLIB)
     target_include_directories(tv_app PUBLIC ${Boost_INCLUDE_DIRS})
+    # find_package(Td) provides namespaced Td:: targets; FetchContent
+    # (add_subdirectory) provides raw tdclient/tdcore/... targets.
+    if(Td_FOUND)
+        set(TV_TDCLIENT Td::tdclient)
+        set(TV_TDCORE Td::tdcore)
+        set(TV_TDAPI Td::tdapi)
+        set(TV_TDNET Td::tdnet)
+        set(TV_TDDB Td::tddb)
+        set(TV_TDACTOR Td::tdactor)
+        set(TV_TDUTILS Td::tdutils)
+        set(TV_TDSQLITE Td::tdsqlite)
+    else()
+        set(TV_TDCLIENT tdclient)
+        set(TV_TDCORE tdcore)
+        set(TV_TDAPI tdapi)
+        set(TV_TDNET tdnet)
+        set(TV_TDDB tddb)
+        set(TV_TDACTOR tdactor)
+        set(TV_TDUTILS tdutils)
+        set(TV_TDSQLITE tdsqlite)
+    endif()
     if(APPLE)
         target_link_libraries(tv_app PUBLIC
-            Td::tdclient
-            Td::tdcore
-            Td::tdapi
-            Td::tdnet
-            Td::tddb
-            Td::tdactor
-            Td::tdutils
-            Td::tdsqlite
+            ${TV_TDCLIENT}
+            ${TV_TDCORE}
+            ${TV_TDAPI}
+            ${TV_TDNET}
+            ${TV_TDDB}
+            ${TV_TDACTOR}
+            ${TV_TDUTILS}
+            ${TV_TDSQLITE}
             OpenSSL::SSL
             OpenSSL::Crypto
             ${CMAKE_DL_LIBS}
@@ -165,14 +205,14 @@ if(TV_BUILD_TDLIB)
     else()
         target_link_libraries(tv_app PUBLIC
             "-Wl,--start-group"
-            Td::tdclient
-            Td::tdcore
-            Td::tdapi
-            Td::tdnet
-            Td::tddb
-            Td::tdactor
-            Td::tdutils
-            Td::tdsqlite
+            ${TV_TDCLIENT}
+            ${TV_TDCORE}
+            ${TV_TDAPI}
+            ${TV_TDNET}
+            ${TV_TDDB}
+            ${TV_TDACTOR}
+            ${TV_TDUTILS}
+            ${TV_TDSQLITE}
             OpenSSL::SSL
             OpenSSL::Crypto
             "-Wl,--end-group"
@@ -183,7 +223,7 @@ if(TV_BUILD_TDLIB)
 endif()
 
 if(TV_BUILD_FUSE AND NOT APPLE)
-    target_link_libraries(tv_app PUBLIC PkgConfig::FUSE3)
+    target_link_libraries(tv_app PUBLIC ${TV_FUSE3_TARGET})
 endif()
 
 if(TV_BUILD_TUI)
@@ -203,3 +243,10 @@ add_executable(tvt ALIAS televault)
 
 # ── Install ────────────────────────────────────────────────────────────
 install(TARGETS televault DESTINATION bin)
+# Create `tvt` convenience symlink alongside `televault`.
+# `add_executable(tvt ALIAS ...)` above does NOT produce an installable
+# artifact, so the Homebrew formula test (`#{bin}/tvt --version`) and
+# `cmake --install --prefix ~/.local` were missing `tvt`.
+install(CODE "
+    execute_process(COMMAND \${CMAKE_COMMAND} -E create_symlink televault \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/bin/tvt\")
+")

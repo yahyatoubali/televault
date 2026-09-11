@@ -43,6 +43,8 @@ public:
     bool connect();
     bool is_authorized() const;
     bool login(AuthCodeCallback code_cb, AuthPasswordCallback pw_cb);
+    // QR-code login (no phone number / SMS round-trip).
+    bool login_qr(AuthPasswordCallback pw_cb);
     void logout();
     int32_t api_id() const;
     std::string api_hash() const;
