@@ -77,6 +77,16 @@ FetchContent_MakeAvailable(
 
 if(TV_BUILD_TDLIB AND NOT Td_FOUND)
     FetchContent_MakeAvailable(tdlib)
+    if(TARGET tdclient AND NOT TARGET Td::tdclient)
+        add_library(Td::tdclient ALIAS tdclient)
+        add_library(Td::tdcore ALIAS tdcore)
+        add_library(Td::tdapi ALIAS tdapi)
+        add_library(Td::tdnet ALIAS tdnet)
+        add_library(Td::tddb ALIAS tddb)
+        add_library(Td::tdactor ALIAS tdactor)
+        add_library(Td::tdutils ALIAS tdutils)
+        add_library(Td::tdsqlite ALIAS tdsqlite)
+    endif()
 endif()
 
 if(TV_BUILD_TUI)
