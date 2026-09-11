@@ -18,8 +18,8 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get install -y -qq \
-            cmake libtd-dev libssl-dev libzstd-dev libblake3-dev \
-            libboost-dev libfuse3-dev
+            cmake libssl-dev libzstd-dev \
+            libboost-dev libfuse3-dev gperf
 
       - name: Run clang-tidy
         run: |
@@ -41,8 +41,8 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
             g++-14 clang++-18 cmake \
-            libtd-dev libssl-dev libzstd-dev libblake3-dev \
-            libboost-dev libfuse3-dev libncurses-dev
+            libssl-dev libzstd-dev \
+            libboost-dev libfuse3-dev libncurses-dev gperf
 
       - name: Configure
         run: |
@@ -71,7 +71,7 @@ jobs:
       - name: Install minimal deps
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq \
-            g++-14 cmake libtd-dev libssl-dev libzstd-dev libblake3-dev
+            g++-14 cmake libssl-dev libzstd-dev gperf
 
       - name: Configure (no optional features)
         run: |

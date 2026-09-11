@@ -48,8 +48,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            g++-14 cmake libssl-dev libzstd-dev libblake3-dev \
-            libboost-dev libfuse3-dev libncurses-dev pkg-config
+            g++-14 cmake libssl-dev libzstd-dev \
+            libboost-dev libfuse3-dev libncurses-dev pkg-config gperf
           sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100
           sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
 
