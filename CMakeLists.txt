@@ -13,7 +13,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ── Options ────────────────────────────────────────────────────────────
 option(TV_BUILD_TDLIB "Build with tdlib Telegram support" OFF)
-option(TV_BUILD_FUSE  "Build FUSE support"  ON)
+if(APPLE)
+    option(TV_BUILD_FUSE "Build FUSE support" OFF)
+else()
+    option(TV_BUILD_FUSE "Build FUSE support" ON)
+endif()
 option(TV_BUILD_WEBDAV "Build WebDAV support" ON)
 option(TV_BUILD_TUI   "Build TUI support"   ON)
 option(TV_BUILD_TESTS "Build tests"         ON)
@@ -116,6 +120,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         -Wpedantic
         -Werror=return-type
         -Wno-unused-parameter
+        $<$<COMPILE_LANGUAGE:CXX>:-fno-char8_t>
     )
 
     # Security Hardening: Stack protector & PIE

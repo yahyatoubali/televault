@@ -119,7 +119,7 @@ else()
     list(APPEND APP_SOURCES stubs.cpp)
 endif()
 
-if(TV_BUILD_FUSE)
+if(TV_BUILD_FUSE AND NOT APPLE)
     list(APPEND APP_SOURCES fuse/fuse_ops.cpp fuse/cache.cpp)
     list(APPEND APP_HEADERS fuse/fuse_ops.hpp fuse/cache.hpp)
     find_package(PkgConfig REQUIRED)
@@ -182,7 +182,7 @@ if(TV_BUILD_TDLIB)
     endif()
 endif()
 
-if(TV_BUILD_FUSE)
+if(TV_BUILD_FUSE AND NOT APPLE)
     target_link_libraries(tv_app PUBLIC PkgConfig::FUSE3)
 endif()
 
