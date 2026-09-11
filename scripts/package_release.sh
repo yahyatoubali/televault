@@ -22,7 +22,7 @@ case "$ARCH" in
             ARCH="aarch64"
         fi
         ;;
-    universal2) ARCH="universal2" ;;
+    universal|universal2) ARCH="universal" ;;
     armv7l|armhf) ARCH="armhf" ;;
     *) ARCH="$ARCH" ;;
 esac

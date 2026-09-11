@@ -128,8 +128,23 @@ CHECKSUM_URL="${DOWNLOAD_URL}.sha256"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-echo "==> Downloading pre-built release: ${TARBALL}..."
+echo "==> Checking for pre-built release: ${TARBALL}..."
+DOWNLOAD_SUCCESS=false
+
 if curl -sSL -f "$DOWNLOAD_URL" -o "$TMP_DIR/$TARBALL" 2>/dev/null; then
+    DOWNLOAD_SUCCESS=true
+elif [ "$OS" = "darwin" ]; then
+    # Fallback to universal binary on macOS
+    TARBALL="televault-v${VERSION}-darwin-universal.tar.gz"
+    DOWNLOAD_URL="https://github.com/${REPO}/releases/download/v${VERSION}/${TARBALL}"
+    CHECKSUM_URL="${DOWNLOAD_URL}.sha256"
+    echo "==> Checking for macOS Universal release: ${TARBALL}..."
+    if curl -sSL -f "$DOWNLOAD_URL" -o "$TMP_DIR/$TARBALL" 2>/dev/null; then
+        DOWNLOAD_SUCCESS=true
+    fi
+fi
+
+if [ "$DOWNLOAD_SUCCESS" = "true" ]; then
     echo "==> Verifying SHA256 checksum..."
     if curl -sSL -f "$CHECKSUM_URL" -o "$TMP_DIR/${TARBALL}.sha256" 2>/dev/null; then
         cd "$TMP_DIR"
@@ -146,7 +161,7 @@ if curl -sSL -f "$DOWNLOAD_URL" -o "$TMP_DIR/$TARBALL" 2>/dev/null; then
 
     echo "==> Installing binaries to ${INSTALL_DIR}..."
     tar -xzf "$TMP_DIR/$TARBALL" -C "$TMP_DIR"
-    EXTRACTED_DIR="$TMP_DIR/televault-v${VERSION}-${OS}-${ARCH}"
+    EXTRACTED_DIR="$TMP_DIR/${TARBALL%.tar.gz}"
 
     if [ ! -f "$EXTRACTED_DIR/televault" ]; then
         # Fallback if tarball contains root files directly
@@ -189,10 +204,22 @@ if [ "$OS" = "darwin" ]; then
     echo "==> Installing dependencies via Homebrew..."
     brew install cmake boost openssl@3 zstd pkg-config tdlib || true
 elif [ "$OS" = "linux" ]; then
-    if command -v apt-get >/dev/null 2>&1; then
-        echo "==> Installing build dependencies via apt..."
+    if command -v pacman >/dev/null 2>&1; then
+        echo "==> Installing build dependencies via pacman (Arch Linux)..."
+        sudo pacman -Sy --needed --noconfirm cmake gcc git openssl zstd boost-libs boost fuse3 pkgconf || true
+    elif command -v apt-get >/dev/null 2>&1; then
+        echo "==> Installing build dependencies via apt (Debian/Ubuntu)..."
         sudo apt-get update -qq || true
-        sudo apt-get install -y -qq cmake g++-14 libssl-dev libzstd-dev libblake3-dev libboost-dev libfuse3-dev || true
+        sudo apt-get install -y -qq cmake g++-14 libssl-dev libzstd-dev libblake3-dev libboost-dev libfuse3-dev pkg-config || true
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "==> Installing build dependencies via dnf (Fedora/RHEL)..."
+        sudo dnf install -y cmake gcc-c++ git openssl-devel libzstd-devel boost-devel fuse3-devel pkgconf-pkg-config || true
+    elif command -v zypper >/dev/null 2>&1; then
+        echo "==> Installing build dependencies via zypper (openSUSE)..."
+        sudo zypper install -y cmake gcc-c++ git libopenssl-devel libzstd-devel boost-devel fuse3-devel pkg-config || true
+    elif command -v apk >/dev/null 2>&1; then
+        echo "==> Installing build dependencies via apk (Alpine)..."
+        sudo apk add cmake g++ git openssl-dev zstd-dev boost-dev fuse3-dev pkgconf || true
     fi
 fi
 

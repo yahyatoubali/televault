@@ -62,6 +62,14 @@ target_link_libraries(tv_core PUBLIC
     pthread
 )
 
+if(TV_STATIC_LIBSTDCXX AND TARGET PkgConfig::BLAKE3)
+    get_target_property(_blake3_libs PkgConfig::BLAKE3 INTERFACE_LINK_LIBRARIES)
+    if(_blake3_libs)
+        list(FILTER _blake3_libs EXCLUDE REGEX "stdc\\+\\+")
+        set_target_properties(PkgConfig::BLAKE3 PROPERTIES INTERFACE_LINK_LIBRARIES "${_blake3_libs}")
+    endif()
+endif()
+
 # ── Application & Services Layer ───────────────────────────────────────
 set(APP_SOURCES
     cli/cli.cpp
@@ -182,6 +190,10 @@ endif()
 # ── Main binary ────────────────────────────────────────────────────────
 add_executable(televault main.cpp)
 target_link_libraries(televault PRIVATE tv_app)
+
+if(TV_STATIC_LIBSTDCXX AND NOT APPLE AND NOT WIN32)
+    target_link_options(televault PRIVATE -static-libstdc++ -static-libgcc)
+endif()
 
 # ── Alias ──────────────────────────────────────────────────────────────
 add_executable(tvt ALIAS televault)

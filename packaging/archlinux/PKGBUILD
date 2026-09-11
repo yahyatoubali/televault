@@ -1,0 +1,35 @@
+# Maintainer: Yahya Toubali <yahyatoubali@example.com>
+pkgname=televault
+pkgver=4.0.0
+pkgrel=1
+pkgdesc="End-to-end encrypted cloud filesystem backed by unlimited Telegram storage"
+arch=('x86_64' 'aarch64')
+url="https://github.com/yahyatoubali/televault"
+license=('Apache-2.0')
+depends=('boost-libs' 'fuse3' 'openssl' 'zstd' 'glibc' 'gcc-libs')
+makedepends=('cmake' 'gcc' 'git' 'boost' 'pkgconf')
+source=("${pkgname}-${pkgver}.tar.gz::https://github.com/yahyatoubali/televault/archive/refs/tags/v${pkgver}.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "${pkgname}-${pkgver}"
+    cmake -B build \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DTV_BUILD_TDLIB=ON \
+        -DTV_BUILD_TUI=ON \
+        -DTV_BUILD_TESTS=OFF
+    cmake --build build -j$(nproc)
+}
+
+package() {
+    cd "${pkgname}-${pkgver}"
+    install -Dm755 build/src/televault "${pkgdir}/usr/bin/televault"
+    ln -s televault "${pkgdir}/usr/bin/tvt"
+    if [ -f LICENSE ]; then
+        install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+    fi
+    if [ -f README.md ]; then
+        install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+    fi
+}

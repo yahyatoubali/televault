@@ -18,6 +18,11 @@ option(TV_BUILD_TUI   "Build TUI support"   ON)
 option(TV_BUILD_TESTS "Build tests"         ON)
 option(TV_LOW_RESOURCE "Low-resource defaults" OFF)
 option(TV_ENABLE_SANITIZERS "Enable AddressSanitizer (ASan) and UndefinedBehaviorSanitizer (UBSan)" OFF)
+option(TV_STATIC_LIBSTDCXX "Statically link libstdc++ and libgcc on Linux for maximum distro portability" OFF)
+
+if(TV_STATIC_LIBSTDCXX AND NOT APPLE AND NOT WIN32)
+    link_libraries(-static-libstdc++ -static-libgcc)
+endif()
 
 # ── Darwin / macOS Homebrew Path Support ─────────────────────────────
 if(APPLE)
