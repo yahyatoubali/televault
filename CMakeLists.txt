@@ -116,8 +116,9 @@ endif()
 #   only exists on Clang (GCC rejects the unknown option outright), so
 #   each spelling is scoped to its compiler below.
 if(TV_BUILD_TDLIB AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(-fno-char8_t)
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    # COMPILE_LANGUAGE guard: these are C++-only and would warn on C files.
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-fno-char8_t>)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
         add_compile_options(-Wno-error=register -Wno-error=deprecated-register)
     else()
         add_compile_options(-Wno-error=register)
