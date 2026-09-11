@@ -82,6 +82,7 @@ public:
     bool empty_trash();
     bool verify_file(const std::string& path);
     bool recover_index();
+    bool sync(bool force = false);
 
 private:
     class Impl;

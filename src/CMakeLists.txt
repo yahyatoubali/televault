@@ -17,6 +17,7 @@ set(CORE_SOURCES
     chunker/writer.cpp
     preview/preview.cpp
     gc/gc.cpp
+    core/journal.cpp
 )
 
 set(CORE_HEADERS
@@ -37,6 +38,7 @@ set(CORE_HEADERS
     chunker/writer.hpp
     preview/preview.hpp
     gc/gc.hpp
+    core/journal.hpp
     models/file_metadata.hpp
     models/vault_index.hpp
     models/snapshot.hpp

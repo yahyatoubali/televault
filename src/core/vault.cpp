@@ -1,5 +1,6 @@
 #include "vault.hpp"
 #include "index.hpp"
+#include "journal.hpp"
 #include "../telegram/client.hpp"
 #include "../chunker/chunker.hpp"
 #include "../chunker/fastcdc.hpp"
@@ -17,12 +18,13 @@
 #include <random>
 #include <array>
 #include <chrono>
-#include "../compress/zstd.hpp"
 #include <span>
 #include <algorithm>
 #include <iostream>
 #include <cctype>
 #include <ranges>
+#include <unordered_map>
+#include <mutex>
 
 namespace tv {
 
@@ -37,6 +39,29 @@ public:
     // Encryption
     std::array<uint8_t, 32> master_key{};
     bool have_key{};
+
+    mutable std::unordered_map<int64_t, FileMetadata> metadata_cache_;
+    mutable std::mutex cache_mutex_;
+    mutable std::chrono::steady_clock::time_point last_sync_time_{};
+    mutable std::mutex sync_mutex_;
+
+    bool sync_with_channel(bool force = false) const {
+        std::lock_guard lock(sync_mutex_);
+        auto now = std::chrono::steady_clock::now();
+        if (!force && std::chrono::duration_cast<std::chrono::seconds>(now - last_sync_time_).count() < 3) {
+            return true;
+        }
+        last_sync_time_ = now;
+        if (!index_mgr) return false;
+
+        bool updated = index_mgr->sync(channel_id_);
+        if (updated) {
+            std::lock_guard clock(cache_mutex_);
+            metadata_cache_.clear();
+            spdlog::info("Synchronized with channel: {} total files in index", index_mgr->index().files.size());
+        }
+        return true;
+    }
 
     explicit Impl(TelegramClient& tg_client) : tg(tg_client) {}
 
@@ -73,6 +98,7 @@ public:
 
         uint64_t file_size = std::filesystem::file_size(local_path);
         std::string file_name = std::filesystem::path(local_path).filename().string();
+        sync_with_channel(true);
 
         if (opts.encrypted && opts.password.empty()) {
             spdlog::error("Password required for encryption");
@@ -118,12 +144,27 @@ public:
         meta.created_at = std::chrono::system_clock::now();
         meta.updated_at = meta.created_at;
 
-        if (cb) cb({0, file_size, "Initializing metadata...", 0});
-        nlohmann::json meta_json = meta;
-        auto meta_msg_id = tg.send_text(channel_id_, meta_json.dump());
+        // Check for existing upload journal for crash resumption
+        auto journal = UploadJournal::load(file_hash);
+        int64_t meta_msg_id = 0;
+        if (journal && journal->meta_msg_id() != 0) {
+            auto check_msg = tg.get_message(channel_id_, journal->meta_msg_id());
+            if (check_msg.id != 0 && !check_msg.text.empty()) {
+                meta_msg_id = journal->meta_msg_id();
+                spdlog::info("Resuming previous upload for {} (meta_msg_id={})", file_name, meta_msg_id);
+            }
+        }
+
         if (meta_msg_id == 0) {
-            spdlog::error("Failed to send metadata root message");
-            return false;
+            if (cb) cb({0, file_size, "Initializing metadata...", 0});
+            nlohmann::json meta_json = meta;
+            meta_msg_id = tg.send_text(channel_id_, meta_json.dump());
+            if (meta_msg_id == 0) {
+                spdlog::error("Failed to send metadata root message");
+                return false;
+            }
+            journal = UploadJournal(local_path, file_hash, file_size, meta_msg_id);
+            journal->save();
         }
         meta.metadata_message_id = meta_msg_id;
 
@@ -161,6 +202,33 @@ public:
         for (uint64_t chunk_idx = 0; chunk_idx < total_chunks; ++chunk_idx) {
             auto [current_offset, this_chunk_size] = chunk_ranges[chunk_idx];
 
+            ChunkInfo ci;
+            ci.index = static_cast<int64_t>(chunk_idx);
+            ci.offset = current_offset;
+
+            // Check journal reuse for crash resumption
+            if (journal && journal->has_chunk(ci.index)) {
+                auto saved_chunk = journal->get_chunk(ci.index);
+                if (saved_chunk) {
+                    ci.message_id = saved_chunk->message_id;
+                    ci.file_id = saved_chunk->file_id;
+                    ci.size = saved_chunk->size;
+                    ci.hash = saved_chunk->hash;
+                    ci.original_hash = saved_chunk->original_hash;
+                    ci.channel_id = saved_chunk->channel_id;
+                    meta.chunks.push_back(std::move(ci));
+
+                    bytes_processed += this_chunk_size;
+                    spdlog::info("Resumed chunk {}/{} from journal (msg_id {})",
+                                 chunk_idx + 1, total_chunks, saved_chunk->message_id);
+                    if (cb) {
+                        cb({bytes_processed, file_size,
+                            std::format("Resumed chunk {}/{}...", chunk_idx + 1, total_chunks), 0});
+                    }
+                    continue;
+                }
+            }
+
             std::vector<uint8_t> chunk_data(this_chunk_size);
             if (this_chunk_size > 0) {
                 file.seekg(current_offset);
@@ -171,9 +239,6 @@ public:
                 }
             }
 
-            ChunkInfo ci;
-            ci.index = static_cast<int64_t>(chunk_idx);
-            ci.offset = current_offset;
             ci.original_hash = hash_data(chunk_data);
 
             // Check delta sync chunk reuse
@@ -185,6 +250,10 @@ public:
                     ci.size = it->second.size;
                     ci.hash = it->second.hash;
                     ci.channel_id = it->second.channel_id;
+                    if (journal) {
+                        journal->record_chunk(ci);
+                        journal->save();
+                    }
                     meta.chunks.push_back(std::move(ci));
 
                     bytes_processed += this_chunk_size;
@@ -209,6 +278,10 @@ public:
                     ci.size = existing->size;
                     ci.hash = existing->hash;
                     ci.channel_id = existing->channel_id;
+                    if (journal) {
+                        journal->record_chunk(ci);
+                        journal->save();
+                    }
                     meta.chunks.push_back(std::move(ci));
 
                     bytes_processed += this_chunk_size;
@@ -271,6 +344,10 @@ public:
             ci.message_id = send_result.message_id;
             ci.file_id = send_result.file_id;
             ci.channel_id = target_channel;
+            if (journal) {
+                journal->record_chunk(ci);
+                journal->save();
+            }
             meta.chunks.push_back(std::move(ci));
 
             bytes_processed += this_chunk_size;
@@ -280,11 +357,73 @@ public:
             }
         }
 
-        // Update metadata message with complete chunk list
-        nlohmann::json updated_json = meta;
-        if (!tg.edit_message(channel_id_, meta_msg_id, updated_json.dump())) {
-            spdlog::error("Failed to update metadata message with chunk list");
-            return false;
+        meta.total_chunks = meta.chunks.size();
+
+        // Check whether chunk list exceeds Telegram message capacity
+        nlohmann::json test_json = meta;
+        bool use_manifest_doc = (test_json.dump().size() > 2500 || meta.chunks.size() > 15);
+
+        if (use_manifest_doc) {
+            spdlog::info("Generating compressed document manifest for {} chunks to guarantee deliverability",
+                         meta.chunks.size());
+
+            nlohmann::json manifest_j = meta.chunks;
+            std::string manifest_str = manifest_j.dump();
+            std::vector<uint8_t> manifest_data(manifest_str.begin(), manifest_str.end());
+            manifest_data = compress_data(manifest_data);
+            if (opts.encrypted) {
+                manifest_data = encrypt_chunk(manifest_data, opts.password);
+            }
+
+            auto manifest_tmp = std::filesystem::temp_directory_path() /
+                std::format("tv_manifest_{}_{}.zst", meta.id, std::rand());
+            {
+                std::ofstream mf(manifest_tmp, std::ios::binary);
+                if (!mf.write(reinterpret_cast<const char*>(manifest_data.data()), manifest_data.size())) {
+                    spdlog::error("Failed to write temp manifest file: {}", manifest_tmp.string());
+                    std::filesystem::remove(manifest_tmp);
+                    return false;
+                }
+            }
+
+            auto msend = tg.send_file_with_id(channel_id_, manifest_tmp.string(), meta_msg_id);
+            std::filesystem::remove(manifest_tmp);
+
+            if (msend.message_id == 0) {
+                spdlog::error("Failed to upload chunk manifest document");
+                return false;
+            }
+
+            // Save full metadata copy for in-memory cache
+            FileMetadata full_meta = meta;
+
+            // Strip inline chunks from message text to stay well under 4096 characters
+            meta.has_manifest = true;
+            meta.manifest_message_id = msend.message_id;
+            meta.chunks.clear();
+
+            nlohmann::json updated_json = meta;
+            if (!tg.edit_message(channel_id_, meta_msg_id, updated_json.dump())) {
+                spdlog::error("Failed to update metadata message with manifest pointer");
+                return false;
+            }
+
+            {
+                std::lock_guard lock(cache_mutex_);
+                metadata_cache_[meta_msg_id] = std::move(full_meta);
+            }
+        } else {
+            // Update metadata message with inline chunk list
+            nlohmann::json updated_json = meta;
+            if (!tg.edit_message(channel_id_, meta_msg_id, updated_json.dump())) {
+                spdlog::error("Failed to update metadata message with chunk list");
+                return false;
+            }
+
+            {
+                std::lock_guard lock(cache_mutex_);
+                metadata_cache_[meta_msg_id] = meta;
+            }
         }
 
         // Save index
@@ -292,6 +431,10 @@ public:
         if (!index_mgr->save(channel_id_)) {
             spdlog::error("Failed to save index");
             return false;
+        }
+
+        if (journal) {
+            journal->remove();
         }
 
         if (deduplicated_bytes > 0) {
@@ -314,6 +457,13 @@ public:
         if (!meta) {
             spdlog::error("File not found: {}", vault_path);
             return false;
+        }
+
+        if (meta->has_manifest && meta->chunks.empty()) {
+            if (!resolve_manifest(*meta, opts.password)) {
+                spdlog::error("Failed to resolve chunk manifest for: {}", vault_path);
+                return false;
+            }
         }
 
         if (meta->encrypted && opts.password.empty()) {
@@ -450,6 +600,13 @@ public:
         auto meta = find_metadata(vault_path);
         if (!meta) return false;
 
+        if (meta->has_manifest && meta->chunks.empty()) {
+            if (!resolve_manifest(*meta, opts.password)) {
+                spdlog::error("Failed to resolve chunk manifest for: {}", vault_path);
+                return false;
+            }
+        }
+
         if (meta->encrypted && opts.password.empty()) {
             spdlog::error("File is encrypted — password required for cat");
             return false;
@@ -498,7 +655,15 @@ public:
 
     std::optional<std::vector<uint8_t>> read_first_chunk(const std::string& vault_path, const VaultOptions& opts) {
         auto meta = find_metadata(vault_path);
-        if (!meta || meta->chunks.empty()) return std::nullopt;
+        if (!meta) return std::nullopt;
+
+        if (meta->has_manifest && meta->chunks.empty()) {
+            if (!resolve_manifest(*meta, opts.password)) {
+                return std::nullopt;
+            }
+        }
+
+        if (meta->chunks.empty()) return std::nullopt;
 
         if (meta->encrypted && opts.password.empty()) {
             spdlog::error("File is encrypted — password required");
@@ -543,22 +708,34 @@ public:
     // ── Disaster Recovery (Rebuild index from channel messages) ──────
     bool recover_index() {
         spdlog::info("Starting index recovery from channel history...");
-        auto history = tg.get_chat_history(channel_id_, 0, 100);
+        int64_t current_from = 0;
         int recovered = 0;
-        for (const auto& msg : history) {
-            if (msg.text.empty()) continue;
-            try {
-                auto j = nlohmann::json::parse(msg.text);
-                if (j.contains("id") && j.contains("chunks") && j.contains("name")) {
-                    auto meta = j.get<FileMetadata>();
-                    index_mgr->add_file(meta.id, msg.id);
-                    recovered++;
-                    spdlog::info("Recovered entry: fid={} name={} mid={}", meta.id, meta.name, msg.id);
+
+        while (true) {
+            auto history = tg.get_chat_history(channel_id_, current_from, 100);
+            if (history.empty()) break;
+            int64_t last_id = current_from;
+
+            for (const auto& msg : history) {
+                last_id = msg.id;
+                if (msg.text.empty()) continue;
+                try {
+                    auto j = nlohmann::json::parse(msg.text);
+                    if (j.contains("id") && j.contains("name") && (j.contains("chunks") || j.contains("has_manifest"))) {
+                        auto meta = j.get<FileMetadata>();
+                        index_mgr->add_file(meta.id, msg.id);
+                        recovered++;
+                        spdlog::info("Recovered entry: fid={} name={} mid={}", meta.id, meta.name, msg.id);
+                    }
+                } catch (...) {
+                    // Not a valid FileMetadata JSON message, ignore
                 }
-            } catch (...) {
-                // Not a valid FileMetadata JSON message, ignore
             }
+
+            if (last_id == current_from || history.size() < 100) break;
+            current_from = last_id;
         }
+
         if (recovered > 0) {
             index_mgr->save(channel_id_);
             spdlog::info("Recovery complete: {} files found and index updated", recovered);
@@ -570,6 +747,7 @@ public:
 
     // ── Filesystem operations ───────────────────────────────────────
     std::vector<FileEntry> list_files() const {
+        sync_with_channel();
         std::vector<FileEntry> entries;
         bool index_updated = false;
         spdlog::debug("list_files: index contains {} files", index_mgr->index().files.size());
@@ -596,6 +774,7 @@ public:
     }
 
     std::vector<FileEntry> list_trash() const {
+        sync_with_channel();
         std::vector<FileEntry> entries;
         for (auto& [fid, mid] : index_mgr->index().files) {
             auto meta = get_metadata(mid);
@@ -606,6 +785,7 @@ public:
     }
 
     std::vector<FileEntry> find_files(const std::string& query) const {
+        sync_with_channel();
         std::vector<FileEntry> results;
         auto lq = query;
         std::ranges::transform(lq, lq.begin(), [](char c) { return static_cast<char>(std::tolower(c)); });
@@ -627,6 +807,7 @@ public:
     }
 
     bool delete_file(const std::string& path, bool purge = false) {
+        sync_with_channel(true);
         for (auto& [fid, mid] : index_mgr->index().files) {
             auto meta = get_metadata(mid);
             if (!meta) continue;
@@ -671,6 +852,7 @@ public:
     }
 
     bool restore_file(const std::string& path) {
+        sync_with_channel(true);
         for (auto& [fid, mid] : index_mgr->index().files) {
             auto meta = get_metadata(mid);
             if (!meta) continue;
@@ -695,6 +877,7 @@ public:
     }
 
     bool empty_trash() {
+        sync_with_channel(true);
         std::vector<std::string> to_remove;
         for (auto& [fid, mid] : index_mgr->index().files) {
             auto meta = get_metadata(mid);
@@ -742,7 +925,81 @@ public:
     }
 
     // ── Helpers ─────────────────────────────────────────────────────
+    bool resolve_manifest(FileMetadata& meta, const std::string& password) const {
+        if (!meta.has_manifest || meta.manifest_message_id == 0) return true;
+        if (!meta.chunks.empty()) return true;
+
+        spdlog::debug("Resolving manifest document msg_id={} for file {}", meta.manifest_message_id, meta.name);
+        if (!tg.download_file_by_message(channel_id_, meta.manifest_message_id)) {
+            spdlog::error("Failed to download manifest document for {}", meta.name);
+            return false;
+        }
+
+        auto msg = tg.get_message(channel_id_, meta.manifest_message_id);
+        auto finfo = tg.get_file_info(msg.file_id);
+        if (!finfo || finfo->local_path.empty()) {
+            spdlog::error("Cannot locate manifest file on disk for {}", meta.name);
+            return false;
+        }
+
+        std::ifstream f(finfo->local_path, std::ios::binary | std::ios::ate);
+        if (!f) return false;
+        auto fsize = f.tellg();
+        f.seekg(0);
+        std::vector<uint8_t> data(fsize);
+        f.read(reinterpret_cast<char*>(data.data()), fsize);
+        f.close();
+
+        if (meta.encrypted) {
+            std::string salt_str = "televault" + std::to_string(channel_id_);
+            std::span<const uint8_t> fallback_salt(
+                reinterpret_cast<const uint8_t*>(salt_str.data()), salt_str.size());
+            try {
+                if (password.empty() && have_key) {
+                    data = decrypt_chunk(data, std::span<const uint8_t>(master_key));
+                } else {
+                    data = decrypt_chunk(data, password, fallback_salt);
+                }
+            } catch (const std::exception& e) {
+                spdlog::error("Failed to decrypt manifest document: {}", e.what());
+                return false;
+            }
+        }
+
+        try {
+            data = decompress_data(data);
+        } catch (const std::exception& e) {
+            spdlog::error("Failed to decompress manifest document: {}", e.what());
+            return false;
+        }
+
+        std::string manifest_str(data.begin(), data.end());
+        try {
+            auto j = nlohmann::json::parse(manifest_str);
+            if (j.is_array()) {
+                meta.chunks = j.get<std::vector<ChunkInfo>>();
+            } else if (j.contains("chunks") && j["chunks"].is_array()) {
+                meta.chunks = j["chunks"].get<std::vector<ChunkInfo>>();
+            }
+            {
+                std::lock_guard lock(cache_mutex_);
+                metadata_cache_[meta.metadata_message_id] = meta;
+            }
+            return true;
+        } catch (const std::exception& e) {
+            spdlog::error("Failed to parse manifest JSON: {}", e.what());
+            return false;
+        }
+    }
+
     std::optional<FileMetadata> get_metadata(int64_t msg_id) const {
+        {
+            std::lock_guard lock(cache_mutex_);
+            if (auto it = metadata_cache_.find(msg_id); it != metadata_cache_.end()) {
+                return it->second;
+            }
+        }
+
         auto try_parse = [this](int64_t id) -> std::optional<FileMetadata> {
             auto msg = tg.get_message(channel_id_, id);
             if (msg.text.empty()) return std::nullopt;
@@ -757,7 +1014,11 @@ public:
         };
 
         auto meta = try_parse(msg_id);
-        if (meta) return meta;
+        if (meta) {
+            std::lock_guard lock(cache_mutex_);
+            metadata_cache_[msg_id] = *meta;
+            return meta;
+        }
 
         // Self-healing: if msg_id was off (e.g. pinned notification or temp id offset), check nearby IDs
         int64_t seq = msg_id >> 20;
@@ -766,6 +1027,9 @@ public:
             auto adj_meta = try_parse(adj_id);
             if (adj_meta) {
                 spdlog::info("get_metadata: self-healed msg_id {} -> {}", msg_id, adj_id);
+                std::lock_guard lock(cache_mutex_);
+                metadata_cache_[msg_id] = *adj_meta;
+                metadata_cache_[adj_id] = *adj_meta;
                 return adj_meta;
             }
         }
@@ -777,6 +1041,9 @@ public:
         for (auto& [fid, mid] : index_mgr->index().files) {
             auto meta = get_metadata(mid);
             if (meta) {
+                if (meta->has_manifest && meta->chunks.empty()) {
+                    resolve_manifest(*meta, "");
+                }
                 for (const auto& c : meta->chunks) {
                     if (!c.original_hash.empty() && c.original_hash == original_hash && c.message_id != 0) {
                         return c;
@@ -796,6 +1063,7 @@ public:
     }
 
     std::vector<FileMetadata> find_all_matching(const std::string& query) const {
+        sync_with_channel();
         std::vector<FileMetadata> matches;
         std::string q_lower = to_lower(query);
 
@@ -820,6 +1088,7 @@ public:
     }
 
     std::optional<FileMetadata> find_metadata(const std::string& path) const {
+        sync_with_channel();
         // Pass 1: exact matches
         for (auto& [fid, mid] : index_mgr->index().files) {
             auto meta = get_metadata(mid);
@@ -853,7 +1122,16 @@ public:
         const VaultOptions& opts)
     {
         auto meta = find_metadata(vault_path);
-        if (!meta || meta->chunks.empty()) return std::nullopt;
+        if (!meta) return std::nullopt;
+
+        if (meta->has_manifest && meta->chunks.empty()) {
+            std::string pw = opts.password;
+            if (!resolve_manifest(*meta, pw)) {
+                return std::nullopt;
+            }
+        }
+
+        if (meta->chunks.empty()) return std::nullopt;
 
         if (start_byte >= meta->size) return std::vector<uint8_t>{};
         end_byte = std::min(end_byte, meta->size > 0 ? meta->size - 1 : 0);
@@ -995,6 +1273,10 @@ bool TeleVault::verify_file(const std::string& path) {
 
 bool TeleVault::recover_index() {
     return impl_->recover_index();
+}
+
+bool TeleVault::sync(bool force) {
+    return impl_->sync_with_channel(force);
 }
 
 } // namespace tv

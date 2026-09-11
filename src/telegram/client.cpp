@@ -48,6 +48,26 @@ static int32_t extract_file_id(const tda::message& msg) {
     return 0;
 }
 
+static std::optional<int> extract_flood_wait(const tda::error& err) {
+    if (err.code_ == 429 || err.message_.find("FLOOD_WAIT") != std::string::npos) {
+        auto pos = err.message_.find("FLOOD_WAIT_");
+        if (pos != std::string::npos) {
+            try {
+                return std::stoi(err.message_.substr(pos + 11));
+            } catch (...) {}
+        }
+        for (size_t i = 0; i < err.message_.size(); ++i) {
+            if (std::isdigit(static_cast<unsigned char>(err.message_[i]))) {
+                try {
+                    return std::stoi(err.message_.substr(i));
+                } catch (...) {}
+            }
+        }
+        return 5;
+    }
+    return std::nullopt;
+}
+
 static std::string extract_text(const tda::message& msg) {
     if (!msg.content_) return {};
     spdlog::debug("extract_text for msg {}: content_id={}", msg.id_, msg.content_->get_id());
@@ -149,7 +169,7 @@ static std::string compress_tv1(const std::string& text) {
 }
 
 static std::string maybe_compress(const std::string& text) {
-    if (text.size() <= 4096) {
+    if (text.size() <= 3000) {
         return text;
     }
     auto comp = compress_tv1(text);
@@ -388,97 +408,120 @@ public:
 
     // ── Message operations ──────────────────────────────────────────
     int64_t send_text(int64_t chat_id, const std::string& text, int64_t reply_to) {
-        auto send = make_object<tda::sendMessage>();
-        send->chat_id_ = chat_id;
-        if (reply_to > 0) {
-            send->reply_to_message_id_ = to_tdlib_msg_id(reply_to);
-        }
-
-        auto content = make_object<tda::inputMessageText>();
-        auto formatted = make_object<tda::formattedText>();
-        formatted->text_ = maybe_compress(text);
-        content->text_ = std::move(formatted);
-        send->input_message_content_ = std::move(content);
-
-        auto result = send_query_sync(std::move(send));
-        if (!result || result->get_id() != tda::message::ID) {
-            if (result && result->get_id() == tda::error::ID) {
-                auto& err = static_cast<tda::error&>(*result);
-                spdlog::error("send_text failed: {} (code {})", err.message_, err.code_);
+        for (int attempt = 0; attempt < 5; ++attempt) {
+            auto send = make_object<tda::sendMessage>();
+            send->chat_id_ = chat_id;
+            if (reply_to > 0) {
+                send->reply_to_message_id_ = to_tdlib_msg_id(reply_to);
             }
-            return 0;
+
+            auto content = make_object<tda::inputMessageText>();
+            auto formatted = make_object<tda::formattedText>();
+            formatted->text_ = maybe_compress(text);
+            content->text_ = std::move(formatted);
+            send->input_message_content_ = std::move(content);
+
+            auto result = send_query_sync(std::move(send));
+            if (!result || result->get_id() != tda::message::ID) {
+                if (result && result->get_id() == tda::error::ID) {
+                    auto& err = static_cast<tda::error&>(*result);
+                    if (auto wait_s = extract_flood_wait(err)) {
+                        spdlog::warn("send_text hit FLOOD_WAIT: backing off for {}s (attempt {}/5)", *wait_s, attempt + 1);
+                        std::this_thread::sleep_for(std::chrono::seconds(*wait_s + 1));
+                        continue;
+                    }
+                    spdlog::error("send_text failed: {} (code {})", err.message_, err.code_);
+                }
+                return 0;
+            }
+            auto& msg = static_cast<tda::message&>(*result);
+            return wait_for_send(msg.id_, msg.sending_state_);
         }
-        auto& msg = static_cast<tda::message&>(*result);
-        return wait_for_send(msg.id_, msg.sending_state_);
+        return 0;
     }
 
     int64_t send_file(int64_t chat_id, const std::string& file_path, int64_t reply_to) {
-        // 1. Upload file first
-        auto upload = make_object<tda::uploadFile>();
-        upload->file_ = make_object<tda::inputFileLocal>(file_path);
-        upload->file_type_ = make_object<tda::fileTypeDocument>();
+        for (int attempt = 0; attempt < 5; ++attempt) {
+            // 1. Upload file first
+            auto upload = make_object<tda::uploadFile>();
+            upload->file_ = make_object<tda::inputFileLocal>(file_path);
+            upload->file_type_ = make_object<tda::fileTypeDocument>();
+            upload->priority_ = 32;
 
-        // Wait for upload to complete and get file_id
-        struct UploadState {
-            int32_t file_id{};
-            uint64_t size{};
-            bool done{};
-        };
-        auto state = std::make_shared<UploadState>();
-
-        upload->priority_ = 32;
-        auto upload_result = send_query_sync(std::move(upload));
-
-        if (!upload_result || upload_result->get_id() != tda::file::ID) {
-            if (upload_result && upload_result->get_id() == tda::error::ID) {
-                auto& err = static_cast<tda::error&>(*upload_result);
-                spdlog::error("File upload failed: {} (code {})", err.message_, err.code_);
+            auto upload_result = send_query_sync(std::move(upload));
+            if (!upload_result || upload_result->get_id() != tda::file::ID) {
+                if (upload_result && upload_result->get_id() == tda::error::ID) {
+                    auto& err = static_cast<tda::error&>(*upload_result);
+                    if (auto wait_s = extract_flood_wait(err)) {
+                        spdlog::warn("uploadFile hit FLOOD_WAIT: backing off for {}s", *wait_s);
+                        std::this_thread::sleep_for(std::chrono::seconds(*wait_s + 1));
+                        continue;
+                    }
+                    spdlog::error("File upload failed: {} (code {})", err.message_, err.code_);
+                }
+                return 0;
             }
-            return 0;
+
+            auto& uploaded_file = static_cast<tda::file&>(*upload_result);
+
+            // 2. Send as document message
+            auto send = make_object<tda::sendMessage>();
+            send->chat_id_ = chat_id;
+            if (reply_to > 0) {
+                send->reply_to_message_id_ = to_tdlib_msg_id(reply_to);
+            }
+
+            auto doc = make_object<tda::inputMessageDocument>();
+            doc->document_ = make_object<tda::inputFileId>(uploaded_file.id_);
+            send->input_message_content_ = std::move(doc);
+
+            auto result = send_query_sync(std::move(send));
+            if (!result || result->get_id() != tda::message::ID) {
+                if (result && result->get_id() == tda::error::ID) {
+                    auto& err = static_cast<tda::error&>(*result);
+                    if (auto wait_s = extract_flood_wait(err)) {
+                        spdlog::warn("sendMessage document hit FLOOD_WAIT: backing off for {}s", *wait_s);
+                        std::this_thread::sleep_for(std::chrono::seconds(*wait_s + 1));
+                        continue;
+                    }
+                }
+                return 0;
+            }
+            auto& msg = static_cast<tda::message&>(*result);
+            return wait_for_send(msg.id_, msg.sending_state_);
         }
-
-        auto& uploaded_file = static_cast<tda::file&>(*upload_result);
-
-        // 2. Send as document message
-        auto send = make_object<tda::sendMessage>();
-        send->chat_id_ = chat_id;
-        if (reply_to > 0) {
-            send->reply_to_message_id_ = to_tdlib_msg_id(reply_to);
-        }
-
-        auto doc = make_object<tda::inputMessageDocument>();
-        doc->document_ = make_object<tda::inputFileId>(uploaded_file.id_);
-        send->input_message_content_ = std::move(doc);
-
-        auto result = send_query_sync(std::move(send));
-        if (!result || result->get_id() != tda::message::ID) {
-            return 0;
-        }
-        auto& msg = static_cast<tda::message&>(*result);
-        return wait_for_send(msg.id_, msg.sending_state_);
+        return 0;
     }
 
     bool edit_message(int64_t chat_id, int64_t msg_id, const std::string& text) {
-        auto edit = make_object<tda::editMessageText>();
-        edit->chat_id_ = chat_id;
-        edit->message_id_ = to_tdlib_msg_id(msg_id);
+        for (int attempt = 0; attempt < 5; ++attempt) {
+            auto edit = make_object<tda::editMessageText>();
+            edit->chat_id_ = chat_id;
+            edit->message_id_ = to_tdlib_msg_id(msg_id);
 
-        auto content = make_object<tda::inputMessageText>();
-        auto formatted = make_object<tda::formattedText>();
-        formatted->text_ = maybe_compress(text);
-        content->text_ = std::move(formatted);
-        edit->input_message_content_ = std::move(content);
+            auto content = make_object<tda::inputMessageText>();
+            auto formatted = make_object<tda::formattedText>();
+            formatted->text_ = maybe_compress(text);
+            content->text_ = std::move(formatted);
+            edit->input_message_content_ = std::move(content);
 
-        auto result = send_query_sync(std::move(edit));
-        if (!result || result->get_id() != tda::message::ID) {
-            if (result && result->get_id() == tda::error::ID) {
-                auto& err = static_cast<tda::error&>(*result);
-                spdlog::warn("edit_message failed for msg {}: {} (code {})",
-                             msg_id, err.message_, err.code_);
+            auto result = send_query_sync(std::move(edit));
+            if (!result || result->get_id() != tda::message::ID) {
+                if (result && result->get_id() == tda::error::ID) {
+                    auto& err = static_cast<tda::error&>(*result);
+                    if (auto wait_s = extract_flood_wait(err)) {
+                        spdlog::warn("edit_message hit FLOOD_WAIT: backing off for {}s", *wait_s);
+                        std::this_thread::sleep_for(std::chrono::seconds(*wait_s + 1));
+                        continue;
+                    }
+                    spdlog::warn("edit_message failed for msg {}: {} (code {})",
+                                 msg_id, err.message_, err.code_);
+                }
+                return false;
             }
-            return false;
+            return true;
         }
-        return true;
+        return false;
     }
 
     bool delete_messages(int64_t chat_id, const std::vector<int64_t>& msg_ids) {
@@ -554,34 +597,54 @@ public:
     TelegramClient::FileSendResult send_file_with_id(int64_t chat_id, const std::string& file_path, int64_t reply_to) {
         TelegramClient::FileSendResult result;
 
-        auto upload = make_object<tda::uploadFile>();
-        upload->file_ = make_object<tda::inputFileLocal>(file_path);
-        upload->file_type_ = make_object<tda::fileTypeDocument>();
-        upload->priority_ = 32;
+        for (int attempt = 0; attempt < 5; ++attempt) {
+            auto upload = make_object<tda::uploadFile>();
+            upload->file_ = make_object<tda::inputFileLocal>(file_path);
+            upload->file_type_ = make_object<tda::fileTypeDocument>();
+            upload->priority_ = 32;
 
-        auto upload_result = send_query_sync(std::move(upload));
-        if (!upload_result || upload_result->get_id() != tda::file::ID) {
-            spdlog::error("File upload failed");
-            return result;
-        }
+            auto upload_result = send_query_sync(std::move(upload));
+            if (!upload_result || upload_result->get_id() != tda::file::ID) {
+                if (upload_result && upload_result->get_id() == tda::error::ID) {
+                    auto& err = static_cast<tda::error&>(*upload_result);
+                    if (auto wait_s = extract_flood_wait(err)) {
+                        spdlog::warn("uploadFile hit FLOOD_WAIT: backing off for {}s", *wait_s);
+                        std::this_thread::sleep_for(std::chrono::seconds(*wait_s + 1));
+                        continue;
+                    }
+                }
+                spdlog::error("File upload failed");
+                return result;
+            }
 
-        auto& uploaded_file = static_cast<tda::file&>(*upload_result);
-        result.file_id = uploaded_file.id_;
+            auto& uploaded_file = static_cast<tda::file&>(*upload_result);
+            result.file_id = uploaded_file.id_;
 
-        auto send = make_object<tda::sendMessage>();
-        send->chat_id_ = chat_id;
-        if (reply_to > 0) {
-            send->reply_to_message_id_ = to_tdlib_msg_id(reply_to);
-        }
+            auto send = make_object<tda::sendMessage>();
+            send->chat_id_ = chat_id;
+            if (reply_to > 0) {
+                send->reply_to_message_id_ = to_tdlib_msg_id(reply_to);
+            }
 
-        auto doc = make_object<tda::inputMessageDocument>();
-        doc->document_ = make_object<tda::inputFileId>(uploaded_file.id_);
-        send->input_message_content_ = std::move(doc);
+            auto doc = make_object<tda::inputMessageDocument>();
+            doc->document_ = make_object<tda::inputFileId>(uploaded_file.id_);
+            send->input_message_content_ = std::move(doc);
 
-        auto send_result = send_query_sync(std::move(send));
-        if (send_result && send_result->get_id() == tda::message::ID) {
-            auto& msg = static_cast<tda::message&>(*send_result);
-            result.message_id = wait_for_send(msg.id_, msg.sending_state_);
+            auto send_result = send_query_sync(std::move(send));
+            if (send_result && send_result->get_id() == tda::error::ID) {
+                auto& err = static_cast<tda::error&>(*send_result);
+                if (auto wait_s = extract_flood_wait(err)) {
+                    spdlog::warn("sendMessage document hit FLOOD_WAIT: backing off for {}s", *wait_s);
+                    std::this_thread::sleep_for(std::chrono::seconds(*wait_s + 1));
+                    continue;
+                }
+            }
+            if (send_result && send_result->get_id() == tda::message::ID) {
+                auto& msg = static_cast<tda::message&>(*send_result);
+                result.message_id = wait_for_send(msg.id_, msg.sending_state_);
+                return result;
+            }
+            break;
         }
 
         return result;
@@ -715,10 +778,32 @@ public:
             return true;
         }
 
-        // Wait for updateFile to signal download completion
-        auto status = future.wait_for(std::chrono::seconds(180));
-        if (status == std::future_status::ready) {
-            return future.get();
+        // Wait for updateFile to signal download completion with progress-aware deadline
+        uint64_t last_downloaded = 0;
+        int idle_seconds = 0;
+        constexpr int kMaxIdleSeconds = 120;
+        constexpr int kMaxTotalSeconds = 1800;
+        int total_elapsed = 0;
+
+        while (total_elapsed < kMaxTotalSeconds) {
+            auto status = future.wait_for(std::chrono::seconds(5));
+            if (status == std::future_status::ready) {
+                return future.get();
+            }
+            total_elapsed += 5;
+            auto info = get_file_info(file_id);
+            if (info) {
+                if (info->downloaded_size > last_downloaded) {
+                    last_downloaded = info->downloaded_size;
+                    idle_seconds = 0;
+                } else {
+                    idle_seconds += 5;
+                    if (idle_seconds >= kMaxIdleSeconds) {
+                        spdlog::error("File download stalled for {}s on file_id {}", idle_seconds, file_id);
+                        break;
+                    }
+                }
+            }
         }
 
         std::lock_guard lock(self->download_mutex_);
@@ -845,7 +930,7 @@ private:
             pending_sends_[temp_id] = promise;
         }
 
-        auto status = future.wait_for(std::chrono::seconds(60));
+        auto status = future.wait_for(std::chrono::seconds(600));
         if (status == std::future_status::ready) {
             return to_tdlib_msg_id(future.get());
         }

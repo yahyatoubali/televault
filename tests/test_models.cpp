@@ -4,6 +4,8 @@
 #include "models/vault_index.hpp"
 #include "models/snapshot.hpp"
 #include "models/config.hpp"
+#include "core/journal.hpp"
+#include <filesystem>
 
 using namespace tv;
 
@@ -655,4 +657,92 @@ TEST(RetentionPolicyTest, DeserializeWithNullFields) {
     EXPECT_EQ(rp.daily, 7);
     EXPECT_EQ(rp.weekly, 4);
     EXPECT_EQ(rp.monthly, 6);
+}
+
+TEST(FileMetadataTest, ManifestFieldsRoundTrip) {
+    FileMetadata m;
+    m.id = "manifest_test_file";
+    m.name = "very_large_movie.mp4";
+    m.size = 1024ULL * 1024ULL * 1024ULL; // 1 GB
+    m.hash = "b3_full_hash_value";
+    m.encrypted = true;
+    m.compressed = false;
+    m.has_manifest = true;
+    m.manifest_message_id = 987654321;
+    m.total_chunks = 32;
+
+    // chunk_count() should return total_chunks even if chunks array is empty
+    EXPECT_EQ(m.chunk_count(), 32u);
+    EXPECT_TRUE(m.chunks.empty());
+
+    // Serialize to JSON
+    nlohmann::json j = m;
+    EXPECT_TRUE(j.value("has_manifest", false));
+    EXPECT_EQ(j.value("manifest_message_id", 0LL), 987654321LL);
+    EXPECT_EQ(j.value("total_chunks", 0u), 32u);
+
+    // Deserialize back
+    auto m2 = j.get<FileMetadata>();
+    EXPECT_TRUE(m2.has_manifest);
+    EXPECT_EQ(m2.manifest_message_id, 987654321LL);
+    EXPECT_EQ(m2.total_chunks, 32u);
+    EXPECT_EQ(m2.chunk_count(), 32u);
+    EXPECT_EQ(m2.id, m.id);
+    EXPECT_EQ(m2.name, m.name);
+    EXPECT_EQ(m2.size, m.size);
+}
+
+TEST(JournalTest, RecordAndRecoverChunks) {
+    std::string test_hash = "test_hash_abcdef1234567890";
+    std::string test_path = "/tmp/test_file.iso";
+    uint64_t test_size = 1000000;
+    int64_t meta_msg_id = 999123;
+
+    // Remove any previous journal
+    auto old_journal = UploadJournal::load(test_hash);
+    if (old_journal) {
+        old_journal->remove();
+    }
+    EXPECT_FALSE(UploadJournal::load(test_hash).has_value());
+
+    // Create and save a new journal
+    UploadJournal j(test_path, test_hash, test_size, meta_msg_id);
+    EXPECT_FALSE(j.has_chunk(0));
+    EXPECT_TRUE(j.uploaded_chunks().empty());
+
+    // Record chunk 0 and chunk 2
+    ChunkInfo c0{0, 1001, 10, 200000, 0, "hash0", "orig0"};
+    ChunkInfo c2{2, 1003, 12, 200000, 400000, "hash2", "orig2"};
+    j.record_chunk(c0);
+    j.record_chunk(c2);
+    EXPECT_TRUE(j.save());
+
+    EXPECT_TRUE(j.has_chunk(0));
+    EXPECT_FALSE(j.has_chunk(1));
+    EXPECT_TRUE(j.has_chunk(2));
+    EXPECT_EQ(j.uploaded_chunks().size(), 2u);
+
+    // Reload journal from disk
+    auto loaded = UploadJournal::load(test_hash);
+    ASSERT_TRUE(loaded.has_value());
+    EXPECT_EQ(loaded->file_hash(), test_hash);
+    EXPECT_EQ(loaded->file_path(), test_path);
+    EXPECT_EQ(loaded->file_size(), test_size);
+    EXPECT_EQ(loaded->meta_msg_id(), meta_msg_id);
+
+    EXPECT_TRUE(loaded->has_chunk(0));
+    EXPECT_FALSE(loaded->has_chunk(1));
+    EXPECT_TRUE(loaded->has_chunk(2));
+
+    auto chunk0 = loaded->get_chunk(0);
+    ASSERT_TRUE(chunk0.has_value());
+    EXPECT_EQ(chunk0->message_id, 1001);
+
+    auto chunk2 = loaded->get_chunk(2);
+    ASSERT_TRUE(chunk2.has_value());
+    EXPECT_EQ(chunk2->message_id, 1003);
+
+    // Clean up
+    loaded->remove();
+    EXPECT_FALSE(UploadJournal::load(test_hash).has_value());
 }

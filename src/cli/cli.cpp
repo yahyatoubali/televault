@@ -152,6 +152,8 @@ namespace {
         print_success("Logged out");
     }
 
+    void ensure_vault(AppContext& ctx);
+
     void cmd_setup(AppContext& ctx) {
         std::print("Enter Telegram channel ID (or 0 to create new): ");
         std::string input;
@@ -192,6 +194,16 @@ namespace {
         config.channel_id = channel_id;
         cfg.set(config);
         cfg.save();
+
+        try {
+            print_info("Synchronizing vault index with channel...");
+            ensure_vault(ctx);
+            ctx.vault->sync(true);
+            auto files = ctx.vault->list_files();
+            print_success(std::format("Vault synchronized: {} file(s) available", files.size()));
+        } catch (const std::exception& e) {
+            print_info(std::format("Vault sync note: {}", e.what()));
+        }
     }
 
     void cmd_channel(AppContext& ctx) {
@@ -802,6 +814,17 @@ complete -c tvt -n "__fish_seen_subcommand_from ls" -s w -l wide -d "Disable tru
         }
     }
 
+    void cmd_sync(AppContext& ctx) {
+        ensure_vault(ctx);
+        print_info("Synchronizing vault index with Telegram channel...");
+        if (ctx.vault->sync(true)) {
+            auto files = ctx.vault->list_files();
+            print_success(std::format("Sync complete: {} file(s) available in vault", files.size()));
+        } else {
+            print_error("Failed to synchronize with Telegram channel");
+        }
+    }
+
     // ── GC ────────────────────────────────────────────────────────────
     void cmd_gc(AppContext& ctx, bool force, bool clean_partials) {
         ctx.initialize();
@@ -1404,6 +1427,9 @@ void build_cli(CLI::App& app, AppContext& ctx) {
 
     auto* recover = app.add_subcommand("recover", "Reconstruct vault index from channel history");
     recover->callback([&ctx]() { cmd_recover(ctx); });
+
+    auto* sync_cmd = app.add_subcommand("sync", "Synchronize vault index across multiple machines");
+    sync_cmd->callback([&ctx]() { cmd_sync(ctx); });
 
     // ── GC ────────────────────────────────────────────────────────────
     struct GcArgs {

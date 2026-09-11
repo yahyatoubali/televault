@@ -110,8 +110,14 @@ struct FileMetadata {
     std::chrono::system_clock::time_point updated_at{created_at}; // Alias for modified_at
 
     int64_t metadata_message_id{0}; // Telegram metadata message ID
+    bool has_manifest{false};
+    int64_t manifest_message_id{0}; // Document message containing chunk manifest when chunks exceed inline text capacity
+    int64_t total_chunks{0};
 
-    [[nodiscard]] size_t chunk_count() const noexcept { return chunks.size(); }
+    [[nodiscard]] size_t chunk_count() const noexcept {
+        if (total_chunks > 0) return static_cast<size_t>(total_chunks);
+        return chunks.size();
+    }
     [[nodiscard]] uint64_t total_stored_size() const noexcept {
         uint64_t total = 0;
         for (const auto& c : chunks) total += c.size;
@@ -159,6 +165,13 @@ inline void to_json(nlohmann::json& j, const FileMetadata& m) {
     }
     if (m.version > 1) {
         j["version"] = m.version;
+    }
+    if (m.has_manifest) {
+        j["has_manifest"] = true;
+        j["manifest_message_id"] = m.manifest_message_id;
+    }
+    if (m.total_chunks > 0) {
+        j["total_chunks"] = m.total_chunks;
     }
 }
 
@@ -239,6 +252,24 @@ inline void from_json(const nlohmann::json& j, FileMetadata& m) {
         m.version = j["version"].get<int32_t>();
     } else {
         m.version = 1;
+    }
+
+    if (j.contains("has_manifest") && !j["has_manifest"].is_null()) {
+        m.has_manifest = j["has_manifest"].get<bool>();
+    } else {
+        m.has_manifest = false;
+    }
+
+    if (j.contains("manifest_message_id") && !j["manifest_message_id"].is_null()) {
+        m.manifest_message_id = j["manifest_message_id"].get<int64_t>();
+    } else {
+        m.manifest_message_id = 0;
+    }
+
+    if (j.contains("total_chunks") && !j["total_chunks"].is_null()) {
+        m.total_chunks = j["total_chunks"].get<int64_t>();
+    } else {
+        m.total_chunks = 0;
     }
 }
 
