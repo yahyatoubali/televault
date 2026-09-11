@@ -69,3 +69,47 @@ TEST(TuiTest, FilterFileIndices) {
     auto none_matches = tv::tui::filter_file_indices(files, "nonexistent");
     EXPECT_TRUE(none_matches.empty());
 }
+
+TEST(TuiTest, CategoryClassification) {
+    EXPECT_EQ(tv::tui::classify_category("movie.mp4"), tv::tui::FileFilterCategory::Media);
+    EXPECT_EQ(tv::tui::classify_category("track.mp3"), tv::tui::FileFilterCategory::Media);
+    EXPECT_EQ(tv::tui::classify_category("photo.PNG"), tv::tui::FileFilterCategory::Media);
+    EXPECT_TRUE(tv::tui::is_media_file("video.mkv"));
+    EXPECT_FALSE(tv::tui::is_media_file("document.pdf"));
+
+    EXPECT_EQ(tv::tui::classify_category("notes.md"), tv::tui::FileFilterCategory::Documents);
+    EXPECT_EQ(tv::tui::classify_category("report.pdf"), tv::tui::FileFilterCategory::Documents);
+    EXPECT_EQ(tv::tui::classify_category("main.cpp"), tv::tui::FileFilterCategory::Code);
+    EXPECT_EQ(tv::tui::classify_category("script.py"), tv::tui::FileFilterCategory::Code);
+    EXPECT_EQ(tv::tui::classify_category("backup.tar.gz"), tv::tui::FileFilterCategory::Archives);
+    EXPECT_EQ(tv::tui::classify_category("data.bin"), tv::tui::FileFilterCategory::Other);
+}
+
+TEST(TuiTest, CategorizedFiltering) {
+    std::vector<tv::FileEntry> files = {
+        {.id = "1", .name = "movie.mp4", .size = 1000},
+        {.id = "2", .name = "doc.pdf", .size = 200},
+        {.id = "3", .name = "song.mp3", .size = 500},
+        {.id = "4", .name = "main.cpp", .size = 150},
+    };
+
+    auto media = tv::tui::filter_file_indices_categorized(files, "", tv::tui::FileFilterCategory::Media);
+    ASSERT_EQ(media.size(), 2);
+    EXPECT_EQ(media[0], 0);
+    EXPECT_EQ(media[1], 2);
+
+    auto code = tv::tui::filter_file_indices_categorized(files, "", tv::tui::FileFilterCategory::Code);
+    ASSERT_EQ(code.size(), 1);
+    EXPECT_EQ(code[0], 3);
+
+    auto docs = tv::tui::filter_file_indices_categorized(files, "", tv::tui::FileFilterCategory::Documents);
+    ASSERT_EQ(docs.size(), 1);
+    EXPECT_EQ(docs[0], 1);
+}
+
+TEST(TuiTest, DefaultOpenerCommand) {
+    std::string cmd = tv::tui::get_default_opener_command("/tmp/test.mp4");
+    EXPECT_FALSE(cmd.empty());
+    EXPECT_NE(cmd.find("test.mp4"), std::string::npos);
+}
+
