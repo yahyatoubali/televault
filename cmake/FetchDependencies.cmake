@@ -76,7 +76,13 @@ FetchContent_MakeAvailable(
 )
 
 if(TV_BUILD_TDLIB AND NOT Td_FOUND)
+    # TDLib v1.8.0 is a C++14-era codebase: newer language modes break it
+    # (recent libc++ rejects incomplete-type traits it relies on, e.g. on
+    # Xcode 16), so configure it explicitly as C++14 while our own code
+    # stays on the top-level C++23 setting.
+    set(CMAKE_CXX_STANDARD 14)
     FetchContent_MakeAvailable(tdlib)
+    set(CMAKE_CXX_STANDARD 23)
     if(TARGET tdclient AND NOT TARGET Td::tdclient)
         add_library(Td::tdclient ALIAS tdclient)
         add_library(Td::tdcore ALIAS tdcore)

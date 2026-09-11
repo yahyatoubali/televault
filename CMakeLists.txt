@@ -99,6 +99,23 @@ if(NOT BLAKE3_FOUND)
 endif()
 
 # ── Fetched dependencies ──────────────────────────────────────────────
+# TDLib v1.8.0 compat: these flags must be set BEFORE FetchContent
+# configures the tdlib subproject below, otherwise they never apply to
+# TDLib's own targets (directory-scoped options only affect targets
+# created afterwards):
+#  -fno-char8_t restores C++17 u8-literal behavior (TDLib predates C++20
+#   char8_t and fails with "conversion from 'const char8_t[N]'" errors);
+#  -Wno-error=register* neutralizes TDLib gperf output's `register`
+#   keyword, which AppleClang promotes to an error. The C++14 spelling
+#   only exists on Clang (GCC rejects the unknown option outright).
+if(TV_BUILD_TDLIB AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_compile_options(-fno-char8_t)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        add_compile_options(-Wno-error=register -Wno-error=deprecated-register)
+    else()
+        add_compile_options(-Wno-error=register)
+    endif()
+endif()
 include(FetchContent)
 include(cmake/FetchDependencies.cmake)
 
