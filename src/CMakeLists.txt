@@ -75,13 +75,13 @@ endif()
 
 # ── Application & Services Layer ───────────────────────────────────────
 set(APP_SOURCES
-    cli/cli.cpp
-    cli/progress.cpp
+    cmdline/cli.cpp
+    cmdline/progress.cpp
 )
 
 set(APP_HEADERS
-    cli/cli.hpp
-    cli/progress.hpp
+    cmdline/cli.hpp
+    cmdline/progress.hpp
 )
 
 if(TV_BUILD_TDLIB)
