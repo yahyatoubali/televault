@@ -63,10 +63,13 @@ target_link_libraries(tv_core PUBLIC
 )
 
 if(TV_STATIC_LIBSTDCXX AND TARGET PkgConfig::BLAKE3)
-    get_target_property(_blake3_libs PkgConfig::BLAKE3 INTERFACE_LINK_LIBRARIES)
-    if(_blake3_libs)
-        list(FILTER _blake3_libs EXCLUDE REGEX "stdc\\+\\+")
-        set_target_properties(PkgConfig::BLAKE3 PROPERTIES INTERFACE_LINK_LIBRARIES "${_blake3_libs}")
+    get_target_property(_aliased_blake3 PkgConfig::BLAKE3 ALIASED_TARGET)
+    if(NOT _aliased_blake3)
+        get_target_property(_blake3_libs PkgConfig::BLAKE3 INTERFACE_LINK_LIBRARIES)
+        if(_blake3_libs)
+            list(FILTER _blake3_libs EXCLUDE REGEX "stdc\\+\\+")
+            set_target_properties(PkgConfig::BLAKE3 PROPERTIES INTERFACE_LINK_LIBRARIES "${_blake3_libs}")
+        endif()
     endif()
 endif()
 

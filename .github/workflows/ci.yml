@@ -82,6 +82,7 @@ jobs:
 
           cmake -B build \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DTV_BUILD_TDLIB=ON \
             -DTV_BUILD_TESTS=ON \
             -DTV_BUILD_FUSE=ON \
@@ -119,6 +120,7 @@ jobs:
           cmake -B build-minimal \
             -DCMAKE_CXX_COMPILER=g++-14 \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
             -DTV_BUILD_TDLIB=ON \
             -DTV_BUILD_TESTS=ON \
             -DTV_BUILD_FUSE=OFF \

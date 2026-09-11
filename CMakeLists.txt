@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
+set(CMAKE_POLICY_VERSION_MINIMUM "3.5" CACHE STRING "Minimum policy version for subprojects")
 project(televault
     VERSION 4.0.1
     DESCRIPTION "Encrypted cloud storage on Telegram channels"
