@@ -1,7 +1,7 @@
 class Televault < Formula
   desc "Encrypted, high-performance cloud storage powered by Telegram (C++23)"
   homepage "https://github.com/yahyatoubali/televault"
-  version "4.0.0"
+  version "4.0.1"
   license "MIT"
 
   on_macos do

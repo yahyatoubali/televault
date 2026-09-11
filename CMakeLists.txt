@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 project(televault
-    VERSION 4.0.0
+    VERSION 4.0.1
     DESCRIPTION "Encrypted cloud storage on Telegram channels"
     LANGUAGES CXX C
 )
