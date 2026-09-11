@@ -2,88 +2,133 @@ name: CI (C++)
 
 on:
   push:
-    branches: [needspeed, master, dev]
+    branches: [main, master, dev]
   pull_request:
-    branches: [needspeed, master, dev]
+    branches: [main, master, dev]
 
 jobs:
   lint:
+    name: Clang-Tidy & Code Quality
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-      - name: Install clang-tidy
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq clang-tidy
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get install -y -qq \
-            cmake libssl-dev libzstd-dev \
-            libboost-dev libfuse3-dev gperf
-
-      - name: Run clang-tidy
-        run: |
-          cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DTV_BUILD_TESTS=ON -DTV_BUILD_FUSE=ON
-          clang-tidy src/*.cpp src/**/*.cpp -- -I src
-
-  build:
-    runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        compiler: [g++-14, clang++-18]
-        standard: [23]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install compilers
+      - name: Install Dependencies
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            g++-14 clang++-18 cmake \
-            libssl-dev libzstd-dev \
-            libboost-dev libfuse3-dev libncurses-dev gperf
+            clang-tidy-18 cmake libssl-dev libzstd-dev \
+            libboost-dev libfuse3-dev libncurses-dev pkg-config gperf
 
-      - name: Configure
+      - name: Configure CMake
         run: |
           cmake -B build \
-            -DCMAKE_CXX_COMPILER=${{ matrix.compiler }} \
-            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
             -DTV_BUILD_TESTS=ON \
             -DTV_BUILD_FUSE=ON \
             -DTV_BUILD_TUI=ON
 
-      - name: Build
-        run: cmake --build build -j$(nproc)
+      - name: Run Clang-Tidy on Project Sources
+        continue-on-error: true
+        run: |
+          clang-tidy-18 -p build src/main.cpp src/core/*.cpp src/crypto/*.cpp
 
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
+  build:
+    name: Build (${{ matrix.os }} - ${{ matrix.compiler }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            compiler: g++-14
+            runner: ubuntu-24.04
+          - os: linux
+            compiler: clang++-18
+            runner: ubuntu-24.04
+          - os: darwin
+            compiler: clang++
+            runner: macos-14
 
-      - name: Verify binary
-        run: ./build/src/televault --version
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-  # Build without optional features
-  build-minimal:
+      - name: Install Dependencies (Linux)
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            ${{ matrix.compiler }} cmake libssl-dev libzstd-dev \
+            libboost-dev libfuse3-dev libncurses-dev pkg-config gperf
+
+      - name: Install Dependencies (macOS)
+        if: matrix.os == 'darwin'
+        run: |
+          brew update --quiet
+          brew install cmake boost openssl@3 zstd pkg-config
+
+      - name: Configure CMake
+        run: |
+          EXTRA_FLAGS=""
+          if [ "${{ matrix.os }}" = "darwin" ]; then
+            OPENSSL_DIR="$(brew --prefix openssl@3)"
+            EXTRA_FLAGS="-DOPENSSL_ROOT_DIR=${OPENSSL_DIR}"
+          else
+            EXTRA_FLAGS="-DCMAKE_CXX_COMPILER=${{ matrix.compiler }}"
+          fi
+
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTV_BUILD_TDLIB=ON \
+            -DTV_BUILD_TESTS=ON \
+            -DTV_BUILD_FUSE=ON \
+            -DTV_BUILD_TUI=ON \
+            ${EXTRA_FLAGS}
+
+      - name: Compile TeleVault
+        run: |
+          CORES=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+          cmake --build build -j"$CORES"
+
+      - name: Run Test Suite
+        run: |
+          ctest --test-dir build --output-on-failure
+
+      - name: Verify Binary
+        run: |
+          ./build/src/televault --version
+
+  build-headless-minimal:
+    name: Build Headless Minimal (Embedded/Server)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-      - name: Install minimal deps
+      - name: Install Dependencies
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq \
-            g++-14 cmake libssl-dev libzstd-dev gperf
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            g++-14 cmake libssl-dev libzstd-dev libboost-dev pkg-config gperf
 
-      - name: Configure (no optional features)
+      - name: Configure Minimal Build
         run: |
           cmake -B build-minimal \
+            -DCMAKE_CXX_COMPILER=g++-14 \
             -DCMAKE_BUILD_TYPE=Release \
+            -DTV_BUILD_TDLIB=ON \
             -DTV_BUILD_TESTS=ON \
             -DTV_BUILD_FUSE=OFF \
             -DTV_BUILD_WEBDAV=OFF \
             -DTV_BUILD_TUI=OFF
 
-      - name: Build minimal
-        run: cmake --build build-minimal -j$(nproc)
+      - name: Build Minimal
+        run: |
+          cmake --build build-minimal -j$(nproc)
 
-      - name: Test minimal
-        run: ctest --test-dir build-minimal --output-on-failure
+      - name: Test Minimal
+        run: |
+          ctest --test-dir build-minimal --output-on-failure

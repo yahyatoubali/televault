@@ -10,6 +10,13 @@
 #include <openssl/params.h>
 #include <openssl/core_names.h>
 
+#ifndef OSSL_KDF_PARAM_ARGON2_MEMCOST
+#define OSSL_KDF_PARAM_ARGON2_MEMCOST "memcost"
+#endif
+#ifndef OSSL_KDF_PARAM_ARGON2_LANES
+#define OSSL_KDF_PARAM_ARGON2_LANES "lanes"
+#endif
+
 namespace tv {
 
 static constexpr uint64_t SCRYPT_N = 1 << 17;  // 131072
