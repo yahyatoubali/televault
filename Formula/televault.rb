@@ -1,27 +1,30 @@
 class Televault < Formula
-  desc "Encrypted, high-performance cloud storage powered by Telegram"
+  desc "Encrypted, high-performance cloud storage powered by Telegram (C++23)"
   homepage "https://github.com/yahyatoubali/televault"
-  url "https://github.com/yahyatoubali/televault/archive/refs/tags/v4.0.0.tar.gz"
+  version "4.0.0"
   license "MIT"
-  head "https://github.com/yahyatoubali/televault.git", branch: "main"
 
-  depends_on "cmake" => :build
-  depends_on "pkg-config" => :build
-  depends_on "boost"
-  depends_on "openssl@3"
-  depends_on "zstd"
+  on_macos do
+    on_arm do
+      url "https://github.com/yahyatoubali/televault/releases/download/v#{version}/televault-v#{version}-darwin-arm64.tar.gz"
+    end
+    on_intel do
+      url "https://github.com/yahyatoubali/televault/releases/download/v#{version}/televault-v#{version}-darwin-x86_64.tar.gz"
+    end
+  end
+
+  on_linux do
+    on_intel do
+      url "https://github.com/yahyatoubali/televault/releases/download/v#{version}/televault-v#{version}-linux-x86_64.tar.gz"
+    end
+    on_arm do
+      url "https://github.com/yahyatoubali/televault/releases/download/v#{version}/televault-v#{version}-linux-aarch64.tar.gz"
+    end
+  end
 
   def install
-    args = std_cmake_args + %w[
-      -DCMAKE_BUILD_TYPE=Release
-      -DTV_BUILD_TESTS=OFF
-      -DTV_BUILD_TUI=ON
-      -DTV_BUILD_TDLIB=OFF
-    ]
-
-    system "cmake", "-S", ".", "-B", "build", *args
-    system "cmake", "--build", "build"
-    system "cmake", "--install", "build"
+    bin.install "televault"
+    bin.install_symlink "televault" => "tvt"
   end
 
   test do

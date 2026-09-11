@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-binaries:
+    name: Build (${{ matrix.os }}-${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: x86_64
+            runner: ubuntu-24.04
+          - os: darwin
+            arch: arm64
+            runner: macos-14
+          - os: darwin
+            arch: x86_64
+            runner: macos-13
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Parse Release Tag
+        id: vars
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG_NAME#v}"
+          echo "tag=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Install Dependencies (Linux)
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            g++-14 cmake libssl-dev libzstd-dev libblake3-dev \
+            libboost-dev libfuse3-dev libncurses-dev pkg-config
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
+
+      - name: Install Dependencies (macOS)
+        if: matrix.os == 'darwin'
+        run: |
+          brew update --quiet
+          brew install cmake boost openssl@3 zstd pkg-config
+
+      - name: Configure CMake
+        run: |
+          EXTRA_FLAGS=""
+          if [ "${{ matrix.os }}" = "darwin" ]; then
+            OPENSSL_DIR="$(brew --prefix openssl@3)"
+            EXTRA_FLAGS="-DOPENSSL_ROOT_DIR=${OPENSSL_DIR}"
+          fi
+
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DTV_BUILD_TDLIB=ON \
+            -DTV_BUILD_TUI=ON \
+            -DTV_BUILD_TESTS=ON \
+            ${EXTRA_FLAGS}
+
+      - name: Compile TeleVault
+        run: |
+          CORES=$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+          cmake --build build --config Release -j"$CORES"
+
+      - name: Run Test Suite
+        run: |
+          ctest --test-dir build --output-on-failure
+
+      - name: Package Binary Release Archive
+        run: |
+          chmod +x scripts/package_release.sh
+          ./scripts/package_release.sh "${{ steps.vars.outputs.version }}" "${{ matrix.arch }}" "build/src/televault"
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: televault-${{ steps.vars.outputs.tag }}-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare Release Assets & Checksums
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.sha256" \) -exec cp {} release-assets/ \;
+          cd release-assets
+          sha256sum *.tar.gz > SHA256SUMS.txt
+          echo "=== Release Assets ==="
+          ls -la
+          echo "=== SHA256SUMS.txt ==="
+          cat SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false

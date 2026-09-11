@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Determine project root
+# ── TeleVault Package Release Script ─────────────────────────────────────────
+# Packages compiled binaries into distribution tarballs with SHA256 checksums
+# ─────────────────────────────────────────────────────────────────────────────
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-VERSION="${1:-3.5.0}"
+VERSION="${1:-4.0.0}"
+VERSION="${VERSION#v}"
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="${2:-$(uname -m)}"
 
@@ -24,13 +28,7 @@ case "$ARCH" in
 esac
 
 get_cpu_cores() {
-    if command -v nproc >/dev/null 2>&1; then
-        nproc
-    elif command -v sysctl >/dev/null 2>&1; then
-        sysctl -n hw.ncpu 2>/dev/null || echo 4
-    else
-        echo 4
-    fi
+    getconf _NPROCESSORS_ONLN 2>/dev/null || nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4
 }
 
 calc_sha256() {
@@ -45,8 +43,9 @@ calc_sha256() {
 }
 
 DIST_DIR="$ROOT_DIR/dist"
-STAGE_DIR="$ROOT_DIR/build/stage/televault-v${VERSION}-${OS}-${ARCH}"
-ARCHIVE_NAME="televault-v${VERSION}-${OS}-${ARCH}.tar.gz"
+STAGE_NAME="televault-v${VERSION}-${OS}-${ARCH}"
+STAGE_DIR="$ROOT_DIR/build/stage/${STAGE_NAME}"
+ARCHIVE_NAME="${STAGE_NAME}.tar.gz"
 
 BINARY_PATH="${3:-$ROOT_DIR/build/src/televault}"
 SKIP_BUILD="${SKIP_BUILD:-0}"
@@ -59,34 +58,42 @@ if [ "$SKIP_BUILD" != "1" ] && [ ! -f "$BINARY_PATH" ]; then
         -DCMAKE_BUILD_TYPE=Release \
         -DTV_BUILD_TDLIB=ON \
         -DTV_BUILD_TESTS=ON \
-        -DTV_BUILD_FUSE=OFF \
-        -DTV_BUILD_WEBDAV=OFF \
         -DTV_BUILD_TUI=ON
 
     cmake --build . --target televault -j"$(get_cpu_cores)"
+    cd "$ROOT_DIR"
 fi
 
 if [ ! -f "$BINARY_PATH" ]; then
-    echo "Error: Binary not found at $BINARY_PATH" >&2
+    echo "❌ Error: Binary not found at $BINARY_PATH" >&2
     exit 1
 fi
 
 echo "==> Packaging release archive for ${OS}-${ARCH}..."
+rm -rf "$STAGE_DIR"
 mkdir -p "$DIST_DIR" "$STAGE_DIR"
+
 cp "$BINARY_PATH" "$STAGE_DIR/televault"
-strip "$STAGE_DIR/televault" 2>/dev/null || true
+chmod +x "$STAGE_DIR/televault"
+
+# Strip symbols to minimize binary size
+if [ "$OS" = "darwin" ]; then
+    strip -S "$STAGE_DIR/televault" 2>/dev/null || true
+else
+    strip --strip-all "$STAGE_DIR/televault" 2>/dev/null || strip "$STAGE_DIR/televault" 2>/dev/null || true
+fi
+
+# Create convenient symlink
 ln -sf televault "$STAGE_DIR/tvt"
+
 cp "$ROOT_DIR/README.md" "$STAGE_DIR/" 2>/dev/null || true
 cp "$ROOT_DIR/LICENSE" "$STAGE_DIR/" 2>/dev/null || true
 
-tar -czf "$DIST_DIR/$ARCHIVE_NAME" -C "$ROOT_DIR/build/stage" "televault-v${VERSION}-${OS}-${ARCH}"
-cp "$STAGE_DIR/televault" "$DIST_DIR/televault-v${VERSION}-${OS}-${ARCH}"
+tar -czf "$DIST_DIR/$ARCHIVE_NAME" -C "$ROOT_DIR/build/stage" "${STAGE_NAME}"
 
 cd "$DIST_DIR"
 calc_sha256 "$ARCHIVE_NAME" > "${ARCHIVE_NAME}.sha256"
-calc_sha256 "televault-v${VERSION}-${OS}-${ARCH}" > "televault-v${VERSION}-${OS}-${ARCH}.sha256"
 
-echo "==> Created release archive at: $DIST_DIR/$ARCHIVE_NAME"
-echo "==> SHA256 (archive): $(cat "${ARCHIVE_NAME}.sha256")"
-echo "==> Created binary at: $DIST_DIR/televault-v${VERSION}-${OS}-${ARCH}"
-echo "==> SHA256 (binary):  $(cat "televault-v${VERSION}-${OS}-${ARCH}.sha256")"
+echo "==> Release packaging complete:"
+echo "    Archive:  $DIST_DIR/$ARCHIVE_NAME"
+echo "    SHA256:   $(cat "${ARCHIVE_NAME}.sha256")"
