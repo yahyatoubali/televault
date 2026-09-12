@@ -804,7 +804,12 @@ complete -c tvt -n "__fish_seen_subcommand_from ls" -s w -l wide -d "Disable tru
             std::println("Hash:      {}", info->hash);
             std::println("Encrypted: {}", info->encrypted ? "yes" : "no");
             std::println("Compressed:{}", info->compressed ? "yes" : "no");
-            std::println("Chunks:    {}", info->chunks.size());
+            if (info->has_manifest) {
+                std::println("Chunks:    {} (via manifest doc {})",
+                             info->chunk_count(), info->manifest_message_id);
+            } else {
+                std::println("Chunks:    {}", info->chunks.size());
+            }
         }
     }
 
@@ -1751,7 +1756,9 @@ void build_cli(CLI::App& app, AppContext& ctx) {
     trash_list->callback([&ctx]() { cmd_trash_list(ctx); });
     auto* trash_empty = trash->add_subcommand("empty", "Permanently remove all files in trash");
     trash_empty->callback([&ctx]() { cmd_trash_empty(ctx); });
-    trash->callback([&ctx]() { cmd_trash_list(ctx); });
+    // NOTE: no group-level callback here on purpose — CLI11 also runs the
+    // parent callback when a subcommand matches, which printed the trash
+    // table twice for `tvt trash list`.
 
     auto restore_path = std::make_shared<std::string>();
     auto* restore = app.add_subcommand("restore", "Restore file from encrypted trash");

@@ -66,7 +66,11 @@ jobs:
             OPENSSL_DIR="$(brew --prefix openssl@3)"
             EXTRA_FLAGS="-DOPENSSL_ROOT_DIR=${OPENSSL_DIR} -DTV_BUILD_FUSE=OFF"
           elif [ "${{ matrix.os }}" = "linux" ]; then
-            EXTRA_FLAGS="-DTV_STATIC_LIBSTDCXX=ON"
+            # TV_PORTABLE statically links libstdc++/libgcc and prefers
+            # static zstd/fuse3 archives, so the binary has no
+            # libfuse3.so.3-vs-.so.4 / libstdc++ version skew across
+            # distros (STATIC_LIBSTDCXX alone still leaves libfuse3 dynamic).
+            EXTRA_FLAGS="-DTV_STATIC_LIBSTDCXX=ON -DTV_PORTABLE=ON"
           fi
 
           cmake -B build \

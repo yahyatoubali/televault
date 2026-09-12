@@ -49,7 +49,7 @@ if [ -z "$VERSION" ]; then
     if [ -n "$LATEST_TAG" ] && [ "$LATEST_TAG" != "null" ]; then
         VERSION="${LATEST_TAG#v}"
     else
-        VERSION="4.0.2"
+        VERSION="4.0.3"
     fi
 else
     VERSION="${VERSION#v}"

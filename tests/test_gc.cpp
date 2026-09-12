@@ -45,3 +45,34 @@ TEST(GcTest, KeepsReferencedAndUserText) {
 TEST(GcTest, EmptyHistoryNoOrphans) {
     EXPECT_TRUE(find_orphans({}, {1, 2, 3}).empty());
 }
+
+TEST(GcTest, MarkFileReferencesCoversManifest) {
+    // Regression: a manifest document looks exactly like an orphan chunk
+    // doc (empty caption). If collect_garbage does not mark it, --force
+    // deletes the file's entire chunk mapping (unrecoverable data loss).
+    FileMetadata meta;
+    meta.metadata_message_id = 500 << 20;
+    meta.manifest_message_id = 501 << 20;
+    ChunkInfo c;
+    c.message_id = 502 << 20;
+    c.channel_id = 0;
+    meta.chunks.push_back(c);
+    ChunkInfo shard;
+    shard.message_id = 503 << 20;
+    shard.channel_id = 999; // other channel: must NOT be marked here
+    meta.chunks.push_back(shard);
+
+    std::unordered_set<int64_t> referenced;
+    mark_file_references(referenced, meta, 100);
+
+    EXPECT_TRUE(referenced.count(normalize_message_id(500 << 20)));
+    EXPECT_TRUE(referenced.count(normalize_message_id(501 << 20)));
+    EXPECT_TRUE(referenced.count(normalize_message_id(502 << 20)));
+    EXPECT_FALSE(referenced.count(normalize_message_id(503 << 20)));
+
+    // ...and therefore find_orphans never reports the manifest doc.
+    std::vector<std::pair<int64_t, std::string>> history = {
+        {501 << 20, ""}, // manifest document, empty caption
+    };
+    EXPECT_TRUE(find_orphans(history, referenced).empty());
+}

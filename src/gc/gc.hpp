@@ -4,6 +4,7 @@
 #include <vector>
 #include <cstdint>
 #include <unordered_set>
+#include "../models/file_metadata.hpp"
 
 namespace tv {
 
@@ -40,6 +41,13 @@ struct GarbageCollectionResult {
 [[nodiscard]] std::vector<OrphanInfo> find_orphans(
     const std::vector<std::pair<int64_t, std::string>>& history,
     const std::unordered_set<int64_t>& referenced);
+
+// Marks every message a file's metadata references: the metadata message
+// itself, all same-channel chunks, and the manifest document (large files
+// keep their chunk list out of line in a manifest doc that is otherwise
+// indistinguishable from an orphan chunk — it must never be collected).
+void mark_file_references(std::unordered_set<int64_t>& referenced,
+                          const FileMetadata& meta, int64_t channel_id);
 
 // Full scan: builds the referenced set from the pinned index, every
 // indexed file (live + trashed) and the snapshot index, pages channel

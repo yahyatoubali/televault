@@ -1,7 +1,7 @@
 class Televault < Formula
   desc "Encrypted, high-performance cloud storage powered by Telegram (C++23)"
   homepage "https://github.com/yahyatoubali/televault"
-  version "4.0.2"
+  version "4.0.3"
   license "MIT"
 
   # Prebuilt release binaries (fast install). Per-asset sha256 values are

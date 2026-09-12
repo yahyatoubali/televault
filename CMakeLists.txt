@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.22)
 # rejects unless the policy floor is lowered. Required for FetchContent tdlib.
 set(CMAKE_POLICY_VERSION_MINIMUM "3.5" CACHE STRING "Minimum policy version for subprojects")
 project(televault
-    VERSION 4.0.2
+    VERSION 4.0.3
     DESCRIPTION "Encrypted cloud storage on Telegram channels"
     LANGUAGES CXX C
 )

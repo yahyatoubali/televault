@@ -934,6 +934,25 @@ public:
         auto meta = find_metadata(path);
         if (!meta) return false;
 
+        // Manifest-backed files keep chunks out-of-line; the manifest
+        // document itself must exist for the file to be recoverable.
+        if (meta->has_manifest) {
+            if (meta->manifest_message_id == 0) {
+                spdlog::error("File {} has manifest flag but no manifest message id", path);
+                return false;
+            }
+            auto mmsg = tg.get_message(channel_id_, meta->manifest_message_id);
+            if (mmsg.id == 0) {
+                spdlog::error("Manifest document message not found for {}", path);
+                return false;
+            }
+            if (!meta->chunks.empty()) {
+                spdlog::warn("File {} has both manifest and inline chunks; checking both", path);
+            } else {
+                return true;
+            }
+        }
+
         for (auto& ci : meta->chunks) {
             int64_t chunk_mid = (ci.message_id != 0) ? ci.message_id : meta->metadata_message_id;
             auto msg = tg.get_message(channel_id_, chunk_mid);

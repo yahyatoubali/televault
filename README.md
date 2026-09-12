@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/version-4.0.2-blue?style=flat-square" alt="version">
+  <img src="https://img.shields.io/badge/version-4.0.3-blue?style=flat-square" alt="version">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="license">
   <img src="https://img.shields.io/badge/C++-23-yellow?style=flat-square" alt="cpp">
   <img src="https://img.shields.io/badge/os-Linux%20%7C%20macOS-informational?style=flat-square" alt="os">
@@ -39,7 +39,7 @@
 
 ## Why TeleVault?
 
-| Feature | TeleVault v4.0.2 | Traditional Cloud Storage |
+| Feature | TeleVault v4.0.3 | Traditional Cloud Storage |
 |---|---|---|
 | **Cost** | 100% Free (your Telegram account) | $5 - $30 / month |
 | **Storage Limit** | Unlimited | 15 GB - 2 TB |
@@ -85,11 +85,11 @@ case "${OS}-${ARCH}" in
 esac
 
 # Download, verify checksum, and unpack
-curl -sLO "https://github.com/yahyatoubali/televault/releases/latest/download/televault-v4.0.2-${TARGET}.tar.gz"
-curl -sLO "https://github.com/yahyatoubali/televault/releases/latest/download/televault-v4.0.2-${TARGET}.tar.gz.sha256"
-sha256sum -c "televault-v4.0.2-${TARGET}.tar.gz.sha256" || shasum -a 256 -c "televault-v4.0.2-${TARGET}.tar.gz.sha256"
-tar -xzf "televault-v4.0.2-${TARGET}.tar.gz"
-cd "televault-v4.0.2-${TARGET}"
+curl -sLO "https://github.com/yahyatoubali/televault/releases/latest/download/televault-v4.0.3-${TARGET}.tar.gz"
+curl -sLO "https://github.com/yahyatoubali/televault/releases/latest/download/televault-v4.0.3-${TARGET}.tar.gz.sha256"
+sha256sum -c "televault-v4.0.3-${TARGET}.tar.gz.sha256" || shasum -a 256 -c "televault-v4.0.3-${TARGET}.tar.gz.sha256"
+tar -xzf "televault-v4.0.3-${TARGET}.tar.gz"
+cd "televault-v4.0.3-${TARGET}"
 
 # Install to system PATH
 sudo cp televault /usr/local/bin/televault

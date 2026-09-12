@@ -55,6 +55,22 @@ std::vector<OrphanInfo> find_orphans(
     return out;
 }
 
+void mark_file_references(std::unordered_set<int64_t>& referenced,
+                          const FileMetadata& meta, int64_t channel_id) {
+    auto mark = [&](int64_t id) {
+        if (id != 0) referenced.insert(normalize_message_id(id));
+    };
+    mark(meta.metadata_message_id);
+    for (auto& c : meta.chunks) {
+        if (c.channel_id == 0 || c.channel_id == channel_id) mark(c.message_id);
+    }
+    // Manifest documents hold the chunk list for large files out of line.
+    // They look exactly like orphan chunk docs (empty caption), so they
+    // MUST be referenced — deleting one destroys the file's entire chunk
+    // mapping with no way to recover it.
+    mark(meta.manifest_message_id);
+}
+
 GarbageCollectionResult collect_garbage(TelegramClient& tg, TeleVault& vault,
                                         int64_t channel_id, bool dry_run) {
     GarbageCollectionResult result;
@@ -78,10 +94,7 @@ GarbageCollectionResult collect_garbage(TelegramClient& tg, TeleVault& vault,
             ++result.unresolved_index_entries;
             continue;
         }
-        mark(meta->metadata_message_id);
-        for (auto& c : meta->chunks) {
-            if (c.channel_id == 0 || c.channel_id == channel_id) mark(c.message_id);
-        }
+        mark_file_references(referenced, *meta, channel_id);
     }
 
     // Snapshot side: index message + every snapshot metadata message.

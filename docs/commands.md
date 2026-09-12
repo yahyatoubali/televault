@@ -1,6 +1,6 @@
 # Command Reference
 
-Complete reference for all `tvt` commands in TeleVault v4.0.2 (C++23 Native).
+Complete reference for all `tvt` commands in TeleVault v4.0.3 (C++23 Native).
 
 ## Core Vault Commands
 

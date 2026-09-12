@@ -1,6 +1,6 @@
 # Hardware Optimization & Resource Tuning
 
-TeleVault v4.0.2 is written in native C++23, designed to achieve wire-speed throughput on powerful workstations while remaining lightweight enough to run seamlessly on resource-constrained single-board computers (Raspberry Pi, low-end VPS, embedded gateways).
+TeleVault v4.0.3 is written in native C++23, designed to achieve wire-speed throughput on powerful workstations while remaining lightweight enough to run seamlessly on resource-constrained single-board computers (Raspberry Pi, low-end VPS, embedded gateways).
 
 ---
 

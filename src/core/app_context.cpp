@@ -3,6 +3,7 @@
 #include "../telegram/client.hpp"
 #include "../util/config.hpp"
 #include <spdlog/spdlog.h>
+#include <format>
 
 namespace tv {
 
@@ -35,6 +36,23 @@ bool AppContext::ensure_vault() {
 
     vault = std::make_unique<TeleVault>(tg_client);
     if (!vault->initialize(config.channel_id, config.low_resource.enabled)) {
+        vault.reset();
+        return false;
+    }
+    // A configured channel that Telegram reports as inaccessible (logged in
+    // with a different account than the channel owner, or a deleted
+    // channel) must fail loudly here. Otherwise every command silently
+    // reports an empty vault ("Total: 0 files") and users fear data loss.
+    // Only applied when the index is empty: a reachable but empty vault is
+    // a valid state for new users.
+    if (vault->index_entries().empty() && !tg_client.is_valid_channel(config.channel_id)) {
+        std::string who = tg_client.get_my_username();
+        spdlog::error(
+            "Storage channel {} is not accessible with this Telegram account{}. "
+            "Your files are still on Telegram — this machine is simply looking "
+            "in the wrong place. Run 'tvt whoami' to check the account and "
+            "'tvt setup' to select the channel owned by this account.",
+            config.channel_id, who.empty() ? "" : " (@" + who + ")");
         vault.reset();
         return false;
     }
