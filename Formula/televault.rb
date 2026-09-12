@@ -10,22 +10,22 @@ class Televault < Formula
   on_macos do
     on_arm do
       url "https://github.com/yahyatoubali/televault/releases/download/v#{version}/televault-v#{version}-darwin-arm64.tar.gz"
-      sha256 "d7697e7fb3aebba0401802114a8fa1c6248fe7cec356935d320a7592ff9ba130"
+      sha256 "de3a67653f091f2cb4d9e94fe59783c13da7d9b63be8a5a0803966447e59912c"
     end
     on_intel do
       url "https://github.com/yahyatoubali/televault/releases/download/v#{version}/televault-v#{version}-darwin-x86_64.tar.gz"
-      sha256 "4ae73ab42a09d99e9efc017c9dbef2d394774f3de84c396488e161745b8f66ed"
+      sha256 "2e571d526041360b60b114d73937485d5b7c1402689204fe456cf312e014f2b3"
     end
   end
 
   on_linux do
     on_intel do
       url "https://github.com/yahyatoubali/televault/releases/download/v#{version}/televault-v#{version}-linux-x86_64.tar.gz"
-      sha256 "26d7d0f11593223e9d33de69caab1ffe82ef16b5e06d30c6c58fbbc823c8c3dc"
+      sha256 "17b4af63383edbf824d7d0902e53a79dfef707c3f82b11e916a9e782eb6075b3"
     end
     on_arm do
       url "https://github.com/yahyatoubali/televault/releases/download/v#{version}/televault-v#{version}-linux-aarch64.tar.gz"
-      sha256 "9b58546f8188a7a543d57d147a8acde9bbf3de9f2338cd63045dcdfa49265e20"
+      sha256 "c1f00414f3603a1377a7cf28482cac65fdf9b8e58a02f30253c1cf5da45d2a93"
     end
   end
 
