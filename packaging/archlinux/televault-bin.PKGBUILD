@@ -1,4 +1,4 @@
-# Maintainer: Yahya Toubali <yahyatoubali@example.com>
+# Maintainer: Yahya Toubali <yahya@yahyatoubali.me>
 pkgname=televault-bin
 pkgver=4.0.2
 pkgrel=1
