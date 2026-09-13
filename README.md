@@ -13,7 +13,7 @@
 <h1 align="center">
   <img src="./img/logo.png" alt="TeleVault" width="400">
   <br>
-  High-Performance Encrypted Cloud Storage via Telegram (C++23 Native)
+  High-Performance Encrypted Cloud Storage via Telegram
 </h1>
 
 <p align="center">
